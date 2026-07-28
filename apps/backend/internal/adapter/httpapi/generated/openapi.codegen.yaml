@@ -1,0 +1,2452 @@
+openapi: 3.0.3
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+info:
+  title: Sewa Motor POS API
+  version: 1.0.0
+  summary: Local-first point-of-sale API for a single rental store.
+  description: |
+    The contract used by the Android terminal and the Go backend. Money is integer
+    Indonesian rupiah, timestamps are RFC 3339, reporting uses Asia/Jakarta, and
+    transaction IDs are raw ULIDs. User-facing surfaces add the `TRX-` prefix.
+
+    Unless a response is a downloadable export, successful JSON responses use
+    `{data, meta}` and errors use `{error: {code, message, details, requestId}}`.
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+servers:
+  - url: /api/v1
+    description: Version 1 API
+security:
+  - bearerAuth: []
+tags:
+  - name: Health
+    description: Liveness and dependency readiness.
+  - name: Authentication
+    description: Login, password lifecycle, logout, and current profile.
+  - name: Users
+    description: Superadmin-only user administration.
+  - name: Packages
+    description: Package catalog and revision management.
+  - name: Transactions
+    description: Sales, corrections, deletion, and print attempt history.
+  - name: Statistics
+    description: Jakarta-local dashboard aggregates.
+  - name: Exports
+    description: Online-only transaction exports.
+  - name: Terminals
+    description: Physical installation enrollment and revocation.
+  - name: Synchronization
+    description: Idempotent signed mutation push and cursor-based change pull.
+
+paths:
+  /health/live:
+    get:
+      operationId: getLiveness
+      tags: [Health]
+      summary: Check process liveness
+      security: []
+      responses:
+        "200":
+          $ref: "#/components/responses/Health"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /health/ready:
+    get:
+      operationId: getReadiness
+      tags: [Health]
+      summary: Check PostgreSQL readiness
+      description: Redis failure is reported but does not make durable operations incorrect.
+      security: []
+      responses:
+        "200":
+          $ref: "#/components/responses/Health"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [Authentication]
+      summary: Start an online session
+      description: First login and forced password changes require connectivity.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Login"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+
+  /profile/password:
+    post:
+      operationId: changeOwnPassword
+      tags: [Authentication]
+      summary: Change the authenticated user's password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChangePasswordRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Profile"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [Authentication]
+      summary: Revoke the current session
+      description: The terminal must drain its outbox before calling this online-only endpoint.
+      responses:
+        "200":
+          $ref: "#/components/responses/Action"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /profile:
+    get:
+      operationId: getProfile
+      tags: [Authentication]
+      summary: Get the current user and session
+      responses:
+        "200":
+          $ref: "#/components/responses/Profile"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /users:
+    get:
+      operationId: listUsers
+      tags: [Users]
+      summary: List users
+      x-required-role: superadmin
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: search
+          in: query
+          schema:
+            type: string
+            maxLength: 100
+        - name: role
+          in: query
+          schema:
+            $ref: "#/components/schemas/UserRole"
+        - name: active
+          in: query
+          schema:
+            type: boolean
+        - name: includeDeleted
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          $ref: "#/components/responses/UserList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createUser
+      tags: [Users]
+      summary: Create a user with a temporary password
+      x-required-role: superadmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/UserResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /users/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    get:
+      operationId: getUser
+      tags: [Users]
+      summary: Get a user
+      x-required-role: superadmin
+      responses:
+        "200":
+          $ref: "#/components/responses/UserResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateUser
+      tags: [Users]
+      summary: Update role, name, username, or active state
+      description: Self-demotion/deactivation and removal of the final active superadmin are rejected.
+      x-required-role: superadmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateUserRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/UserResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    delete:
+      operationId: deleteUser
+      tags: [Users]
+      summary: Soft-delete a user
+      x-required-role: superadmin
+      responses:
+        "200":
+          $ref: "#/components/responses/UserResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /users/{userId}/reset-password:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    post:
+      operationId: resetUserPassword
+      tags: [Users]
+      summary: Set a temporary password and revoke existing sessions
+      x-required-role: superadmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetPasswordRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/UserResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /packages:
+    get:
+      operationId: listPackages
+      tags: [Packages]
+      summary: List packages
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: active
+          in: query
+          schema:
+            type: boolean
+        - name: includeDeleted
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          $ref: "#/components/responses/PackageList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createPackage
+      tags: [Packages]
+      summary: Create a package and its first revision
+      x-required-role: superadmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreatePackageRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/PackageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /packages/{packageId}:
+    parameters:
+      - $ref: "#/components/parameters/PackageId"
+    get:
+      operationId: getPackage
+      tags: [Packages]
+      summary: Get a package and current revision
+      responses:
+        "200":
+          $ref: "#/components/responses/PackageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updatePackage
+      tags: [Packages]
+      summary: Create a new package revision
+      x-required-role: superadmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePackageRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/PackageResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    delete:
+      operationId: deletePackage
+      tags: [Packages]
+      summary: Soft-delete a package
+      x-required-role: superadmin
+      responses:
+        "200":
+          $ref: "#/components/responses/PackageResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /transactions:
+    get:
+      operationId: listTransactions
+      tags: [Transactions]
+      summary: Search transaction history
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: search
+          in: query
+          description: Raw ULID or display ID beginning with TRX-.
+          schema:
+            type: string
+            maxLength: 30
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: packageId
+          in: query
+          schema:
+            $ref: "#/components/schemas/UUID"
+        - name: creatorId
+          in: query
+          schema:
+            $ref: "#/components/schemas/UUID"
+        - name: terminalId
+          in: query
+          schema:
+            $ref: "#/components/schemas/UUID"
+        - name: includeDeleted
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          $ref: "#/components/responses/TransactionList"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      operationId: createTransaction
+      tags: [Transactions]
+      summary: Create a transaction
+      description: Direct online counterpart to a signed sync create mutation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTransactionRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/TransactionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /transactions/{transactionId}:
+    parameters:
+      - $ref: "#/components/parameters/TransactionId"
+    get:
+      operationId: getTransaction
+      tags: [Transactions]
+      summary: Get the current transaction and print metadata
+      responses:
+        "200":
+          $ref: "#/components/responses/TransactionResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      operationId: deleteTransaction
+      tags: [Transactions]
+      summary: Soft-delete a transaction
+      description: Superadmin-only and online-only. There is no restore or purge endpoint in v1.
+      x-required-role: superadmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteTransactionRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/TransactionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /transactions/{transactionId}/revisions:
+    parameters:
+      - $ref: "#/components/parameters/TransactionId"
+    get:
+      operationId: listTransactionRevisions
+      tags: [Transactions]
+      summary: List immutable transaction revisions
+      responses:
+        "200":
+          $ref: "#/components/responses/TransactionRevisionList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: correctTransaction
+      tags: [Transactions]
+      summary: Correct a transaction by appending a revision
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CorrectTransactionRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/TransactionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/RevisionConflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /transactions/{transactionId}/print-attempts:
+    parameters:
+      - $ref: "#/components/parameters/TransactionId"
+    get:
+      operationId: listPrintAttempts
+      tags: [Transactions]
+      summary: List print attempts
+      responses:
+        "200":
+          $ref: "#/components/responses/PrintAttemptList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      operationId: recordPrintAttempt
+      tags: [Transactions]
+      summary: Append a terminal print attempt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RecordPrintAttemptRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/PrintAttemptResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /statistics/dashboard:
+    get:
+      operationId: getDashboardStatistics
+      tags: [Statistics]
+      summary: Get dashboard aggregates
+      parameters:
+        - name: period
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/StatisticsPeriod"
+        - name: anchor
+          in: query
+          description: Asia/Jakarta calendar date containing the requested period.
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          $ref: "#/components/responses/DashboardStatisticsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /exports/transactions:
+    post:
+      operationId: exportTransactions
+      tags: [Exports]
+      summary: Download a filtered XLSX or PDF
+      description: |
+        Online-only. The caller must ensure relevant pending or conflicted local
+        mutations are resolved before requesting the export.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExportTransactionsRequest"
+      responses:
+        "200":
+          description: Generated workbook or branded PDF.
+          headers:
+            Content-Disposition:
+              description: Download filename.
+              schema:
+                type: string
+            X-Request-Id:
+              $ref: "#/components/headers/RequestId"
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema:
+                type: string
+                format: binary
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /terminals/enroll:
+    post:
+      operationId: enrollTerminal
+      tags: [Terminals]
+      summary: Register a physical installation and Ed25519 public key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnrollTerminalRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/TerminalResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /terminals/current:
+    get:
+      operationId: getCurrentTerminal
+      tags: [Terminals]
+      summary: Get the terminal bound to this session
+      responses:
+        "200":
+          $ref: "#/components/responses/TerminalResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /terminals/{terminalId}/revoke:
+    parameters:
+      - $ref: "#/components/parameters/TerminalId"
+    post:
+      operationId: revokeTerminal
+      tags: [Terminals]
+      summary: Revoke a terminal and its sessions
+      x-required-role: superadmin
+      responses:
+        "200":
+          $ref: "#/components/responses/TerminalResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /sync/push:
+    post:
+      operationId: pushSyncMutations
+      tags: [Synchronization]
+      summary: Push a FIFO batch of signed mutations
+      description: |
+        Each operation is idempotent. Duplicate operation IDs replay the stored
+        result. Signatures cover RFC 8785 canonical JSON of the unsigned mutation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SyncPushRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/SyncPush"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /sync/pull:
+    get:
+      operationId: pullSyncChanges
+      tags: [Synchronization]
+      summary: Pull ordered changes and tombstones
+      parameters:
+        - name: cursor
+          in: query
+          description: Omit only for the first pull after enrollment.
+          schema:
+            type: string
+            maxLength: 512
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 200
+      responses:
+        "200":
+          $ref: "#/components/responses/SyncPull"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "410":
+          $ref: "#/components/responses/CursorExpired"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: OpaqueSessionToken
+      description: Opaque 256-bit token. Only its hash is persisted by the backend.
+
+  headers:
+    RequestId:
+      description: Correlation ID for logs and support.
+      schema:
+        type: string
+        format: uuid
+    RetryAfter:
+      description: Seconds before another attempt.
+      schema:
+        type: integer
+        minimum: 1
+
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+        maxLength: 512
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+    UserId:
+      name: userId
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/UUID"
+    PackageId:
+      name: packageId
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/UUID"
+    TransactionId:
+      name: transactionId
+      in: path
+      required: true
+      description: Raw ULID without the display-only TRX- prefix.
+      schema:
+        $ref: "#/components/schemas/ULID"
+    TerminalId:
+      name: terminalId
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/UUID"
+
+  responses:
+    Health:
+      description: Service health.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/HealthEnvelope"
+    Login:
+      description: Authenticated session.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/LoginEnvelope"
+    Action:
+      description: Action result.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ActionEnvelope"
+    Profile:
+      description: Current profile.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ProfileEnvelope"
+    UserResponse:
+      description: User.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UserEnvelope"
+    UserList:
+      description: Paginated users.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/UserListEnvelope"
+    PackageResponse:
+      description: Package.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PackageEnvelope"
+    PackageList:
+      description: Paginated packages.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PackageListEnvelope"
+    TransactionResponse:
+      description: Transaction.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/TransactionEnvelope"
+    TransactionList:
+      description: Paginated transactions.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/TransactionListEnvelope"
+    TransactionRevisionList:
+      description: Immutable transaction revisions.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/TransactionRevisionListEnvelope"
+    PrintAttemptResponse:
+      description: Print attempt.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PrintAttemptEnvelope"
+    PrintAttemptList:
+      description: Print attempts.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PrintAttemptListEnvelope"
+    DashboardStatisticsResponse:
+      description: Dashboard statistics.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DashboardStatisticsEnvelope"
+    TerminalResponse:
+      description: Terminal.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/TerminalEnvelope"
+    SyncPush:
+      description: Per-operation sync results in request order.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SyncPushEnvelope"
+    SyncPull:
+      description: Ordered sync changes.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SyncPullEnvelope"
+    BadRequest:
+      $ref: "#/components/responses/ErrorResponse"
+    Unauthorized:
+      $ref: "#/components/responses/ErrorResponse"
+    Forbidden:
+      $ref: "#/components/responses/ErrorResponse"
+    NotFound:
+      $ref: "#/components/responses/ErrorResponse"
+    Conflict:
+      $ref: "#/components/responses/ErrorResponse"
+    RevisionConflict:
+      description: Base revision is stale; details contain local and server snapshots.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/RevisionConflictEnvelope"
+    UnprocessableEntity:
+      $ref: "#/components/responses/ErrorResponse"
+    TooManyRequests:
+      description: Login rate limit exceeded.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+        Retry-After:
+          $ref: "#/components/headers/RetryAfter"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    CursorExpired:
+      $ref: "#/components/responses/ErrorResponse"
+    InternalError:
+      $ref: "#/components/responses/ErrorResponse"
+    ServiceUnavailable:
+      $ref: "#/components/responses/ErrorResponse"
+    ErrorResponse:
+      description: Standard error envelope.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
+  schemas:
+    UUID:
+      type: string
+      format: uuid
+
+    ULID:
+      type: string
+      pattern: "^[0-9A-HJKMNP-TV-Z]{26}$"
+      description: Canonical uppercase ULID without a display prefix.
+
+    OperationID:
+      type: string
+      format: uuid
+      description: Client-generated idempotency identity for a signed outbox mutation.
+
+    Rupiah:
+      type: integer
+      format: int64
+      minimum: 0
+      description: Whole Indonesian rupiah; decimals are never accepted.
+
+    UserRole:
+      type: string
+      enum: [admin, superadmin]
+
+    PrintState:
+      type: string
+      enum: [pending, success, failed, unknown, needs-reprint]
+
+    StatisticsPeriod:
+      type: string
+      enum: [day, week, month]
+
+    ExportFormat:
+      type: string
+      enum: [xlsx, pdf]
+
+    Meta:
+      type: object
+      additionalProperties: false
+      required: [requestId, serverTime]
+      properties:
+        requestId:
+          type: string
+          format: uuid
+        serverTime:
+          type: string
+          format: date-time
+
+    PageMeta:
+      type: object
+      additionalProperties: false
+      required: [requestId, serverTime, hasMore]
+      properties:
+        requestId:
+          type: string
+          format: uuid
+        serverTime:
+          type: string
+          format: date-time
+        nextCursor:
+          type: string
+          nullable: true
+        hasMore:
+          type: boolean
+
+    ErrorEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/ApiError"
+
+    ApiError:
+      type: object
+      additionalProperties: false
+      required: [code, message, details, requestId]
+      properties:
+        code:
+          type: string
+          pattern: "^[A-Z][A-Z0-9_]*$"
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+        requestId:
+          type: string
+          format: uuid
+
+    RevisionConflictEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          allOf:
+            - $ref: "#/components/schemas/ApiError"
+            - type: object
+              properties:
+                code:
+                  enum: [REVISION_CONFLICT]
+                details:
+                  $ref: "#/components/schemas/RevisionConflictDetails"
+
+    RevisionConflictDetails:
+      type: object
+      additionalProperties: false
+      required: [baseRevision, currentRevision, localSnapshot, serverSnapshot]
+      properties:
+        baseRevision:
+          type: integer
+          minimum: 1
+        currentRevision:
+          type: integer
+          minimum: 1
+        localSnapshot:
+          $ref: "#/components/schemas/TransactionSnapshot"
+        serverSnapshot:
+          $ref: "#/components/schemas/TransactionSnapshot"
+
+    HealthStatus:
+      type: object
+      additionalProperties: false
+      required: [status, postgres, redis]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, unavailable]
+        postgres:
+          type: string
+          enum: [ok, unavailable]
+        redis:
+          type: string
+          enum: [ok, unavailable]
+
+    HealthEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/HealthStatus"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    ActionResult:
+      type: object
+      additionalProperties: false
+      required: [success]
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+
+    ActionEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ActionResult"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username:
+          type: string
+          minLength: 3
+          maxLength: 64
+        password:
+          type: string
+          minLength: 8
+          maxLength: 256
+        installationId:
+          type: string
+          nullable: true
+          format: uuid
+          description: Client installation UUID used to look up an existing terminal binding.
+
+    LoginResult:
+      type: object
+      additionalProperties: false
+      required: [sessionToken, sessionId, user]
+      properties:
+        sessionToken:
+          type: string
+          minLength: 43
+          writeOnly: true
+        sessionId:
+          $ref: "#/components/schemas/UUID"
+        user:
+          $ref: "#/components/schemas/User"
+        terminal:
+          allOf:
+            - $ref: "#/components/schemas/Terminal"
+
+          nullable: true
+    LoginEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/LoginResult"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    ChangePasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [currentPassword, newPassword]
+      properties:
+        currentPassword:
+          type: string
+          minLength: 8
+          maxLength: 256
+        newPassword:
+          type: string
+          minLength: 12
+          maxLength: 256
+
+    UserSummary:
+      type: object
+      additionalProperties: false
+      required: [id, fullName, username, role]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        fullName:
+          type: string
+        username:
+          type: string
+        role:
+          $ref: "#/components/schemas/UserRole"
+
+    User:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          fullName,
+          username,
+          role,
+          active,
+          mustChangePassword,
+          createdAt,
+          updatedAt,
+          deletedAt,
+        ]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        fullName:
+          type: string
+        username:
+          type: string
+        role:
+          $ref: "#/components/schemas/UserRole"
+        active:
+          type: boolean
+        mustChangePassword:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type: string
+          nullable: true
+          format: date-time
+
+    ProfileResult:
+      type: object
+      additionalProperties: false
+      required: [user, sessionId, terminal]
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+        sessionId:
+          $ref: "#/components/schemas/UUID"
+        terminal:
+          allOf:
+            - $ref: "#/components/schemas/Terminal"
+
+          nullable: true
+    ProfileEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/ProfileResult"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    CreateUserRequest:
+      type: object
+      additionalProperties: false
+      required: [fullName, username, role, temporaryPassword]
+      properties:
+        fullName:
+          type: string
+          minLength: 2
+          maxLength: 120
+        username:
+          type: string
+          pattern: "^[a-z0-9._-]{3,64}$"
+        role:
+          $ref: "#/components/schemas/UserRole"
+        temporaryPassword:
+          type: string
+          minLength: 12
+          maxLength: 256
+
+    UpdateUserRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        fullName:
+          type: string
+          minLength: 2
+          maxLength: 120
+        username:
+          type: string
+          pattern: "^[a-z0-9._-]{3,64}$"
+        role:
+          $ref: "#/components/schemas/UserRole"
+        active:
+          type: boolean
+
+    ResetPasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [temporaryPassword]
+      properties:
+        temporaryPassword:
+          type: string
+          minLength: 12
+          maxLength: 256
+
+    UserEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/User"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    UserListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
+        meta:
+          $ref: "#/components/schemas/PageMeta"
+
+    PackageRevision:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          packageId,
+          revision,
+          name,
+          description,
+          unitPrice,
+          createdAt,
+          createdBy,
+        ]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        packageId:
+          $ref: "#/components/schemas/UUID"
+        revision:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+        unitPrice:
+          $ref: "#/components/schemas/Rupiah"
+        createdAt:
+          type: string
+          format: date-time
+        createdBy:
+          $ref: "#/components/schemas/UserSummary"
+
+    Package:
+      type: object
+      additionalProperties: false
+      required: [id, active, currentRevision, createdAt, updatedAt, deletedAt]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        active:
+          type: boolean
+        currentRevision:
+          $ref: "#/components/schemas/PackageRevision"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type: string
+          nullable: true
+          format: date-time
+
+    CreatePackageRequest:
+      type: object
+      additionalProperties: false
+      required: [name, description, unitPrice]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+        unitPrice:
+          $ref: "#/components/schemas/Rupiah"
+
+    UpdatePackageRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        baseRevision:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+        unitPrice:
+          $ref: "#/components/schemas/Rupiah"
+        active:
+          type: boolean
+
+    PackageEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/Package"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    PackageListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Package"
+        meta:
+          $ref: "#/components/schemas/PageMeta"
+
+    TransactionLineInput:
+      type: object
+      additionalProperties: false
+      required: [packageId, packageRevision, quantity]
+      properties:
+        packageId:
+          $ref: "#/components/schemas/UUID"
+        packageRevision:
+          type: integer
+          minimum: 1
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 999
+
+    TransactionItemSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          packageId,
+          packageRevision,
+          name,
+          description,
+          unitPrice,
+          quantity,
+          lineTotal,
+        ]
+      properties:
+        packageId:
+          $ref: "#/components/schemas/UUID"
+        packageRevision:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+        unitPrice:
+          $ref: "#/components/schemas/Rupiah"
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 999
+        lineTotal:
+          $ref: "#/components/schemas/Rupiah"
+
+    TransactionItem:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          packageId,
+          packageRevision,
+          name,
+          description,
+          unitPrice,
+          quantity,
+          lineTotal,
+        ]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        packageId:
+          $ref: "#/components/schemas/UUID"
+        packageRevision:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        description:
+          type: string
+          maxLength: 500
+        unitPrice:
+          $ref: "#/components/schemas/Rupiah"
+        quantity:
+          type: integer
+          minimum: 1
+          maximum: 999
+        lineTotal:
+          $ref: "#/components/schemas/Rupiah"
+
+    TransactionSnapshot:
+      type: object
+      additionalProperties: false
+      required: [occurredAt, items, subtotal, total]
+      properties:
+        occurredAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/TransactionItemSnapshot"
+        subtotal:
+          $ref: "#/components/schemas/Rupiah"
+        total:
+          $ref: "#/components/schemas/Rupiah"
+
+    TransactionRevision:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          transactionId,
+          revision,
+          reason,
+          before,
+          after,
+          originActor,
+          submittedBy,
+          terminal,
+          clientOccurredAt,
+          serverReceivedAt,
+        ]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        transactionId:
+          $ref: "#/components/schemas/ULID"
+        revision:
+          type: integer
+          minimum: 2
+        reason:
+          type: string
+          minLength: 5
+          maxLength: 500
+        before:
+          $ref: "#/components/schemas/TransactionSnapshot"
+        after:
+          $ref: "#/components/schemas/TransactionSnapshot"
+        originActor:
+          $ref: "#/components/schemas/UserSummary"
+        submittedBy:
+          $ref: "#/components/schemas/UserSummary"
+        terminal:
+          $ref: "#/components/schemas/TerminalSummary"
+        clientOccurredAt:
+          type: string
+          format: date-time
+        serverReceivedAt:
+          type: string
+          format: date-time
+
+    PrintMetadata:
+      type: object
+      additionalProperties: false
+      required: [state, attemptCount, lastAttemptAt]
+      properties:
+        state:
+          $ref: "#/components/schemas/PrintState"
+        attemptCount:
+          type: integer
+          minimum: 0
+        lastAttemptAt:
+          type: string
+          nullable: true
+          format: date-time
+
+    DeletionMetadata:
+      type: object
+      additionalProperties: false
+      required: [deletedAt, deletedBy, reason]
+      properties:
+        deletedAt:
+          type: string
+          format: date-time
+        deletedBy:
+          $ref: "#/components/schemas/UserSummary"
+        reason:
+          type: string
+
+    Transaction:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          revision,
+          occurredAt,
+          items,
+          subtotal,
+          total,
+          originActor,
+          updatedBy,
+          terminal,
+          print,
+          deletion,
+          createdAt,
+          updatedAt,
+        ]
+      properties:
+        id:
+          $ref: "#/components/schemas/ULID"
+        revision:
+          type: integer
+          minimum: 1
+        occurredAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/TransactionItem"
+        subtotal:
+          $ref: "#/components/schemas/Rupiah"
+        total:
+          $ref: "#/components/schemas/Rupiah"
+        originActor:
+          $ref: "#/components/schemas/UserSummary"
+        updatedBy:
+          $ref: "#/components/schemas/UserSummary"
+        terminal:
+          $ref: "#/components/schemas/TerminalSummary"
+        print:
+          $ref: "#/components/schemas/PrintMetadata"
+        deletion:
+          allOf:
+            - $ref: "#/components/schemas/DeletionMetadata"
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CreateTransactionRequest:
+      type: object
+      additionalProperties: false
+      required: [id, occurredAt, items]
+      properties:
+        id:
+          $ref: "#/components/schemas/ULID"
+        occurredAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/TransactionLineInput"
+
+    CorrectTransactionRequest:
+      type: object
+      additionalProperties: false
+      required: [baseRevision, reason, occurredAt, items]
+      properties:
+        baseRevision:
+          type: integer
+          minimum: 1
+        reason:
+          type: string
+          minLength: 5
+          maxLength: 500
+        occurredAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/TransactionLineInput"
+
+    DeleteTransactionRequest:
+      type: object
+      additionalProperties: false
+      required: [baseRevision, reason]
+      properties:
+        baseRevision:
+          type: integer
+          minimum: 1
+        reason:
+          type: string
+          minLength: 5
+          maxLength: 500
+
+    TransactionEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/Transaction"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    TransactionListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Transaction"
+        meta:
+          $ref: "#/components/schemas/PageMeta"
+
+    TransactionRevisionListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransactionRevision"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    PrinterKind:
+      type: string
+      enum: [simulator, bluetooth, integrated]
+
+    RecordPrintAttemptRequest:
+      type: object
+      additionalProperties: false
+      required:
+        [id, transactionRevision, status, printerKind, isCopy, occurredAt]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        transactionRevision:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum: [pending, success, failed, unknown]
+        printerKind:
+          $ref: "#/components/schemas/PrinterKind"
+        printerIdentifier:
+          type: string
+          nullable: true
+          maxLength: 200
+        isCopy:
+          type: boolean
+        errorCode:
+          type: string
+          nullable: true
+          maxLength: 100
+        errorMessage:
+          type: string
+          nullable: true
+          maxLength: 500
+        metadata:
+          type: object
+          additionalProperties: true
+        occurredAt:
+          type: string
+          format: date-time
+
+    PrintAttempt:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          transactionId,
+          transactionRevision,
+          status,
+          printerKind,
+          isCopy,
+          occurredAt,
+          terminal,
+          actor,
+          serverReceivedAt,
+        ]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        transactionId:
+          $ref: "#/components/schemas/ULID"
+        transactionRevision:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum: [pending, success, failed, unknown]
+        printerKind:
+          $ref: "#/components/schemas/PrinterKind"
+        printerIdentifier:
+          type: string
+          nullable: true
+          maxLength: 200
+        isCopy:
+          type: boolean
+        errorCode:
+          type: string
+          nullable: true
+          maxLength: 100
+        errorMessage:
+          type: string
+          nullable: true
+          maxLength: 500
+        metadata:
+          type: object
+          additionalProperties: true
+        occurredAt:
+          type: string
+          format: date-time
+        terminal:
+          $ref: "#/components/schemas/TerminalSummary"
+        actor:
+          $ref: "#/components/schemas/UserSummary"
+        serverReceivedAt:
+          type: string
+          format: date-time
+
+    PrintAttemptEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/PrintAttempt"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    PrintAttemptListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/PrintAttempt"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    TrendBucket:
+      type: object
+      additionalProperties: false
+      required: [start, end, grossRevenue, transactionCount]
+      properties:
+        start:
+          type: string
+          format: date-time
+        end:
+          type: string
+          format: date-time
+        grossRevenue:
+          $ref: "#/components/schemas/Rupiah"
+        transactionCount:
+          type: integer
+          minimum: 0
+
+    PackageQuantity:
+      type: object
+      additionalProperties: false
+      required: [packageId, name, quantity]
+      properties:
+        packageId:
+          $ref: "#/components/schemas/UUID"
+        name:
+          type: string
+        quantity:
+          type: integer
+          minimum: 0
+
+    DashboardStatistics:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          period,
+          startsAt,
+          endsAt,
+          grossRevenue,
+          transactionCount,
+          packageQuantities,
+          trend,
+          recent,
+        ]
+      properties:
+        period:
+          $ref: "#/components/schemas/StatisticsPeriod"
+        startsAt:
+          type: string
+          format: date-time
+        endsAt:
+          type: string
+          format: date-time
+        grossRevenue:
+          $ref: "#/components/schemas/Rupiah"
+        transactionCount:
+          type: integer
+          minimum: 0
+        packageQuantities:
+          type: array
+          items:
+            $ref: "#/components/schemas/PackageQuantity"
+        trend:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrendBucket"
+        recent:
+          type: array
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/Transaction"
+
+    DashboardStatisticsEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/DashboardStatistics"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    TransactionFilter:
+      type: object
+      additionalProperties: false
+      properties:
+        search:
+          type: string
+          maxLength: 30
+        from:
+          type: string
+          format: date-time
+        to:
+          type: string
+          format: date-time
+        packageId:
+          $ref: "#/components/schemas/UUID"
+        creatorId:
+          $ref: "#/components/schemas/UUID"
+        terminalId:
+          $ref: "#/components/schemas/UUID"
+        includeDeleted:
+          type: boolean
+          default: false
+
+    ExportTransactionsRequest:
+      type: object
+      additionalProperties: false
+      required: [format, filters]
+      properties:
+        format:
+          $ref: "#/components/schemas/ExportFormat"
+        filters:
+          $ref: "#/components/schemas/TransactionFilter"
+
+    TerminalSummary:
+      type: object
+      additionalProperties: false
+      required: [id, installationId, name]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        installationId:
+          type: string
+          format: uuid
+          description: Stable client installation UUID distinct from the server terminal UUID.
+        name:
+          type: string
+
+    Terminal:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          installationId,
+          name,
+          publicKey,
+          algorithm,
+          platform,
+          active,
+          enrolledAt,
+          revokedAt,
+        ]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        installationId:
+          type: string
+          format: uuid
+          description: Stable client installation UUID distinct from the server terminal UUID.
+        name:
+          type: string
+        publicKey:
+          type: string
+          minLength: 43
+          maxLength: 44
+          description: Standard or unpadded standard Base64 encoding of the 32-byte Ed25519 public key.
+        algorithm:
+          type: string
+          enum: [Ed25519]
+        platform:
+          type: string
+          enum: [android]
+        deviceModel:
+          type: string
+          maxLength: 120
+        osVersion:
+          type: string
+          maxLength: 50
+        appVersion:
+          type: string
+          maxLength: 50
+        active:
+          type: boolean
+        enrolledAt:
+          type: string
+          format: date-time
+        revokedAt:
+          type: string
+          nullable: true
+          format: date-time
+
+    EnrollTerminalRequest:
+      type: object
+      additionalProperties: false
+      required: [installationId, name, publicKey, algorithm]
+      properties:
+        installationId:
+          type: string
+          format: uuid
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+        publicKey:
+          type: string
+          minLength: 43
+          maxLength: 44
+        algorithm:
+          type: string
+          enum: [Ed25519]
+        deviceModel:
+          type: string
+          minLength: 1
+          maxLength: 120
+        osVersion:
+          type: string
+          minLength: 1
+          maxLength: 50
+        appVersion:
+          type: string
+          minLength: 1
+          maxLength: 50
+
+    TerminalEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/Terminal"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    SyncAggregate:
+      type: string
+      enum: [transaction, print_attempt]
+
+    SyncAction:
+      type: string
+      enum: [create, correct]
+      description: |
+        Print attempts use `aggregate: print_attempt` with `action: create`.
+
+    CreateTransactionMutationPayload:
+      type: object
+      additionalProperties: false
+      required: [id, items]
+      properties:
+        id:
+          $ref: "#/components/schemas/ULID"
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/TransactionLineInput"
+
+    CorrectTransactionMutationPayload:
+      type: object
+      additionalProperties: false
+      required: [id, reason, items]
+      properties:
+        id:
+          $ref: "#/components/schemas/ULID"
+        reason:
+          type: string
+          minLength: 5
+          maxLength: 500
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/TransactionLineInput"
+
+    PrintAttemptMutationPayload:
+      type: object
+      additionalProperties: false
+      required:
+        [id, transactionId, transactionRevision, status, printerKind, isCopy]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        transactionId:
+          $ref: "#/components/schemas/ULID"
+        transactionRevision:
+          type: integer
+          minimum: 1
+        status:
+          type: string
+          enum: [pending, success, failed, unknown]
+        printerKind:
+          $ref: "#/components/schemas/PrinterKind"
+        printerIdentifier:
+          type: string
+          nullable: true
+          maxLength: 200
+        isCopy:
+          type: boolean
+        errorCode:
+          type: string
+          nullable: true
+          maxLength: 100
+        errorMessage:
+          type: string
+          nullable: true
+          maxLength: 500
+        metadata:
+          type: object
+          additionalProperties: true
+
+    SyncMutationSignedBody:
+      type: object
+      description: |
+        The exact object canonicalized with RFC 8785 and signed as UTF-8. It contains
+        exactly these ten properties, including `baseRevision: null` for creates.
+        `occurredAt` is normalized to UTC with exactly millisecond precision before
+        canonicalization.
+      required:
+        [
+          operationId,
+          aggregate,
+          aggregateId,
+          action,
+          baseRevision,
+          originSessionId,
+          originActorId,
+          terminalId,
+          occurredAt,
+          payload,
+        ]
+      properties:
+        operationId:
+          $ref: "#/components/schemas/OperationID"
+        aggregate:
+          $ref: "#/components/schemas/SyncAggregate"
+        aggregateId:
+          type: string
+          minLength: 1
+          maxLength: 64
+          description: Transaction ULID for transactions; print-attempt UUID for print attempts.
+        action:
+          $ref: "#/components/schemas/SyncAction"
+        baseRevision:
+          type: integer
+          nullable: true
+          minimum: 1
+        originSessionId:
+          $ref: "#/components/schemas/UUID"
+        originActorId:
+          $ref: "#/components/schemas/UUID"
+        terminalId:
+          $ref: "#/components/schemas/UUID"
+        occurredAt:
+          type: string
+          format: date-time
+        payload:
+          oneOf:
+            - $ref: "#/components/schemas/CreateTransactionMutationPayload"
+            - $ref: "#/components/schemas/CorrectTransactionMutationPayload"
+            - $ref: "#/components/schemas/PrintAttemptMutationPayload"
+
+    SyncMutation:
+      description: |
+        A signed outbox operation. `signature` is standard Base64 of the 64-byte
+        Ed25519 signature over the RFC 8785 canonical JSON represented by
+        `SyncMutationSignedBody`; the signature property itself is never signed.
+      allOf:
+        - $ref: "#/components/schemas/SyncMutationSignedBody"
+        - type: object
+          required: [signature]
+          properties:
+            signature:
+              type: string
+              minLength: 86
+              maxLength: 88
+
+    SyncPushRequest:
+      type: object
+      additionalProperties: false
+      required: [mutations]
+      properties:
+        mutations:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/SyncMutation"
+
+    SyncMutationStatus:
+      type: string
+      enum: [applied, duplicate, conflict, rejected]
+
+    SyncMutationResult:
+      type: object
+      additionalProperties: false
+      required:
+        [operationId, aggregateId, status, replayed, data, conflict, error]
+      properties:
+        operationId:
+          $ref: "#/components/schemas/OperationID"
+        aggregateId:
+          type: string
+        status:
+          $ref: "#/components/schemas/SyncMutationStatus"
+        replayed:
+          type: boolean
+        data:
+          oneOf:
+            - $ref: "#/components/schemas/Transaction"
+            - $ref: "#/components/schemas/PrintAttempt"
+          nullable: true
+        conflict:
+          allOf:
+            - $ref: "#/components/schemas/RevisionConflictDetails"
+          nullable: true
+        error:
+          allOf:
+            - $ref: "#/components/schemas/ApiError"
+
+          nullable: true
+    SyncPushResult:
+      type: object
+      additionalProperties: false
+      required: [results]
+      properties:
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncMutationResult"
+
+    SyncPushEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/SyncPushResult"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    SyncChange:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          cursor,
+          aggregate,
+          action,
+          aggregateId,
+          revision,
+          changedAt,
+          tombstone,
+          payload,
+        ]
+      properties:
+        cursor:
+          type: string
+          description: Durable opaque cursor after this individual change.
+        aggregate:
+          type: string
+          enum: [user, package, transaction, print_attempt, terminal]
+        action:
+          type: string
+          enum: [upsert, delete]
+        aggregateId:
+          type: string
+        revision:
+          type: integer
+          nullable: true
+          minimum: 1
+        changedAt:
+          type: string
+          format: date-time
+        tombstone:
+          type: boolean
+        payload:
+          oneOf:
+            - $ref: "#/components/schemas/User"
+            - $ref: "#/components/schemas/Package"
+            - $ref: "#/components/schemas/Transaction"
+            - $ref: "#/components/schemas/PrintAttempt"
+            - $ref: "#/components/schemas/Terminal"
+
+          nullable: true
+    SyncPullResult:
+      type: object
+      additionalProperties: false
+      required: [changes, cursor, hasMore]
+      properties:
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncChange"
+        cursor:
+          type: string
+        hasMore:
+          type: boolean
+
+    SyncPullEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/SyncPullResult"
+        meta:
+          $ref: "#/components/schemas/Meta"

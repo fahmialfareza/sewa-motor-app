@@ -1,0 +1,14 @@
+apis:
+  sewa-motor@v1:
+    root: ./api/openapi.yaml
+
+extends:
+  - recommended
+
+rules:
+  operation-4xx-response: error
+  operation-operationId: error
+  no-ambiguous-paths: error
+  no-invalid-media-type-examples: error
+  no-unused-components: warn
+  security-defined: error

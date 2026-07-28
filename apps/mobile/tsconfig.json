@@ -1,0 +1,14 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "types": ["jest"]
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "modules/**/*.ts"],
+  "exclude": ["node_modules"]
+}

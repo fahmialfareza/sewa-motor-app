@@ -1,0 +1,22 @@
+plugins {
+  id "com.android.library"
+  id "expo-module-gradle-plugin"
+}
+
+group = "expo.modules.sewaprinter"
+version = "0.1.0"
+
+android {
+  namespace "expo.modules.sewaprinter"
+
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+}
+
+dependencies {
+  // Drop the approved vendor AAR/JAR into android/libs and add it here only
+  // after the target MPOS SDK and license are supplied.
+  implementation fileTree(dir: "libs", include: ["*.jar", "*.aar"])
+}

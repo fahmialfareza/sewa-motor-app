@@ -1,9 +1,11 @@
 {
-  "name": "@repo/typescript-config",
+  "name": "@sewa-motor/typescript-config",
   "version": "0.0.0",
   "private": true,
-  "license": "MIT",
-  "publishConfig": {
-    "access": "public"
+  "license": "UNLICENSED",
+  "exports": {
+    "./base.json": "./base.json",
+    "./expo.json": "./expo.json",
+    "./react-library.json": "./react-library.json"
   }
 }

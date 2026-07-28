@@ -1,0 +1,6 @@
+**/node_modules/**
+**/.turbo/**
+**/dist/**
+**/coverage/**
+packages/api-client/src/generated/**
+pnpm-lock.yaml

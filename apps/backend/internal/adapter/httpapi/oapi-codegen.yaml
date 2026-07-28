@@ -1,0 +1,8 @@
+package: generated
+output: internal/adapter/httpapi/generated/openapi.gen.go
+generate:
+  models: true
+  strict-server: true
+  gin-server: true
+output-options:
+  skip-prune: true

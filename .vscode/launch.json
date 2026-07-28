@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Backend",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "cwd": "${workspaceFolder}/apps/backend",
+      "program": "${workspaceFolder}/apps/backend/cmd/api/main.go",
+      "envFile": "${workspaceFolder}/apps/backend/.env"
+    }
+  ]
+}

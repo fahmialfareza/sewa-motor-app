@@ -7,6 +7,9 @@ node_modules
 
 # Local env files
 .env
+.env.*
+!.env.example
+!**/.env.example
 .env.local
 .env.development.local
 .env.test.local
@@ -14,6 +17,7 @@ node_modules
 
 # Testing
 coverage
+*.lcov
 
 # Turbo
 .turbo
@@ -26,6 +30,25 @@ coverage
 out/
 build
 dist
+bin
+
+# Expo / React Native
+.expo
+/apps/mobile/android/
+/apps/mobile/ios/
+*.jks
+*.keystore
+
+# Go
+*.test
+vendor
+
+# Local databases and secrets
+*.db
+*.sqlite
+*.sqlite3
+secrets/
+bootstrap-users*.json
 
 
 # Debug

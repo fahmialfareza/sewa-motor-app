@@ -1,0 +1,15 @@
+{
+  "name": "@sewa-motor/backend",
+  "private": true,
+  "scripts": {
+    "build": "go build ./...",
+    "dev": "go run ./cmd/api",
+    "seed:superadmin": "go run ./cmd/seed-superadmin",
+    "test": "go test ./...",
+    "lint": "go vet ./...",
+    "check-types": "go test -run '^$' ./...",
+    "generate": "go generate ./...",
+    "generate:check": "go generate ./... && git diff --exit-code -- ':(top)apps/backend/internal/adapter/httpapi/generated' ':(top)apps/backend/internal/adapter/postgres/generated'",
+    "check-generated": "pnpm run generate:check"
+  }
+}

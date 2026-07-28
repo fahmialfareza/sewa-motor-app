@@ -1,0 +1,1208 @@
+import * as Crypto from "expo-crypto";
+import type { SQLiteDatabase } from "expo-sqlite";
+
+import type {
+  DashboardStats,
+  PrintState,
+  RentalPackage,
+  Session,
+  SyncConflict,
+  SyncState,
+  Transaction,
+  TransactionDraftLine,
+  TransactionItem,
+} from "@/domain/types";
+import {
+  canCorrectTransaction,
+  CORRECTION_FORBIDDEN_MESSAGE,
+} from "@/domain/permissions";
+import {
+  getOrCreateTerminalIdentity,
+  signCanonicalPayload,
+} from "@/security/terminal-identity";
+import { reportingRange, type ReportingPeriod } from "@/utils/time";
+
+import { getDatabase } from "./client";
+import { createUlid } from "./ids";
+
+interface TransactionRow {
+  id: string;
+  revision: number;
+  occurred_at: string;
+  subtotal: number;
+  total: number;
+  origin_actor_id: string;
+  origin_actor_name: string;
+  updated_actor_name: string;
+  terminal_id: string;
+  sync_state: SyncState;
+  print_state: PrintState;
+  deleted_at: string | null;
+}
+
+interface TransactionItemRow {
+  id: string;
+  package_id: string;
+  package_revision: number;
+  name: string;
+  description: string;
+  accent: RentalPackage["accent"];
+  unit_price: number;
+  quantity: number;
+  line_total: number;
+}
+
+interface PackageRow {
+  id: string;
+  revision: number;
+  name: string;
+  description: string;
+  unit_price: number;
+  accent: RentalPackage["accent"];
+  active: number;
+  deleted_at: string | null;
+}
+
+export interface HistoryFilter {
+  search?: string;
+  syncState?: SyncState;
+  from?: string;
+  to?: string;
+  packageId?: string;
+  creatorId?: string;
+  beforeOccurredAt?: string;
+  beforeId?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface HistoryFilterOption {
+  id: string;
+  label: string;
+}
+
+export interface StoredOutboxOperation {
+  operationId: string;
+  aggregateId: string;
+  operation: Record<string, unknown>;
+  signature: string;
+  attempts: number;
+}
+
+export interface RejectedOutboxOperation {
+  operationId: string;
+  aggregateId: string;
+  message: string;
+}
+
+export type PrintAttemptResult = "pending" | "success" | "failed" | "unknown";
+
+export async function listPackages(
+  includeInactive = false,
+): Promise<RentalPackage[]> {
+  const { sqlite } = await getDatabase();
+  const rows = await sqlite.getAllAsync<PackageRow>(
+    `SELECT * FROM packages_local
+     WHERE deleted_at IS NULL ${includeInactive ? "" : "AND active = 1"}
+     ORDER BY CASE accent WHEN 'standard' THEN 0 WHEN 'sunrise' THEN 1 ELSE 2 END,
+              name`,
+  );
+  return rows.map(mapPackage);
+}
+
+export async function upsertPackage(value: RentalPackage): Promise<void> {
+  const { sqlite } = await getDatabase();
+  await upsertPackageWithDatabase(sqlite, value);
+}
+
+async function upsertPackageWithDatabase(
+  database: SQLiteDatabase,
+  value: RentalPackage,
+): Promise<void> {
+  await database.runAsync(
+    `INSERT INTO packages_local(
+      id, revision, name, description, unit_price, accent, active, deleted_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      revision = excluded.revision,
+      name = excluded.name,
+      description = excluded.description,
+      unit_price = excluded.unit_price,
+      accent = excluded.accent,
+      active = excluded.active,
+      deleted_at = excluded.deleted_at,
+      updated_at = excluded.updated_at
+    WHERE excluded.revision >= packages_local.revision`,
+    value.id,
+    value.revision,
+    value.name,
+    value.description,
+    value.unitPrice,
+    value.accent,
+    value.active ? 1 : 0,
+    value.deletedAt,
+    new Date().toISOString(),
+  );
+}
+
+export async function createTransaction(
+  lines: TransactionDraftLine[],
+  session: Session,
+): Promise<Transaction> {
+  const selected = lines.filter((line) => line.quantity > 0);
+  if (selected.length === 0) {
+    throw new Error("Pilih minimal satu paket.");
+  }
+  if (selected.some((line) => line.quantity < 1 || line.quantity > 999)) {
+    throw new Error("Jumlah paket harus antara 1 dan 999.");
+  }
+
+  const occurredAt = new Date().toISOString();
+  const id = createUlid();
+  const terminal = await getOrCreateTerminalIdentity();
+  if (!terminal.serverTerminalId) {
+    throw new Error("Terminal harus didaftarkan sebelum membuat transaksi.");
+  }
+  const items: TransactionItem[] = selected.map((line) => ({
+    id: `ITEM-${createUlid()}`,
+    packageId: line.package.id,
+    packageRevision: line.package.revision,
+    name: line.package.name,
+    description: line.package.description,
+    accent: line.package.accent,
+    unitPrice: line.package.unitPrice,
+    quantity: line.quantity,
+    lineTotal: line.quantity * line.package.unitPrice,
+  }));
+  const total = items.reduce((sum, item) => sum + item.lineTotal, 0);
+  const transaction: Transaction = {
+    id,
+    revision: 1,
+    occurredAt,
+    subtotal: total,
+    total,
+    originActorId: session.user.id,
+    originActorName: session.user.fullName,
+    updatedActorName: session.user.fullName,
+    terminalId: terminal.serverTerminalId,
+    syncState: "pending",
+    printState: "pending",
+    deletedAt: null,
+    items,
+  };
+
+  const operation = {
+    operationId: Crypto.randomUUID(),
+    aggregate: "transaction",
+    aggregateId: id,
+    action: "create",
+    baseRevision: null,
+    originSessionId: session.sessionId,
+    originActorId: session.user.id,
+    terminalId: terminal.serverTerminalId,
+    occurredAt,
+    payload: {
+      id: transaction.id,
+      items: toMutationItems(transaction.items),
+    },
+  };
+  const signature = await signCanonicalPayload(operation);
+  const auditId = `AUD-${createUlid()}`;
+  const { sqlite } = await getDatabase();
+
+  await sqlite.withTransactionAsync(async () => {
+    await insertTransaction(sqlite, transaction);
+    await insertRevision(sqlite, transaction, null, null, session);
+    await sqlite.runAsync(
+      `INSERT INTO audit_events(
+        id, kind, aggregate_id, actor_id, session_id, terminal_id, payload_json, occurred_at
+      ) VALUES (?, 'transaction.created', ?, ?, ?, ?, ?, ?)`,
+      auditId,
+      transaction.id,
+      session.user.id,
+      session.sessionId,
+      terminal.serverTerminalId,
+      JSON.stringify(transaction),
+      occurredAt,
+    );
+    await insertOutbox(sqlite, operation, signature, transaction.id);
+  });
+  return transaction;
+}
+
+export async function correctTransaction(
+  transactionId: string,
+  quantities: Record<string, number>,
+  reason: string,
+  session: Session,
+): Promise<Transaction> {
+  const before = await getTransaction(transactionId);
+  if (!before) throw new Error("Transaksi tidak ditemukan.");
+  if (!canCorrectTransaction(session, before)) {
+    throw new Error(CORRECTION_FORBIDDEN_MESSAGE);
+  }
+  if (reason.trim().length < 5) {
+    throw new Error("Alasan koreksi minimal 5 karakter.");
+  }
+
+  const items = before.items
+    .map((item) => {
+      const quantity = quantities[item.packageId] ?? item.quantity;
+      return {
+        ...item,
+        id: `ITEM-${createUlid()}`,
+        quantity,
+        lineTotal: quantity * item.unitPrice,
+      };
+    })
+    .filter((item) => item.quantity > 0);
+  if (items.length === 0) throw new Error("Minimal satu item harus tersisa.");
+  if (items.some((item) => item.quantity > 999)) {
+    throw new Error("Jumlah paket maksimal 999.");
+  }
+
+  const terminal = await getOrCreateTerminalIdentity();
+  if (!terminal.serverTerminalId) {
+    throw new Error("Terminal belum terdaftar.");
+  }
+  const occurredAt = new Date().toISOString();
+  const total = items.reduce((sum, item) => sum + item.lineTotal, 0);
+  const corrected: Transaction = {
+    ...before,
+    revision: before.revision + 1,
+    subtotal: total,
+    total,
+    updatedActorName: session.user.fullName,
+    terminalId: terminal.serverTerminalId,
+    syncState: "pending",
+    printState:
+      before.printState === "success" || before.printState === "needs-reprint"
+        ? "needs-reprint"
+        : before.printState,
+    items,
+  };
+
+  const operation = {
+    operationId: Crypto.randomUUID(),
+    aggregate: "transaction",
+    aggregateId: before.id,
+    action: "correct",
+    baseRevision: before.revision,
+    originSessionId: session.sessionId,
+    originActorId: session.user.id,
+    terminalId: terminal.serverTerminalId,
+    occurredAt,
+    payload: {
+      id: corrected.id,
+      reason: reason.trim(),
+      items: toMutationItems(corrected.items),
+    },
+  };
+  const signature = await signCanonicalPayload(operation);
+  const { sqlite } = await getDatabase();
+
+  await sqlite.withTransactionAsync(async () => {
+    await sqlite.runAsync(
+      `UPDATE transactions SET
+         revision = ?, subtotal = ?, total = ?, updated_actor_name = ?,
+         terminal_id = ?, sync_state = 'pending', print_state = ?
+       WHERE id = ?`,
+      corrected.revision,
+      corrected.subtotal,
+      corrected.total,
+      corrected.updatedActorName,
+      corrected.terminalId,
+      corrected.printState,
+      corrected.id,
+    );
+    await insertItems(sqlite, corrected);
+    await insertRevision(sqlite, corrected, reason.trim(), before, session);
+    await sqlite.runAsync(
+      `INSERT INTO audit_events(
+        id, kind, aggregate_id, actor_id, session_id, terminal_id, payload_json, occurred_at
+      ) VALUES (?, 'transaction.corrected', ?, ?, ?, ?, ?, ?)`,
+      `AUD-${createUlid()}`,
+      corrected.id,
+      session.user.id,
+      session.sessionId,
+      terminal.serverTerminalId,
+      JSON.stringify({ before, after: corrected, reason: reason.trim() }),
+      occurredAt,
+    );
+    await insertOutbox(sqlite, operation, signature, corrected.id);
+  });
+  return corrected;
+}
+
+export async function getTransaction(id: string): Promise<Transaction | null> {
+  const { sqlite } = await getDatabase();
+  const row = await sqlite.getFirstAsync<TransactionRow>(
+    "SELECT * FROM transactions WHERE id = ?",
+    id,
+  );
+  if (!row) return null;
+  return hydrateTransaction(sqlite, row);
+}
+
+export async function listTransactions(
+  filter: HistoryFilter = {},
+): Promise<Transaction[]> {
+  const { sqlite } = await getDatabase();
+  const clauses = ["deleted_at IS NULL"];
+  const params: (string | number)[] = [];
+
+  if (filter.search?.trim()) {
+    clauses.push("(id LIKE ? OR origin_actor_name LIKE ?)");
+    const normalized = filter.search.trim().replace(/^TRX-/i, "");
+    const search = `%${normalized}%`;
+    params.push(search, search);
+  }
+  if (filter.syncState) {
+    clauses.push("sync_state = ?");
+    params.push(filter.syncState);
+  }
+  if (filter.from) {
+    clauses.push("occurred_at >= ?");
+    params.push(filter.from);
+  }
+  if (filter.to) {
+    clauses.push("occurred_at < ?");
+    params.push(filter.to);
+  }
+  if (filter.packageId) {
+    clauses.push(
+      `EXISTS (
+        SELECT 1 FROM transaction_items filter_item
+        WHERE filter_item.transaction_id = transactions.id
+          AND filter_item.revision = transactions.revision
+          AND filter_item.package_id = ?
+      )`,
+    );
+    params.push(filter.packageId);
+  }
+  if (filter.creatorId) {
+    clauses.push("origin_actor_id = ?");
+    params.push(filter.creatorId);
+  }
+  if (filter.beforeOccurredAt && filter.beforeId) {
+    clauses.push("(occurred_at < ? OR (occurred_at = ? AND id < ?))");
+    params.push(
+      filter.beforeOccurredAt,
+      filter.beforeOccurredAt,
+      filter.beforeId,
+    );
+  }
+  params.push(filter.limit ?? 30, filter.offset ?? 0);
+
+  const rows = await sqlite.getAllAsync<TransactionRow>(
+    `SELECT * FROM transactions
+     WHERE ${clauses.join(" AND ")}
+     ORDER BY occurred_at DESC, id DESC
+     LIMIT ? OFFSET ?`,
+    ...params,
+  );
+  return Promise.all(rows.map((row) => hydrateTransaction(sqlite, row)));
+}
+
+export async function listHistoryPackageOptions(): Promise<
+  HistoryFilterOption[]
+> {
+  const { sqlite } = await getDatabase();
+  const rows = await sqlite.getAllAsync<{ id: string; label: string }>(
+    `SELECT i.package_id AS id, MAX(i.name) AS label
+     FROM transaction_items i
+     JOIN transactions t
+       ON t.id = i.transaction_id AND t.revision = i.revision
+     WHERE t.deleted_at IS NULL
+     GROUP BY i.package_id
+     ORDER BY label`,
+  );
+  return rows;
+}
+
+export async function listHistoryCreatorOptions(): Promise<
+  HistoryFilterOption[]
+> {
+  const { sqlite } = await getDatabase();
+  return sqlite.getAllAsync<{ id: string; label: string }>(
+    `SELECT origin_actor_id AS id, MAX(origin_actor_name) AS label
+     FROM transactions
+     WHERE deleted_at IS NULL
+     GROUP BY origin_actor_id
+     ORDER BY label`,
+  );
+}
+
+export async function getDashboardStats(
+  period: ReportingPeriod,
+): Promise<DashboardStats> {
+  const { sqlite } = await getDatabase();
+  const range = reportingRange(period);
+  const total = await sqlite.getFirstAsync<{
+    gross: number | null;
+    transaction_count: number;
+  }>(
+    `SELECT COALESCE(SUM(total), 0) AS gross, COUNT(*) AS transaction_count
+     FROM transactions
+     WHERE deleted_at IS NULL AND occurred_at >= ? AND occurred_at < ?`,
+    range.from,
+    range.to,
+  );
+  const quantities = await sqlite.getAllAsync<{
+    name: string;
+    quantity: number;
+    accent: string;
+  }>(
+    `SELECT i.name, SUM(i.quantity) AS quantity,
+            i.accent
+     FROM transaction_items i
+     JOIN transactions t ON t.id = i.transaction_id AND t.revision = i.revision
+     WHERE t.deleted_at IS NULL AND t.occurred_at >= ? AND t.occurred_at < ?
+     GROUP BY i.package_id, i.name, i.accent
+     ORDER BY quantity DESC`,
+    range.from,
+    range.to,
+  );
+  const pending = await sqlite.getFirstAsync<{ count: number }>(
+    `SELECT COUNT(*) AS count FROM transactions
+     WHERE sync_state IN ('pending', 'error', 'conflict')`,
+  );
+  const bucketSeconds = period === "daily" ? 60 * 60 : 24 * 60 * 60;
+  const bucketCount =
+    period === "daily"
+      ? 24
+      : Math.round(
+          (new Date(range.to).getTime() - new Date(range.from).getTime()) /
+            (24 * 60 * 60 * 1000),
+        );
+  const trendRows = await sqlite.getAllAsync<{
+    bucket: number;
+    amount: number;
+  }>(
+    `SELECT
+       CAST(
+         (strftime('%s', occurred_at) - strftime('%s', ?)) / ?
+         AS INTEGER
+       ) AS bucket,
+       SUM(total) AS amount
+     FROM transactions
+     WHERE deleted_at IS NULL AND occurred_at >= ? AND occurred_at < ?
+     GROUP BY bucket
+     ORDER BY bucket`,
+    range.from,
+    bucketSeconds,
+    range.from,
+    range.to,
+  );
+  const buckets = Array<number>(bucketCount).fill(0);
+  for (const row of trendRows) {
+    if (row.bucket >= 0 && row.bucket < buckets.length) {
+      buckets[row.bucket] = row.amount;
+    }
+  }
+
+  return {
+    gross: total?.gross ?? 0,
+    transactionCount: total?.transaction_count ?? 0,
+    quantities,
+    buckets,
+    pendingCount: pending?.count ?? 0,
+  };
+}
+
+export async function beginPrintAttempt(input: {
+  transactionId: string;
+  adapter: string;
+  isCopy: boolean;
+  session: Session;
+}): Promise<string> {
+  const transaction = await getTransaction(input.transactionId);
+  if (!transaction) throw new Error("Transaksi tidak ditemukan.");
+  const attemptId = Crypto.randomUUID();
+  const now = new Date().toISOString();
+  const { sqlite } = await getDatabase();
+  await sqlite.runAsync(
+    `INSERT INTO print_attempts(
+      id, transaction_id, adapter, is_copy, requested_at, completed_at, result, error
+    ) VALUES (?, ?, ?, ?, ?, NULL, 'pending', NULL)`,
+    attemptId,
+    input.transactionId,
+    input.adapter,
+    input.isCopy ? 1 : 0,
+    now,
+  );
+  return attemptId;
+}
+
+export async function completePrintAttempt(input: {
+  attemptId: string;
+  transactionId: string;
+  result: Exclude<PrintAttemptResult, "pending">;
+  error?: string;
+  session: Session;
+}): Promise<void> {
+  const terminal = await getOrCreateTerminalIdentity();
+  if (!terminal.serverTerminalId) throw new Error("Terminal belum terdaftar.");
+  const now = new Date().toISOString();
+  const transaction = await getTransaction(input.transactionId);
+  if (!transaction) throw new Error("Transaksi tidak ditemukan.");
+  const { sqlite } = await getDatabase();
+  const attempt = await sqlite.getFirstAsync<{
+    adapter: string;
+    is_copy: number;
+  }>(
+    "SELECT adapter, is_copy FROM print_attempts WHERE id = ?",
+    input.attemptId,
+  );
+  if (!attempt) throw new Error("Upaya cetak tidak ditemukan.");
+  const operation = {
+    operationId: Crypto.randomUUID(),
+    aggregate: "print_attempt",
+    aggregateId: input.attemptId,
+    action: "create",
+    baseRevision: null,
+    originSessionId: input.session.sessionId,
+    originActorId: input.session.user.id,
+    terminalId: terminal.serverTerminalId,
+    occurredAt: now,
+    payload: {
+      id: input.attemptId,
+      transactionId: input.transactionId,
+      transactionRevision: transaction.revision,
+      status: input.result,
+      isCopy: attempt.is_copy === 1,
+      printerKind: attempt.adapter,
+      printerIdentifier: null,
+      errorCode: input.result === "failed" ? "PRINT_FAILED" : null,
+      errorMessage: input.error ?? null,
+      metadata: {},
+    },
+  };
+  const signature = await signCanonicalPayload(operation);
+  await sqlite.withTransactionAsync(async () => {
+    await sqlite.runAsync(
+      `UPDATE print_attempts
+       SET completed_at = ?, result = ?, error = ?
+       WHERE id = ?`,
+      now,
+      input.result,
+      input.error ?? null,
+      input.attemptId,
+    );
+    await sqlite.runAsync(
+      "UPDATE transactions SET print_state = ? WHERE id = ?",
+      input.result,
+      input.transactionId,
+    );
+    await sqlite.runAsync(
+      `INSERT INTO audit_events(
+        id, kind, aggregate_id, actor_id, session_id, terminal_id, payload_json, occurred_at
+      ) VALUES (?, 'print.completed', ?, ?, ?, ?, ?, ?)`,
+      `AUD-${createUlid()}`,
+      input.transactionId,
+      input.session.user.id,
+      input.session.sessionId,
+      terminal.serverTerminalId,
+      JSON.stringify(operation.payload),
+      now,
+    );
+    await insertOutbox(sqlite, operation, signature, input.attemptId);
+  });
+}
+
+export async function recoverInterruptedPrintAttempts(
+  session: Session,
+): Promise<number> {
+  const { sqlite } = await getDatabase();
+  const pending = await sqlite.getAllAsync<{
+    id: string;
+    transaction_id: string;
+  }>(
+    `SELECT id, transaction_id FROM print_attempts
+     WHERE result = 'pending' ORDER BY requested_at`,
+  );
+  for (const attempt of pending) {
+    await completePrintAttempt({
+      attemptId: attempt.id,
+      transactionId: attempt.transaction_id,
+      result: "unknown",
+      error: "Aplikasi berhenti sebelum hasil cetak dapat dikonfirmasi.",
+      session,
+    });
+  }
+  return pending.length;
+}
+
+export async function getOutboxOperations(
+  limit = 25,
+): Promise<StoredOutboxOperation[]> {
+  const { sqlite } = await getDatabase();
+  const rows = await sqlite.getAllAsync<{
+    operation_id: string;
+    aggregate_id: string;
+    operation_json: string;
+    signature: string;
+    attempts: number;
+  }>(
+    `SELECT operation_id, aggregate_id, operation_json, signature, attempts
+     FROM outbox_operations
+     WHERE state IN ('pending', 'error')
+       AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+     ORDER BY occurred_at ASC LIMIT ?`,
+    new Date().toISOString(),
+    limit,
+  );
+  return rows.map((row) => ({
+    operationId: row.operation_id,
+    aggregateId: row.aggregate_id,
+    operation: JSON.parse(row.operation_json) as Record<string, unknown>,
+    signature: row.signature,
+    attempts: row.attempts,
+  }));
+}
+
+export async function markOutboxResult(
+  operationId: string,
+  aggregateId: string,
+  result:
+    | { kind: "success" }
+    | { kind: "error"; message: string }
+    | { kind: "rejected"; message: string }
+    | { kind: "conflict"; local: Transaction; server: Transaction },
+): Promise<void> {
+  const { sqlite } = await getDatabase();
+  await sqlite.withTransactionAsync(async () => {
+    if (result.kind === "success") {
+      await sqlite.runAsync(
+        "UPDATE outbox_operations SET state = 'synced', last_error = NULL WHERE operation_id = ?",
+        operationId,
+      );
+      await sqlite.runAsync(
+        "UPDATE transactions SET sync_state = 'synced' WHERE id = ?",
+        aggregateId,
+      );
+      return;
+    }
+    if (result.kind === "error") {
+      await sqlite.runAsync(
+        `UPDATE outbox_operations SET
+          state = 'error', attempts = attempts + 1, last_error = ?,
+          next_attempt_at = ?
+         WHERE operation_id = ?`,
+        result.message,
+        new Date(Date.now() + 30_000).toISOString(),
+        operationId,
+      );
+      await sqlite.runAsync(
+        "UPDATE transactions SET sync_state = 'error' WHERE id = ?",
+        aggregateId,
+      );
+      return;
+    }
+    if (result.kind === "rejected") {
+      await sqlite.runAsync(
+        `UPDATE outbox_operations SET
+           state = 'rejected', attempts = attempts + 1,
+           last_error = ?, next_attempt_at = NULL
+         WHERE operation_id = ?`,
+        result.message,
+        operationId,
+      );
+      await sqlite.runAsync(
+        "UPDATE transactions SET sync_state = 'error' WHERE id = ?",
+        aggregateId,
+      );
+      return;
+    }
+    await sqlite.runAsync(
+      "UPDATE outbox_operations SET state = 'conflict', last_error = 'REVISION_CONFLICT' WHERE operation_id = ?",
+      operationId,
+    );
+    await sqlite.runAsync(
+      "UPDATE transactions SET sync_state = 'conflict' WHERE id = ?",
+      aggregateId,
+    );
+    await sqlite.runAsync(
+      `INSERT INTO sync_conflicts(
+        id, transaction_id, local_json, server_json, created_at
+      ) VALUES (?, ?, ?, ?, ?)`,
+      `CONFLICT-${createUlid()}`,
+      aggregateId,
+      JSON.stringify(result.local),
+      JSON.stringify(result.server),
+      new Date().toISOString(),
+    );
+  });
+}
+
+export async function countPendingOutbox(): Promise<number> {
+  const { sqlite } = await getDatabase();
+  const row = await sqlite.getFirstAsync<{ count: number }>(
+    "SELECT COUNT(*) AS count FROM outbox_operations WHERE state IN ('pending', 'error', 'conflict', 'rejected')",
+  );
+  return row?.count ?? 0;
+}
+
+export async function listRejectedOutboxOperations(): Promise<
+  RejectedOutboxOperation[]
+> {
+  const { sqlite } = await getDatabase();
+  const rows = await sqlite.getAllAsync<{
+    operation_id: string;
+    aggregate_id: string;
+    last_error: string | null;
+  }>(
+    `SELECT operation_id, aggregate_id, last_error
+     FROM outbox_operations
+     WHERE state = 'rejected'
+     ORDER BY occurred_at DESC`,
+  );
+  return rows.map((row) => ({
+    operationId: row.operation_id,
+    aggregateId: row.aggregate_id,
+    message: row.last_error ?? "Operasi ditolak server.",
+  }));
+}
+
+export async function discardRejectedOutboxOperation(
+  operationId: string,
+): Promise<void> {
+  const { sqlite } = await getDatabase();
+  await sqlite.runAsync(
+    `UPDATE outbox_operations
+     SET state = 'discarded'
+     WHERE operation_id = ? AND state = 'rejected'`,
+    operationId,
+  );
+}
+
+export async function listConflicts(): Promise<SyncConflict[]> {
+  const { sqlite } = await getDatabase();
+  const rows = await sqlite.getAllAsync<{
+    id: string;
+    transaction_id: string;
+    local_json: string;
+    server_json: string;
+    created_at: string;
+  }>(
+    `SELECT * FROM sync_conflicts
+     WHERE resolved_at IS NULL ORDER BY created_at DESC`,
+  );
+  return rows.map((row) => ({
+    id: row.id,
+    transactionId: row.transaction_id,
+    localSnapshot: JSON.parse(row.local_json) as Transaction,
+    serverSnapshot: JSON.parse(row.server_json) as Transaction,
+    createdAt: row.created_at,
+  }));
+}
+
+export async function getConflictForTransaction(
+  transactionId: string,
+): Promise<SyncConflict | null> {
+  const conflicts = await listConflicts();
+  return (
+    conflicts.find((conflict) => conflict.transactionId === transactionId) ??
+    null
+  );
+}
+
+export async function resolveConflict(
+  conflict: SyncConflict,
+  resolution: "server" | "retry-local",
+): Promise<void> {
+  const { sqlite } = await getDatabase();
+  let replacement:
+    | {
+        operation: Record<string, unknown> & { operationId: string };
+        signature: string;
+      }
+    | undefined;
+  if (resolution === "retry-local") {
+    const row = await sqlite.getFirstAsync<{ operation_json: string }>(
+      `SELECT operation_json FROM outbox_operations
+       WHERE aggregate_id = ? AND state = 'conflict'
+       ORDER BY occurred_at DESC LIMIT 1`,
+      conflict.transactionId,
+    );
+    if (!row) throw new Error("Operasi konflik tidak ditemukan.");
+    const operation = {
+      ...(JSON.parse(row.operation_json) as Record<string, unknown>),
+      operationId: Crypto.randomUUID(),
+      baseRevision: conflict.serverSnapshot.revision,
+      occurredAt: new Date().toISOString(),
+    };
+    replacement = {
+      operation: operation as Record<string, unknown> & {
+        operationId: string;
+      },
+      signature: await signCanonicalPayload(operation),
+    };
+  }
+  await sqlite.withTransactionAsync(async () => {
+    if (resolution === "server") {
+      await replaceTransaction(sqlite, {
+        ...conflict.serverSnapshot,
+        syncState: "synced",
+      });
+      await sqlite.runAsync(
+        `UPDATE outbox_operations SET state = 'discarded'
+         WHERE aggregate_id = ? AND state = 'conflict'`,
+        conflict.transactionId,
+      );
+    } else {
+      await sqlite.runAsync(
+        `UPDATE outbox_operations SET state = 'discarded'
+         WHERE aggregate_id = ? AND state = 'conflict'`,
+        conflict.transactionId,
+      );
+      if (!replacement) throw new Error("Operasi pengganti tidak tersedia.");
+      await insertOutbox(
+        sqlite,
+        replacement.operation,
+        replacement.signature,
+        conflict.transactionId,
+      );
+      await sqlite.runAsync(
+        "UPDATE transactions SET sync_state = 'pending' WHERE id = ?",
+        conflict.transactionId,
+      );
+    }
+    await sqlite.runAsync(
+      "UPDATE sync_conflicts SET resolved_at = ?, resolution = ? WHERE id = ?",
+      new Date().toISOString(),
+      resolution,
+      conflict.id,
+    );
+  });
+}
+
+export async function getSyncMetadata(): Promise<{
+  cursor: string | null;
+  lastSyncedAt: string | null;
+  lastError: string | null;
+}> {
+  const { sqlite } = await getDatabase();
+  const row = await sqlite.getFirstAsync<{
+    cursor: string | null;
+    last_synced_at: string | null;
+    last_error: string | null;
+  }>(
+    "SELECT cursor, last_synced_at, last_error FROM sync_metadata WHERE singleton = 1",
+  );
+  return {
+    cursor: row?.cursor ?? null,
+    lastSyncedAt: row?.last_synced_at ?? null,
+    lastError: row?.last_error ?? null,
+  };
+}
+
+export interface RemoteChange {
+  cursor: string;
+  aggregate: "user" | "package" | "transaction" | "print_attempt" | "terminal";
+  action: "upsert" | "delete";
+  aggregateId: string;
+  payload: unknown;
+  changedAt: string;
+}
+
+export async function applyRemoteChanges(
+  changes: RemoteChange[],
+  nextCursor: string,
+): Promise<void> {
+  const { sqlite } = await getDatabase();
+  await sqlite.withTransactionAsync(async () => {
+    for (const change of changes) {
+      if (change.aggregate === "package") {
+        if (!change.payload) {
+          await sqlite.runAsync(
+            `UPDATE packages_local
+             SET active = 0, deleted_at = COALESCE(deleted_at, ?)
+             WHERE id = ?`,
+            new Date().toISOString(),
+            change.aggregateId,
+          );
+          continue;
+        }
+        const value = change.payload as RentalPackage;
+        await upsertPackageWithDatabase(sqlite, {
+          ...value,
+          deletedAt:
+            change.action === "delete"
+              ? (value.deletedAt ?? new Date().toISOString())
+              : value.deletedAt,
+        });
+      } else if (change.aggregate === "transaction") {
+        if (!change.payload) {
+          await sqlite.runAsync(
+            `UPDATE transactions
+             SET deleted_at = COALESCE(deleted_at, ?), sync_state = 'synced'
+             WHERE id = ?`,
+            new Date().toISOString(),
+            change.aggregateId,
+          );
+        } else {
+          await replaceTransaction(sqlite, change.payload as Transaction);
+        }
+      } else {
+        await sqlite.runAsync(
+          `INSERT INTO synced_entities(
+             aggregate, aggregate_id, payload_json, deleted_at, changed_at
+           ) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(aggregate, aggregate_id) DO UPDATE SET
+             payload_json = excluded.payload_json,
+             deleted_at = excluded.deleted_at,
+             changed_at = excluded.changed_at`,
+          change.aggregate,
+          change.aggregateId,
+          change.payload === null ? null : JSON.stringify(change.payload),
+          change.action === "delete" ? change.changedAt : null,
+          change.changedAt,
+        );
+        if (
+          change.aggregate === "print_attempt" &&
+          change.action === "upsert" &&
+          change.payload &&
+          typeof change.payload === "object"
+        ) {
+          const attempt = change.payload as {
+            transactionId?: unknown;
+            status?: unknown;
+          };
+          if (
+            typeof attempt.transactionId === "string" &&
+            (attempt.status === "success" ||
+              attempt.status === "failed" ||
+              attempt.status === "unknown" ||
+              attempt.status === "pending")
+          ) {
+            await sqlite.runAsync(
+              "UPDATE transactions SET print_state = ? WHERE id = ?",
+              attempt.status,
+              attempt.transactionId,
+            );
+          }
+        }
+      }
+    }
+    await sqlite.runAsync(
+      `UPDATE sync_metadata SET
+         cursor = ?, status = 'idle', last_synced_at = ?, last_error = NULL
+       WHERE singleton = 1`,
+      nextCursor,
+      new Date().toISOString(),
+    );
+  });
+}
+
+export async function setSyncError(message: string): Promise<void> {
+  const { sqlite } = await getDatabase();
+  await sqlite.runAsync(
+    "UPDATE sync_metadata SET status = 'error', last_error = ? WHERE singleton = 1",
+    message,
+  );
+}
+
+async function insertTransaction(
+  database: SQLiteDatabase,
+  transaction: Transaction,
+): Promise<void> {
+  await database.runAsync(
+    `INSERT INTO transactions(
+      id, revision, occurred_at, subtotal, total, origin_actor_id,
+      origin_actor_name, updated_actor_name, terminal_id, sync_state,
+      print_state, deleted_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    transaction.id,
+    transaction.revision,
+    transaction.occurredAt,
+    transaction.subtotal,
+    transaction.total,
+    transaction.originActorId,
+    transaction.originActorName,
+    transaction.updatedActorName,
+    transaction.terminalId,
+    transaction.syncState,
+    transaction.printState,
+    transaction.deletedAt,
+  );
+  await insertItems(database, transaction);
+}
+
+async function insertItems(
+  database: SQLiteDatabase,
+  transaction: Transaction,
+): Promise<void> {
+  for (const item of transaction.items) {
+    await database.runAsync(
+      `INSERT OR IGNORE INTO transaction_items(
+        id, transaction_id, revision, package_id, package_revision,
+        name, description, accent, unit_price, quantity, line_total
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      item.id,
+      transaction.id,
+      transaction.revision,
+      item.packageId,
+      item.packageRevision,
+      item.name,
+      item.description,
+      item.accent,
+      item.unitPrice,
+      item.quantity,
+      item.lineTotal,
+    );
+  }
+}
+
+async function insertRevision(
+  database: SQLiteDatabase,
+  transaction: Transaction,
+  reason: string | null,
+  before: Transaction | null,
+  session: Session,
+): Promise<void> {
+  await database.runAsync(
+    `INSERT INTO transaction_revisions(
+      transaction_id, revision, reason, before_json, after_json,
+      origin_actor_id, submitting_actor_id, submitting_actor_name,
+      terminal_id, client_occurred_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    transaction.id,
+    transaction.revision,
+    reason,
+    before ? JSON.stringify(before) : null,
+    JSON.stringify(transaction),
+    session.user.id,
+    session.user.id,
+    session.user.fullName,
+    transaction.terminalId,
+    new Date().toISOString(),
+  );
+}
+
+async function insertOutbox(
+  database: SQLiteDatabase,
+  operation: Record<string, unknown> & { operationId: string },
+  signature: string,
+  aggregateId: string,
+): Promise<void> {
+  await database.runAsync(
+    `INSERT INTO outbox_operations(
+      operation_id, aggregate, aggregate_id, action, base_revision,
+      operation_json, signature, state, attempts, occurred_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)`,
+    operation.operationId,
+    String(operation.aggregate),
+    aggregateId,
+    String(operation.action),
+    typeof operation.baseRevision === "number" ? operation.baseRevision : null,
+    JSON.stringify(operation),
+    signature,
+    String(operation.occurredAt),
+  );
+}
+
+async function hydrateTransaction(
+  database: SQLiteDatabase,
+  row: TransactionRow,
+): Promise<Transaction> {
+  const items = await database.getAllAsync<TransactionItemRow>(
+    `SELECT id, package_id, package_revision, name, description, accent,
+            unit_price, quantity, line_total
+     FROM transaction_items
+     WHERE transaction_id = ? AND revision = ?
+     ORDER BY id`,
+    row.id,
+    row.revision,
+  );
+  return {
+    id: row.id,
+    revision: row.revision,
+    occurredAt: row.occurred_at,
+    subtotal: row.subtotal,
+    total: row.total,
+    originActorId: row.origin_actor_id,
+    originActorName: row.origin_actor_name,
+    updatedActorName: row.updated_actor_name,
+    terminalId: row.terminal_id,
+    syncState: row.sync_state,
+    printState: row.print_state,
+    deletedAt: row.deleted_at,
+    items: items.map(mapItem),
+  };
+}
+
+async function replaceTransaction(
+  database: SQLiteDatabase,
+  transaction: Transaction,
+): Promise<void> {
+  await database.runAsync(
+    `INSERT INTO transactions(
+      id, revision, occurred_at, subtotal, total, origin_actor_id,
+      origin_actor_name, updated_actor_name, terminal_id, sync_state,
+      print_state, deleted_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      revision = excluded.revision, occurred_at = excluded.occurred_at,
+      subtotal = excluded.subtotal, total = excluded.total,
+      origin_actor_id = excluded.origin_actor_id,
+      origin_actor_name = excluded.origin_actor_name,
+      updated_actor_name = excluded.updated_actor_name,
+      terminal_id = excluded.terminal_id, sync_state = excluded.sync_state,
+      print_state = excluded.print_state, deleted_at = excluded.deleted_at`,
+    transaction.id,
+    transaction.revision,
+    transaction.occurredAt,
+    transaction.subtotal,
+    transaction.total,
+    transaction.originActorId,
+    transaction.originActorName,
+    transaction.updatedActorName,
+    transaction.terminalId,
+    transaction.syncState,
+    transaction.printState,
+    transaction.deletedAt,
+  );
+  await database.runAsync(
+    `DELETE FROM transaction_items
+     WHERE transaction_id = ? AND revision = ?`,
+    transaction.id,
+    transaction.revision,
+  );
+  await insertItems(database, transaction);
+}
+
+function mapPackage(row: PackageRow): RentalPackage {
+  return {
+    id: row.id,
+    revision: row.revision,
+    name: row.name,
+    description: row.description,
+    unitPrice: row.unit_price,
+    accent: row.accent,
+    active: row.active === 1,
+    deletedAt: row.deleted_at,
+  };
+}
+
+function mapItem(row: TransactionItemRow): TransactionItem {
+  return {
+    id: row.id,
+    packageId: row.package_id,
+    packageRevision: row.package_revision,
+    name: row.name,
+    description: row.description,
+    accent: row.accent,
+    unitPrice: row.unit_price,
+    quantity: row.quantity,
+    lineTotal: row.line_total,
+  };
+}
+
+function toMutationItems(items: TransactionItem[]) {
+  return items.map((item) => ({
+    packageId: item.packageId,
+    packageRevision: item.packageRevision,
+    quantity: item.quantity,
+  }));
+}
