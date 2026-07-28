@@ -1,20 +1,23 @@
 import type { ConfigContext, ExpoConfig } from "expo/config";
 
-const DEFAULT_ANDROID_PACKAGE = "com.example.sewamotorpos";
+const ANDROID_APPLICATION_ID = "com.fahmialfareza.sewamotorpos";
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: "Sewa Motor POS",
   slug: "sewa-motor-pos",
   version: "0.1.0",
+  icon: "./assets/branding/app-icon.png",
   orientation: "portrait",
   userInterfaceStyle: "light",
   scheme: "sewamotor",
   newArchEnabled: true,
   android: {
-    package: process.env.ANDROID_APPLICATION_ID ?? DEFAULT_ANDROID_PACKAGE,
+    package: ANDROID_APPLICATION_ID,
     adaptiveIcon: {
       backgroundColor: "#003D9B",
+      foregroundImage: "./assets/branding/adaptive-icon.png",
+      monochromeImage: "./assets/branding/monochrome-icon.png",
     },
     permissions: [
       "android.permission.BLUETOOTH",
@@ -30,6 +33,15 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   plugins: [
     "expo-router",
+    [
+      "expo-splash-screen",
+      {
+        backgroundColor: "#003D9B",
+        image: "./assets/branding/splash-icon.png",
+        imageWidth: 200,
+        resizeMode: "contain",
+      },
+    ],
     [
       "expo-sqlite",
       {

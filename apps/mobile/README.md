@@ -29,14 +29,17 @@ Expo Go cannot load SQLCipher or the local printer module. Generate only the
 Android native project and run a development client:
 
 ```sh
-ANDROID_APPLICATION_ID=com.yourcompany.sewamotor \
-  pnpm --filter @sewa-motor/mobile native:prebuild
+pnpm --filter @sewa-motor/mobile native:prebuild
 pnpm --filter @sewa-motor/mobile android
 ```
 
+The Android application ID is `com.fahmialfareza.sewamotorpos` and is kept in
+`app.config.ts`. Run `native:prebuild` after changing native configuration so
+the generated Android project cannot retain stale values.
+
 `pnpm --filter @sewa-motor/mobile build` performs a Metro Android export. A
-signed APK/AAB still requires the final Android application ID, EAS project
-ownership, keystore/Play configuration, and environment-specific API URL.
+signed APK/AAB still requires EAS project ownership, keystore/Play
+configuration, and an environment-specific API URL.
 
 ## Printer boundary
 

@@ -7,7 +7,7 @@
     "start": "expo start --dev-client",
     "dev": "expo start --dev-client",
     "android": "expo run:android",
-    "native:prebuild": "expo prebuild --platform android",
+    "native:prebuild": "expo prebuild --clean --platform android",
     "build": "expo export --platform android",
     "check-types": "tsc --noEmit",
     "lint": "expo lint",

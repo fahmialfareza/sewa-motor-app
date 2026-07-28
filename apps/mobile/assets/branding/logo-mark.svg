@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <mask id="wheel-gap">
+      <rect width="1024" height="1024" fill="#fff" />
+      <rect x="448" y="680" width="128" height="170" rx="64" fill="#000" />
+    </mask>
+  </defs>
+  <g id="logo-mark">
+    <g fill="#fff">
+      <circle cx="310" cy="235" r="40" />
+      <circle cx="714" cy="235" r="40" />
+      <path
+        d="M338 263l28 29c8 8 12 18 12 29v30h-24v-30c0-5-2-9-5-12l-28-29 17-17z"
+      />
+      <path
+        d="M686 263l-28 29c-8 8-12 18-12 29v30h24v-30c0-5 2-9 5-12l28-29-17-17z"
+      />
+      <rect x="260" y="330" width="504" height="42" rx="21" />
+      <circle cx="512" cy="350" r="95" />
+      <path
+        d="M390 430c60-20 184-20 244 0 36 15 56 60 50 105l-18 95c-9 54-46 86-94 112l-24 13c-23 13-49 13-72 0l-24-13c-48-26-85-58-94-112l-18-95c-6-45 14-90 50-105z"
+        mask="url(#wheel-gap)"
+      />
+      <rect x="474" y="700" width="76" height="132" rx="38" />
+    </g>
+    <circle cx="512" cy="350" r="43" fill="#ff8b00" />
+    <path
+      d="M412 585l78 72 144-166"
+      fill="none"
+      stroke="#ff8b00"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      stroke-width="58"
+    />
+  </g>
+</svg>

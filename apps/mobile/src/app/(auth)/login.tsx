@@ -1,7 +1,7 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useRouter } from "expo-router";
 import { Controller, useForm } from "react-hook-form";
-import { Pressable, StyleSheet, Text, View } from "react-native";
+import { Image, Pressable, StyleSheet, Text, View } from "react-native";
 import { z } from "zod";
 
 import { useAuth } from "@/auth/AuthProvider";
@@ -9,7 +9,6 @@ import { AppScreen } from "@/components/layout/AppScreen";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Field } from "@/components/ui/Field";
-import { Icon } from "@/components/ui/Icon";
 import {
   colors,
   radius,
@@ -58,7 +57,12 @@ export default function LoginScreen() {
     <AppScreen authenticated={false} contentStyle={styles.screen}>
       <View style={styles.brand}>
         <View style={styles.logo}>
-          <Icon color={colors.onPrimary} name="motorbike" size={38} />
+          <Image
+            accessibilityIgnoresInvertColors
+            accessibilityLabel="Logo Sewa Motor POS"
+            source={require("../../../assets/branding/logo-mark.png")}
+            style={styles.logoMark}
+          />
         </View>
         <Text style={styles.brandName}>Sewa Motor</Text>
         <Text style={styles.tagline}>Sistem Point of Sale</Text>
@@ -169,6 +173,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginBottom: spacing.sm,
+  },
+  logoMark: {
+    width: 72,
+    height: 72,
   },
   brandName: {
     fontFamily: typography.heading,
