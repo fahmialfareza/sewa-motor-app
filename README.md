@@ -131,6 +131,11 @@ Compose is for development and CI. Production requires managed credentials,
 TLS, backups, restore rehearsal, monitoring, and a deliberate GORM migration
 step. Redis loss must only affect cache/rate limiting, never correctness.
 
+The backend Dockerfile exposes separate `migrate`, `bootstrap`, and `api`
+targets. Production should run the migration image as a one-shot pre-deploy
+step, run bootstrap only when explicitly provisioning initial users, and deploy
+the API image without either administrative binary.
+
 The following inputs remain intentionally unset:
 
 - Android application ID and Expo/Play owners

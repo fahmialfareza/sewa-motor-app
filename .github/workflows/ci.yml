@@ -91,3 +91,9 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Build backend container targets
+        run: |
+          docker build --target api --tag sewa-motor-backend:ci-api apps/backend
+          docker build --target migrate --tag sewa-motor-backend:ci-migrate apps/backend
+          docker build --target bootstrap --tag sewa-motor-backend:ci-bootstrap apps/backend

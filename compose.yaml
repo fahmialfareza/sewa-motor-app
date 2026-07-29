@@ -37,6 +37,7 @@ services:
     build:
       context: ./apps/backend
       dockerfile: Dockerfile
+      target: api
     restart: unless-stopped
     init: true
     environment:

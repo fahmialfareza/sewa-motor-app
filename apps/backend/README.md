@@ -29,6 +29,38 @@ Health endpoints are available at `/api/v1/health/live` and
 `/api/v1/health/ready`, with `/healthz` and `/readyz` aliases for hosting
 platforms.
 
+## Container targets
+
+The Dockerfile produces separate non-root images so the serving image contains
+only the API binary:
+
+```sh
+docker build --target api -t sewa-motor-backend:api apps/backend
+docker build --target migrate -t sewa-motor-backend:migrate apps/backend
+docker build --target bootstrap -t sewa-motor-backend:bootstrap apps/backend
+```
+
+The `api` target is the default for a plain `docker build` and is selected
+explicitly by Compose. Run migrations as a one-shot step before deploying the
+API, then set `AUTO_MIGRATE=false` on the production API container:
+
+```sh
+docker run --rm \
+  --env DATABASE_URL='postgres://...' \
+  sewa-motor-backend:migrate
+```
+
+Bootstrap remains a separate, manually authorized one-shot operation. Mount the
+secret manifest read-only and ensure it is readable by container UID 65532:
+
+```sh
+docker run --rm \
+  --env DATABASE_URL='postgres://...' \
+  --mount type=bind,src=/secure/path/bootstrap-users.json,dst=/run/secrets/bootstrap-users.json,readonly \
+  sewa-motor-backend:bootstrap \
+  -manifest /run/secrets/bootstrap-users.json
+```
+
 ## Database migrations
 
 Runtime migrations are forward-only Go migrations in `migrations/` and receive
