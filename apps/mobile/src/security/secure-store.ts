@@ -8,6 +8,7 @@ const keys = {
   database: "sewa-motor.database-key.v1",
   terminal: "sewa-motor.terminal-identity.v1",
   printer: "sewa-motor.printer-config.v1",
+  qris: "sewa-motor.qris-config.v1",
 } as const;
 
 export interface TerminalIdentityRecord {
@@ -23,6 +24,10 @@ export interface PrinterConfig {
   address: string | null;
   displayName: string;
   paperColumns: 32 | 48;
+}
+
+export interface QrisConfig {
+  staticPayload: string;
 }
 
 const secureOptions: SecureStore.SecureStoreOptions = {
@@ -83,6 +88,18 @@ export async function readPrinterConfig(): Promise<PrinterConfig> {
 
 export async function writePrinterConfig(config: PrinterConfig): Promise<void> {
   await writeJson(keys.printer, config);
+}
+
+export async function readQrisConfig(): Promise<QrisConfig | null> {
+  return readJson<QrisConfig>(keys.qris);
+}
+
+export async function writeQrisConfig(config: QrisConfig): Promise<void> {
+  await writeJson(keys.qris, config);
+}
+
+export async function clearQrisConfig(): Promise<void> {
+  await SecureStore.deleteItemAsync(keys.qris);
 }
 
 async function readJson<T>(key: string): Promise<T | null> {

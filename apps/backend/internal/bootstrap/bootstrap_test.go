@@ -57,7 +57,7 @@ func TestManifestRejectsSecondSuperadmin(t *testing.T) {
 
 func TestNewSampleSuperadminManifestNormalizesIdentity(t *testing.T) {
 	manifest, err := NewSampleSuperadminManifest(
-		"  Budi Santoso  ",
+		"  Penyok  ",
 		"  SuperAdmin  ",
 		"temporary-password",
 	)
@@ -68,7 +68,7 @@ func TestNewSampleSuperadminManifestNormalizesIdentity(t *testing.T) {
 		t.Fatalf("got %d users, want one", len(manifest.Users))
 	}
 	user := manifest.Users[0]
-	if user.FullName != "Budi Santoso" || user.Username != "superadmin" {
+	if user.FullName != "Penyok" || user.Username != "superadmin" {
 		t.Fatalf("sample identity was not normalized: %#v", user)
 	}
 	if user.Role != "superadmin" {
@@ -77,7 +77,7 @@ func TestNewSampleSuperadminManifestNormalizesIdentity(t *testing.T) {
 }
 
 func TestNewSampleSuperadminManifestRejectsWeakPassword(t *testing.T) {
-	_, err := NewSampleSuperadminManifest("Budi Santoso", "superadmin", "too-short")
+	_, err := NewSampleSuperadminManifest("Penyok", "superadmin", "too-short")
 	if err == nil {
 		t.Fatal("expected weak sample password to be rejected")
 	}
@@ -90,13 +90,13 @@ func TestApplyRemainsIdempotentForExistingSampleSuperadmin(t *testing.T) {
 		rows: []pgx.Row{
 			sampleIdentityRow{
 				role:     domain.RoleSuperadmin,
-				fullName: "Budi Santoso",
+				fullName: "Penyok",
 			},
 		},
 	}
 	hasher := &recordingPasswordHasher{hash: "must-not-be-used"}
 	manifest, err := NewSampleSuperadminManifest(
-		"Budi Santoso",
+		"Penyok",
 		"superadmin",
 		"a-different-password",
 	)
@@ -139,7 +139,7 @@ func TestResetSampleSuperadminPasswordIsExplicitAndTransactional(t *testing.T) {
 	userID := uuid.MustParse("10000000-0000-4000-8000-000000000001")
 	createdAt := time.Date(2026, time.July, 1, 8, 0, 0, 0, time.UTC)
 	before := domain.User{
-		ID: userID, FullName: "Budi Santoso", Username: "superadmin",
+		ID: userID, FullName: "Penyok", Username: "superadmin",
 		Role: domain.RoleSuperadmin, IsActive: true, MustChangePassword: false,
 		CreatedAt: createdAt, UpdatedAt: createdAt,
 	}
@@ -155,7 +155,7 @@ func TestResetSampleSuperadminPasswordIsExplicitAndTransactional(t *testing.T) {
 	}
 	hasher := &recordingPasswordHasher{hash: "encoded-new-password"}
 	manifest, err := NewSampleSuperadminManifest(
-		"Budi Santoso",
+		"Penyok",
 		"superadmin",
 		"superadmin123",
 	)
@@ -244,7 +244,7 @@ func TestResetSampleSuperadminPasswordRollsBackOnLateFailure(t *testing.T) {
 
 	userID := uuid.MustParse("10000000-0000-4000-8000-000000000002")
 	before := domain.User{
-		ID: userID, FullName: "Budi Santoso", Username: "superadmin",
+		ID: userID, FullName: "Penyok", Username: "superadmin",
 		Role: domain.RoleSuperadmin, IsActive: true, MustChangePassword: false,
 	}
 	after := before
@@ -255,7 +255,7 @@ func TestResetSampleSuperadminPasswordRollsBackOnLateFailure(t *testing.T) {
 	}
 	hasher := &recordingPasswordHasher{hash: "encoded-new-password"}
 	manifest, err := NewSampleSuperadminManifest(
-		"Budi Santoso",
+		"Penyok",
 		"superadmin",
 		"superadmin123",
 	)
@@ -299,7 +299,7 @@ func TestResetSampleSuperadminPasswordRejectsIdentityMismatchBeforeHashing(t *te
 	}
 	hasher := &recordingPasswordHasher{hash: "should-not-be-used"}
 	manifest, err := NewSampleSuperadminManifest(
-		"Budi Santoso",
+		"Penyok",
 		"superadmin",
 		"superadmin123",
 	)

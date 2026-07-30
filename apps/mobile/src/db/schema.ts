@@ -33,12 +33,17 @@ export const transactions = sqliteTable(
     terminalId: text("terminal_id").notNull(),
     syncState: text("sync_state").notNull(),
     printState: text("print_state").notNull(),
+    paymentMethod: text("payment_method").notNull(),
+    paymentStatus: text("payment_status").notNull(),
+    paymentConfirmedRevision: integer("payment_confirmed_revision"),
+    qrisPayloadHash: text("qris_payload_hash"),
     deletedAt: text("deleted_at"),
     serverUpdatedAt: text("server_updated_at"),
   },
   (table) => [
     index("transactions_occurred_at_idx").on(table.occurredAt),
     index("transactions_sync_state_idx").on(table.syncState),
+    index("transactions_payment_status_idx").on(table.paymentStatus),
   ],
 );
 
@@ -112,6 +117,7 @@ export const outboxOperations = sqliteTable(
     baseRevision: integer("base_revision"),
     operationJson: text("operation_json").notNull(),
     signature: text("signature").notNull(),
+    dependencyKey: text("dependency_key"),
     state: text("state").notNull(),
     attempts: integer("attempts").notNull(),
     lastError: text("last_error"),
@@ -120,12 +126,14 @@ export const outboxOperations = sqliteTable(
   },
   (table) => [
     index("outbox_state_order_idx").on(table.state, table.occurredAt),
+    index("outbox_dependency_order_idx").on(table.dependencyKey),
   ],
 );
 
 export const printAttempts = sqliteTable("print_attempts", {
   id: text("id").primaryKey(),
   transactionId: text("transaction_id").notNull(),
+  transactionRevision: integer("transaction_revision"),
   adapter: text("adapter").notNull(),
   isCopy: integer("is_copy", { mode: "boolean" }).notNull(),
   requestedAt: text("requested_at").notNull(),

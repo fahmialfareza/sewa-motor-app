@@ -14,11 +14,16 @@ const transaction: Transaction = {
   subtotal: 150_000,
   total: 150_000,
   originActorId: "actor-1",
-  originActorName: "Budi Santoso",
-  updatedActorName: "Budi Santoso",
+  originActorName: "Penyok",
+  updatedActorName: "Penyok",
   terminalId: "terminal-1",
   syncState: "synced",
   printState: "success",
+  paymentMethod: "qris",
+  paymentStatus: "success",
+  paymentConfirmedRevision: 1,
+  qrisPayloadHash:
+    "9185bbfe94bb008d611da515fc94c2f3ad5f0c3fbfe278d8bdb463f9ce1cf500",
   deletedAt: null,
   items: [
     {
@@ -43,9 +48,10 @@ describe("HistoryTransactionCard", () => {
 
     expect(screen.getByText("Paket Standard")).toBeTruthy();
     expect(screen.getByText("Rp 150.000")).toBeTruthy();
-    expect(screen.getByText("Budi Santoso")).toBeTruthy();
+    expect(screen.getByText("Penyok")).toBeTruthy();
     expect(screen.getByText("TERSINKRON")).toBeTruthy();
-    expect(screen.getByText("TERCETAK")).toBeTruthy();
+    expect(screen.getByText("QRIS")).toBeTruthy();
+    expect(screen.getByText("LUNAS")).toBeTruthy();
   });
 
   it("opens the transaction from one accessible card action", () => {
@@ -55,7 +61,7 @@ describe("HistoryTransactionCard", () => {
     );
 
     const card = screen.getByRole("button", {
-      name: /Buka transaksi TRX-.*Paket Standard.*tersinkron.*tercetak/i,
+      name: /Buka transaksi TRX-.*Paket Standard.*QRIS.*Lunas.*tersinkron.*tercetak/i,
     });
     fireEvent.press(card);
 

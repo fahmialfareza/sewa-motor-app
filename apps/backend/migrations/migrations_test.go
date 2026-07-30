@@ -24,6 +24,12 @@ func TestMigrationPlanIsOrderedAndCompatible(t *testing.T) {
 	if orderedMigrations[0].version != "000001_initial" {
 		t.Fatalf("first migration version = %q, want legacy-compatible 000001_initial", orderedMigrations[0].version)
 	}
+	if len(orderedMigrations) < 2 || orderedMigrations[1].version != "000002_transaction_payments" {
+		t.Fatalf("payment migration is missing or out of order: %+v", orderedMigrations)
+	}
+	if len(orderedMigrations) < 3 || orderedMigrations[2].version != "000003_qris_payload_binding" {
+		t.Fatalf("QRIS payload binding migration is missing or out of order: %+v", orderedMigrations)
+	}
 
 	seen := make(map[string]struct{}, len(orderedMigrations))
 	previous := ""
@@ -39,6 +45,103 @@ func TestMigrationPlanIsOrderedAndCompatible(t *testing.T) {
 		}
 		seen[item.version] = struct{}{}
 		previous = item.version
+	}
+}
+
+func TestQrisPayloadBindingMigrationIsSeparatedFromPriorModels(t *testing.T) {
+	t.Parallel()
+
+	for name, model := range map[string]any{
+		"000001": &transactionModel{},
+		"000002": &transactionPaymentModel{},
+	} {
+		parsed, err := schema.Parse(model, &sync.Map{}, schema.NamingStrategy{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if parsed.LookUpField("QrisPayloadHash") != nil {
+			t.Fatalf("%s model unexpectedly contains QrisPayloadHash", name)
+		}
+	}
+
+	transaction, err := schema.Parse(
+		&qrisPayloadBindingTransactionModel{},
+		&sync.Map{},
+		schema.NamingStrategy{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transaction.LookUpField("QrisPayloadHash") == nil {
+		t.Fatal("000003 transaction model is missing QrisPayloadHash")
+	}
+	if _, ok := transaction.ParseCheckConstraints()["transactions_qris_payload_hash_shape"]; !ok {
+		t.Fatal("000003 transaction QRIS binding constraint is missing")
+	}
+
+	revision, err := schema.Parse(
+		&qrisPayloadBindingRevisionModel{},
+		&sync.Map{},
+		schema.NamingStrategy{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision.LookUpField("QrisPayloadHash") == nil {
+		t.Fatal("000003 revision model is missing QrisPayloadHash")
+	}
+	if _, ok := revision.ParseCheckConstraints()["transaction_revisions_qris_payload_hash_shape"]; !ok {
+		t.Fatal("000003 revision QRIS binding constraint is missing")
+	}
+}
+
+func TestPaymentMigrationIsSeparatedFromInitialModel(t *testing.T) {
+	t.Parallel()
+
+	cache := &sync.Map{}
+	initial, err := schema.Parse(&transactionModel{}, cache, schema.NamingStrategy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"PaymentMethod", "PaymentStatus", "PaymentConfirmedRevision"} {
+		if initial.LookUpField(field) != nil {
+			t.Fatalf("000001 transaction model unexpectedly contains %s", field)
+		}
+	}
+
+	payment, err := schema.Parse(
+		&transactionPaymentModel{},
+		&sync.Map{},
+		schema.NamingStrategy{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"PaymentMethod", "PaymentStatus", "PaymentConfirmedRevision"} {
+		if payment.LookUpField(field) == nil {
+			t.Fatalf("000002 payment model is missing %s", field)
+		}
+	}
+	checks := payment.ParseCheckConstraints()
+	for _, name := range []string{
+		"transactions_payment_method_allowed",
+		"transactions_payment_status_allowed",
+		"transactions_payment_confirmation_shape",
+	} {
+		if _, ok := checks[name]; !ok {
+			t.Fatalf("000002 payment constraint %s is missing", name)
+		}
+	}
+	indexes := payment.ParseIndexes()
+	foundPaidIndex := false
+	for _, item := range indexes {
+		if item.Name == "transactions_paid_occurred_idx" {
+			foundPaidIndex = item.Where ==
+				"deleted_at IS NULL AND payment_status = 'success'"
+		}
+	}
+	if !foundPaidIndex {
+		t.Fatal("successful payment reporting index is missing")
 	}
 }
 

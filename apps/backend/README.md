@@ -137,7 +137,7 @@ pnpm seed:superadmin
 ```
 
 The command reads `apps/backend/.env`, requires `APP_ENV=development`, applies
-pending GORM migrations, and creates `superadmin` / `Budi Santoso`. If
+pending GORM migrations, and creates `superadmin` / `Penyok`. If
 `DEV_SUPERADMIN_PASSWORD` is empty, the development-only temporary password is
 `superadmin123`. The seed is idempotent and never resets an existing password.
 The account must change its password after its first login.

@@ -5,7 +5,8 @@ const receipt: ReceiptDocument = {
   transactionId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
   revision: 2,
   occurredAt: "2026-07-24T03:04:05.000Z",
-  cashierName: "Andi Wijaya",
+  cashierName: "Putu",
+  paymentMethod: "qris",
   lines: [
     {
       name: "Paket Sunrise",
@@ -24,6 +25,8 @@ describe("thermal receipt", () => {
     const output = formatReceipt(receipt, 32);
     expect(output).toContain("TRX-01ARZ3NDEKTSV4RRFFQ69G5FAV");
     expect(output).toContain("TOTAL");
+    expect(output).toContain("Metode: QRIS");
+    expect(output).toContain("Status: LUNAS");
     expect(output).not.toContain("SALINAN");
     for (const line of output.trimEnd().split("\n")) {
       expect(line.length).toBeLessThanOrEqual(32);

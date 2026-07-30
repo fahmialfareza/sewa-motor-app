@@ -1,4 +1,5 @@
 import { displayTransactionId } from "@/utils/format";
+import { paymentMethodLabel } from "@/domain/payments";
 
 import type { ReceiptDocument } from "./types";
 
@@ -43,6 +44,8 @@ export function formatReceipt(
     `Revisi ${document.revision}`,
     new Date(document.occurredAt).toISOString(),
     `Kasir: ${sanitize(document.cashierName)}`,
+    `Metode: ${paymentMethodLabel[document.paymentMethod].toUpperCase()}`,
+    "Status: LUNAS",
     rule,
   ].filter(Boolean);
 

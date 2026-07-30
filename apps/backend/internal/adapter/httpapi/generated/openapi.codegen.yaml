@@ -430,6 +430,14 @@ paths:
           in: query
           schema:
             $ref: "#/components/schemas/UUID"
+        - name: paymentMethod
+          in: query
+          schema:
+            $ref: "#/components/schemas/PaymentMethod"
+        - name: paymentStatus
+          in: query
+          schema:
+            $ref: "#/components/schemas/PaymentStatus"
         - name: includeDeleted
           in: query
           schema:
@@ -523,6 +531,7 @@ paths:
       operationId: correctTransaction
       tags: [Transactions]
       summary: Correct a transaction by appending a revision
+      description: A correction resets payment to pending for the new revision.
       requestBody:
         required: true
         content:
@@ -545,6 +554,39 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
 
+  /transactions/{transactionId}/payment-status:
+    parameters:
+      - $ref: "#/components/parameters/TransactionId"
+    post:
+      operationId: setTransactionPaymentStatus
+      tags: [Transactions]
+      summary: Mark the current transaction revision payment as successful or failed
+      description: |
+        Admins may update their own transactions and superadmins may update any
+        transaction. Repeating the current outcome is idempotent. A successful
+        payment is final until a correction creates a new pending revision.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetPaymentStatusRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/TransactionResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/PaymentStateConflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
   /transactions/{transactionId}/print-attempts:
     parameters:
       - $ref: "#/components/parameters/TransactionId"
@@ -563,6 +605,9 @@ paths:
       operationId: recordPrintAttempt
       tags: [Transactions]
       summary: Append a terminal print attempt
+      description: |
+        Printing is accepted only when payment succeeded for the exact current,
+        non-deleted transaction revision.
       requestBody:
         required: true
         content:
@@ -615,7 +660,9 @@ paths:
       summary: Download a filtered XLSX or PDF
       description: |
         Online-only. The caller must ensure relevant pending or conflicted local
-        mutations are resolved before requesting the export.
+        mutations are resolved before requesting the export. The export contains
+        every payment state matching `filters`; revenue dashboard aggregation is
+        separately restricted to successful payment on the current revision.
       requestBody:
         required: true
         content:
@@ -995,6 +1042,17 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/RevisionConflictEnvelope"
+    PaymentStateConflict:
+      description: |
+        The transaction revision changed or payment already succeeded. Details
+        contain the authoritative current payment state and server snapshot.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/PaymentStateConflictEnvelope"
     UnprocessableEntity:
       $ref: "#/components/responses/ErrorResponse"
     TooManyRequests:
@@ -1048,6 +1106,36 @@ components:
     UserRole:
       type: string
       enum: [admin, superadmin]
+
+    PaymentMethod:
+      type: string
+      enum: [cash, qris, legacy]
+      description: |
+        Stored payment method. `legacy` is read-only compatibility for
+        transactions created before payment selection was introduced.
+
+    SelectablePaymentMethod:
+      type: string
+      enum: [cash, qris]
+
+    QrisPayloadHash:
+      type: string
+      minLength: 64
+      maxLength: 64
+      pattern: "^[0-9a-f]{64}$"
+      description: |
+        Lowercase SHA-256 digest of the exact configured static merchant QRIS
+        payload. It binds a QRIS transaction revision to the exact payload used
+        to generate its amount-specific QR code; it does not verify merchant
+        ownership or payment settlement.
+
+    PaymentStatus:
+      type: string
+      enum: [pending, success, failed]
+
+    PaymentOutcome:
+      type: string
+      enum: [success, failed]
 
     PrintState:
       type: string
@@ -1143,6 +1231,59 @@ components:
           minimum: 1
         localSnapshot:
           $ref: "#/components/schemas/TransactionSnapshot"
+        serverSnapshot:
+          $ref: "#/components/schemas/TransactionSnapshot"
+
+    PaymentStateConflictEnvelope:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          allOf:
+            - $ref: "#/components/schemas/ApiError"
+            - type: object
+              properties:
+                code:
+                  enum: [PAYMENT_STATE_CONFLICT]
+                details:
+                  $ref: "#/components/schemas/PaymentStateConflictDetails"
+
+    PaymentStateConflictDetails:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          kind,
+          reason,
+          baseRevision,
+          currentRevision,
+          requestedStatus,
+          paymentStatus,
+          paymentConfirmedRevision,
+          serverSnapshot,
+        ]
+      properties:
+        kind:
+          type: string
+          enum: [payment_state]
+        reason:
+          type: string
+          enum: [revision_changed, payment_final]
+        baseRevision:
+          type: integer
+          minimum: 1
+        currentRevision:
+          type: integer
+          minimum: 1
+        requestedStatus:
+          $ref: "#/components/schemas/PaymentOutcome"
+        paymentStatus:
+          $ref: "#/components/schemas/PaymentStatus"
+        paymentConfirmedRevision:
+          type: integer
+          nullable: true
+          minimum: 1
         serverSnapshot:
           $ref: "#/components/schemas/TransactionSnapshot"
 
@@ -1603,11 +1744,34 @@ components:
     TransactionSnapshot:
       type: object
       additionalProperties: false
-      required: [occurredAt, items, subtotal, total]
+      required:
+        [
+          occurredAt,
+          paymentMethod,
+          paymentStatus,
+          paymentConfirmedRevision,
+          items,
+          subtotal,
+          total,
+        ]
       properties:
         occurredAt:
           type: string
           format: date-time
+        paymentMethod:
+          $ref: "#/components/schemas/PaymentMethod"
+          description: Immutable revisions created before payment tracking are read-normalized to `legacy`.
+        qrisPayloadHash:
+          $ref: "#/components/schemas/QrisPayloadHash"
+          description: Present only when this revision is bound to a QRIS merchant payload.
+        paymentStatus:
+          $ref: "#/components/schemas/PaymentStatus"
+          description: Immutable legacy revisions are read-normalized to `success`.
+        paymentConfirmedRevision:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: The snapshot revision when payment succeeded; null until payment succeeds.
         items:
           type: array
           minItems: 1
@@ -1647,6 +1811,9 @@ components:
           type: string
           minLength: 5
           maxLength: 500
+        qrisPayloadHash:
+          $ref: "#/components/schemas/QrisPayloadHash"
+          description: Present only for a QRIS revision created after payload binding was introduced.
         before:
           $ref: "#/components/schemas/TransactionSnapshot"
         after:
@@ -1703,6 +1870,9 @@ components:
           items,
           subtotal,
           total,
+          paymentMethod,
+          paymentStatus,
+          paymentConfirmedRevision,
           originActor,
           updatedBy,
           terminal,
@@ -1729,6 +1899,20 @@ components:
           $ref: "#/components/schemas/Rupiah"
         total:
           $ref: "#/components/schemas/Rupiah"
+        paymentMethod:
+          $ref: "#/components/schemas/PaymentMethod"
+        qrisPayloadHash:
+          $ref: "#/components/schemas/QrisPayloadHash"
+          description: Present only for a QRIS revision created after payload binding was introduced.
+        paymentStatus:
+          $ref: "#/components/schemas/PaymentStatus"
+        paymentConfirmedRevision:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: |
+            The transaction revision confirmed by a successful payment. It is
+            null while payment is pending or failed.
         originActor:
           $ref: "#/components/schemas/UserSummary"
         updatedBy:
@@ -1751,13 +1935,18 @@ components:
     CreateTransactionRequest:
       type: object
       additionalProperties: false
-      required: [id, occurredAt, items]
+      required: [id, occurredAt, paymentMethod, items]
       properties:
         id:
           $ref: "#/components/schemas/ULID"
         occurredAt:
           type: string
           format: date-time
+        paymentMethod:
+          $ref: "#/components/schemas/SelectablePaymentMethod"
+        qrisPayloadHash:
+          $ref: "#/components/schemas/QrisPayloadHash"
+          description: Required when `paymentMethod` is `qris`; omit for `cash`.
         items:
           type: array
           minItems: 1
@@ -1767,7 +1956,7 @@ components:
     CorrectTransactionRequest:
       type: object
       additionalProperties: false
-      required: [baseRevision, reason, occurredAt, items]
+      required: [baseRevision, reason, occurredAt, paymentMethod, items]
       properties:
         baseRevision:
           type: integer
@@ -1779,11 +1968,30 @@ components:
         occurredAt:
           type: string
           format: date-time
+        paymentMethod:
+          $ref: "#/components/schemas/SelectablePaymentMethod"
+        qrisPayloadHash:
+          $ref: "#/components/schemas/QrisPayloadHash"
+          description: Required when `paymentMethod` is `qris`; omit for `cash`.
         items:
           type: array
           minItems: 1
           items:
             $ref: "#/components/schemas/TransactionLineInput"
+
+    SetPaymentStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [baseRevision, status, occurredAt]
+      properties:
+        baseRevision:
+          type: integer
+          minimum: 1
+        status:
+          $ref: "#/components/schemas/PaymentOutcome"
+        occurredAt:
+          type: string
+          format: date-time
 
     DeleteTransactionRequest:
       type: object
@@ -2053,6 +2261,10 @@ components:
           $ref: "#/components/schemas/UUID"
         terminalId:
           $ref: "#/components/schemas/UUID"
+        paymentMethod:
+          $ref: "#/components/schemas/PaymentMethod"
+        paymentStatus:
+          $ref: "#/components/schemas/PaymentStatus"
         includeDeleted:
           type: boolean
           default: false
@@ -2183,17 +2395,29 @@ components:
 
     SyncAction:
       type: string
-      enum: [create, correct]
+      enum: [create, correct, set_payment_status]
       description: |
         Print attempts use `aggregate: print_attempt` with `action: create`.
+        As a temporary, telemetry-backed compatibility path, the server accepts a
+        truly absent `paymentMethod` only for an already-signed transaction
+        `create` or `correct` queued before 2026-07-29 WIB by a terminal enrolled
+        before that rollout. Server acceptance ends after 2026-08-12 WIB.
+        Explicit `null` is rejected. Current clients must always send `cash` or
+        `qris`.
 
     CreateTransactionMutationPayload:
       type: object
       additionalProperties: false
-      required: [id, items]
+      required: [id, paymentMethod, items]
       properties:
         id:
           $ref: "#/components/schemas/ULID"
+        paymentMethod:
+          $ref: "#/components/schemas/SelectablePaymentMethod"
+          description: Required for current clients; explicit null is never accepted.
+        qrisPayloadHash:
+          $ref: "#/components/schemas/QrisPayloadHash"
+          description: Required when `paymentMethod` is `qris`; omit for `cash`.
         items:
           type: array
           minItems: 1
@@ -2203,7 +2427,7 @@ components:
     CorrectTransactionMutationPayload:
       type: object
       additionalProperties: false
-      required: [id, reason, items]
+      required: [id, reason, paymentMethod, items]
       properties:
         id:
           $ref: "#/components/schemas/ULID"
@@ -2211,11 +2435,27 @@ components:
           type: string
           minLength: 5
           maxLength: 500
+        paymentMethod:
+          $ref: "#/components/schemas/SelectablePaymentMethod"
+          description: Required for current clients; explicit null is never accepted.
+        qrisPayloadHash:
+          $ref: "#/components/schemas/QrisPayloadHash"
+          description: Required when `paymentMethod` is `qris`; omit for `cash`.
         items:
           type: array
           minItems: 1
           items:
             $ref: "#/components/schemas/TransactionLineInput"
+
+    SetPaymentStatusMutationPayload:
+      type: object
+      additionalProperties: false
+      required: [id, status]
+      properties:
+        id:
+          $ref: "#/components/schemas/ULID"
+        status:
+          $ref: "#/components/schemas/PaymentOutcome"
 
     PrintAttemptMutationPayload:
       type: object
@@ -2302,6 +2542,7 @@ components:
           oneOf:
             - $ref: "#/components/schemas/CreateTransactionMutationPayload"
             - $ref: "#/components/schemas/CorrectTransactionMutationPayload"
+            - $ref: "#/components/schemas/SetPaymentStatusMutationPayload"
             - $ref: "#/components/schemas/PrintAttemptMutationPayload"
 
     SyncMutation:
@@ -2355,8 +2596,9 @@ components:
             - $ref: "#/components/schemas/PrintAttempt"
           nullable: true
         conflict:
-          allOf:
+          oneOf:
             - $ref: "#/components/schemas/RevisionConflictDetails"
+            - $ref: "#/components/schemas/PaymentStateConflictDetails"
           nullable: true
         error:
           allOf:

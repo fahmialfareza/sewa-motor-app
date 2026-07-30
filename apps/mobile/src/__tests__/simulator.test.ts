@@ -6,6 +6,7 @@ const document: ReceiptDocument = {
   revision: 1,
   occurredAt: "2026-07-24T03:04:05.000Z",
   cashierName: "Andi",
+  paymentMethod: "cash",
   lines: [
     {
       name: "Paket Standar",

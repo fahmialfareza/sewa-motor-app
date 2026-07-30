@@ -10,9 +10,12 @@ acceptance still depends on the target MPOS model and vendor SDK.
 
 ## V1 product boundary
 
-V1 records package quantities and immutable price/name snapshots. It does not
-model motorcycle inventory, customers, rental schedules, payments, tax, shifts,
-photos, targets, or cancellations.
+V1 records package quantities, immutable price/name snapshots, a cash-or-QRIS
+payment method, and revision-bound pending/success/failed payment state. QRIS
+compatibility mode derives an amount-specific code from a configured static
+merchant payload; settlement is confirmed manually until an official payment
+provider callback is integrated. V1 does not model motorcycle inventory,
+customers, rental schedules, tax, shifts, photos, targets, or cancellations.
 
 - Paket Standar: Rp70.000, canonical ID
   `00000000-0000-0000-0000-000000000001`
@@ -21,11 +24,13 @@ photos, targets, or cancellations.
 - Transaction persistence/API IDs are uppercase 26-character ULIDs. The UI and
   receipt add `TRX-`; that prefix is never stored.
 - Money is whole rupiah and reporting uses `Asia/Jakarta`; weeks begin Monday.
-- Admins can create/read/correct transactions, view statistics/exports, read
-  packages, and change their own password.
+- Admins can create/read transactions, correct and confirm payment for their own
+  transactions, view statistics/exports, read packages, and change their own
+  password.
 - Superadmins additionally manage users/packages and perform online-only
-  transaction deletion. Self-demotion/deactivation/deletion and removal of the
-  final active superadmin are forbidden.
+  transaction deletion, and may correct or confirm payment for every
+  transaction. Self-demotion/deactivation/deletion and removal of the final
+  active superadmin are forbidden.
 
 ## Repository
 

@@ -61,6 +61,7 @@ type Repository interface {
 
 	CreateTransaction(ctx context.Context, input domain.CreateTransactionInput) (domain.Transaction, error)
 	CorrectTransaction(ctx context.Context, input domain.CorrectTransactionInput) (domain.Transaction, error)
+	SetTransactionPaymentStatus(ctx context.Context, input domain.SetPaymentStatusInput) (domain.Transaction, error)
 	GetTransaction(ctx context.Context, id string, includeDeleted bool) (domain.Transaction, error)
 	ListTransactions(ctx context.Context, filter domain.TransactionFilter) (domain.TransactionPage, error)
 	DeleteTransaction(ctx context.Context, actor domain.Principal, id, reason string) error

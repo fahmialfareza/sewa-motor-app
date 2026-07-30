@@ -6,20 +6,21 @@ import (
 )
 
 const (
-	CodeValidation          = "VALIDATION_ERROR"
-	CodeUnauthorized        = "UNAUTHORIZED"
-	CodeInvalidCredentials  = "INVALID_CREDENTIALS"
-	CodeForbidden           = "FORBIDDEN"
-	CodePasswordChange      = "PASSWORD_CHANGE_REQUIRED"
-	CodeNotFound            = "NOT_FOUND"
-	CodeConflict            = "CONFLICT"
-	CodeRevisionConflict    = "REVISION_CONFLICT"
-	CodeFinalSuperadmin     = "FINAL_SUPERADMIN"
-	CodeSelfMutation        = "SELF_PROTECTION"
-	CodeIdempotencyMismatch = "IDEMPOTENCY_MISMATCH"
-	CodeSignatureInvalid    = "INVALID_TERMINAL_SIGNATURE"
-	CodeRateLimited         = "RATE_LIMITED"
-	CodeInternal            = "INTERNAL_ERROR"
+	CodeValidation           = "VALIDATION_ERROR"
+	CodeUnauthorized         = "UNAUTHORIZED"
+	CodeInvalidCredentials   = "INVALID_CREDENTIALS"
+	CodeForbidden            = "FORBIDDEN"
+	CodePasswordChange       = "PASSWORD_CHANGE_REQUIRED"
+	CodeNotFound             = "NOT_FOUND"
+	CodeConflict             = "CONFLICT"
+	CodeRevisionConflict     = "REVISION_CONFLICT"
+	CodePaymentStateConflict = "PAYMENT_STATE_CONFLICT"
+	CodeFinalSuperadmin      = "FINAL_SUPERADMIN"
+	CodeSelfMutation         = "SELF_PROTECTION"
+	CodeIdempotencyMismatch  = "IDEMPOTENCY_MISMATCH"
+	CodeSignatureInvalid     = "INVALID_TERMINAL_SIGNATURE"
+	CodeRateLimited          = "RATE_LIMITED"
+	CodeInternal             = "INTERNAL_ERROR"
 )
 
 // Error is safe to serialize to an API consumer. Cause is retained for logs.

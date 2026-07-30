@@ -7,11 +7,17 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/domain"
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/observability"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+)
+
+var (
+	paymentMethodRolloutAt = time.Date(2026, time.July, 28, 17, 0, 0, 0, time.UTC)
+	legacyPaymentCutoffAt  = time.Date(2026, time.August, 12, 17, 0, 0, 0, time.UTC)
 )
 
 // ApplySyncMutation performs the business mutation, audit/change writes, and
@@ -78,8 +84,10 @@ func (s *Store) ApplySyncMutation(
 	switch operation.Aggregate + "/" + operation.Action {
 	case "transaction/create":
 		var payload struct {
-			ID    string             `json:"id"`
-			Items []domain.ItemInput `json:"items"`
+			ID              string                    `json:"id"`
+			PaymentMethod   syncOptionalPaymentMethod `json:"paymentMethod"`
+			QrisPayloadHash *string                   `json:"qrisPayloadHash"`
+			Items           []domain.ItemInput        `json:"items"`
 		}
 		if err := json.Unmarshal(operation.Payload, &payload); err != nil || operation.OccurredAt.IsZero() {
 			operationErr = domain.Validation("Payload transaksi tidak valid", nil)
@@ -97,17 +105,43 @@ func (s *Store) ApplySyncMutation(
 			operationErr = err
 			break
 		}
+		if !payload.PaymentMethod.Present {
+			if compatibilityErr := s.requireLegacyPaymentCompatibility(
+				ctx, tx, operation,
+			); compatibilityErr != nil {
+				operationErr = compatibilityErr
+				break
+			}
+		}
+		paymentMethod, paymentStatus, paymentConfirmedRevision, paymentErr :=
+			syncedCreatePayment(payload.PaymentMethod)
+		if paymentErr != nil {
+			operationErr = paymentErr
+			break
+		}
+		if !payload.PaymentMethod.Present {
+			s.logLegacyPaymentCompatibility(ctx, operation)
+		}
 		data, operationErr = s.createTransactionTx(ctx, tx, domain.CreateTransactionInput{
-			ID: payload.ID, OccurredAt: operation.OccurredAt, Items: payload.Items, Identity: identity,
+			ID: payload.ID, OccurredAt: operation.OccurredAt,
+			PaymentMethod: paymentMethod, QrisPayloadHash: payload.QrisPayloadHash,
+			Items:                           payload.Items,
+			InitialPaymentStatus:            paymentStatus,
+			InitialPaymentConfirmedRevision: paymentConfirmedRevision,
+			Identity:                        identity,
 		})
 		status = http.StatusCreated
 	case "transaction/correct":
 		var payload struct {
-			BaseRevision int                `json:"baseRevision"`
-			Reason       string             `json:"reason"`
-			Items        []domain.ItemInput `json:"items"`
+			BaseRevision    int                       `json:"baseRevision"`
+			Reason          string                    `json:"reason"`
+			PaymentMethod   syncOptionalPaymentMethod `json:"paymentMethod"`
+			QrisPayloadHash *string                   `json:"qrisPayloadHash"`
+			Items           []domain.ItemInput        `json:"items"`
 		}
-		if err := json.Unmarshal(operation.Payload, &payload); err != nil || operation.AggregateID == "" {
+		if err := json.Unmarshal(operation.Payload, &payload); err != nil ||
+			operation.AggregateID == "" ||
+			operation.OccurredAt.IsZero() {
 			operationErr = domain.Validation("Payload koreksi tidak valid", nil)
 			break
 		}
@@ -123,9 +157,58 @@ func (s *Store) ApplySyncMutation(
 			operationErr = err
 			break
 		}
+		if !payload.PaymentMethod.Present {
+			if compatibilityErr := s.requireLegacyPaymentCompatibility(
+				ctx, tx, operation,
+			); compatibilityErr != nil {
+				operationErr = compatibilityErr
+				break
+			}
+		}
+		paymentMethod, legacyPaymentCompatibility, paymentErr :=
+			syncedCorrectionPayment(payload.PaymentMethod)
+		if paymentErr != nil {
+			operationErr = paymentErr
+			break
+		}
+		if !payload.PaymentMethod.Present {
+			s.logLegacyPaymentCompatibility(ctx, operation)
+		}
 		data, operationErr = s.correctTransactionTx(ctx, tx, domain.CorrectTransactionInput{
 			ID: operation.AggregateID, BaseRevision: baseRevision, Reason: strings.TrimSpace(payload.Reason),
-			OccurredAt: operation.OccurredAt, Items: payload.Items, Identity: identity,
+			OccurredAt: operation.OccurredAt, PaymentMethod: paymentMethod,
+			QrisPayloadHash: payload.QrisPayloadHash, Items: payload.Items,
+			LegacyPaymentCompatibility: legacyPaymentCompatibility,
+			Identity:                   identity,
+		})
+	case "transaction/set_payment_status":
+		var payload struct {
+			ID     string               `json:"id"`
+			Status domain.PaymentStatus `json:"status"`
+		}
+		if err := json.Unmarshal(operation.Payload, &payload); err != nil ||
+			operation.AggregateID == "" ||
+			operation.BaseRevision == nil ||
+			operation.OccurredAt.IsZero() {
+			operationErr = domain.Validation("Payload status pembayaran tidak valid", nil)
+			break
+		}
+		if payload.ID != operation.AggregateID {
+			operationErr = domain.Validation("aggregateId tidak cocok dengan transaksi", nil)
+			break
+		}
+		if err := domain.ValidateTransactionID(payload.ID); err != nil {
+			operationErr = err
+			break
+		}
+		if err := domain.ValidatePaymentOutcome(payload.Status); err != nil {
+			operationErr = err
+			break
+		}
+		data, operationErr = s.setTransactionPaymentStatusTx(ctx, tx, domain.SetPaymentStatusInput{
+			ID: payload.ID, BaseRevision: *operation.BaseRevision,
+			Status: payload.Status, OccurredAt: operation.OccurredAt,
+			Identity: identity,
 		})
 	case "print_attempt/create":
 		var payload domain.PrintAttemptInput
@@ -180,6 +263,127 @@ func (s *Store) ApplySyncMutation(
 	return stored, false, operationErr
 }
 
+// TODO(payment-method-rollout): Remove this compatibility decoder after the
+// warning telemetry confirms that all pre-payment queued operations have drained.
+//
+// syncOptionalPaymentMethod deliberately distinguishes an absent JSON member
+// from an explicit null. Only absence is accepted for append-only operations
+// signed by clients released before paymentMethod became part of the contract.
+// Explicit null is always invalid, just like any other non-selectable value.
+type syncOptionalPaymentMethod struct {
+	Value   domain.PaymentMethod
+	Present bool
+	Null    bool
+}
+
+func (value *syncOptionalPaymentMethod) UnmarshalJSON(data []byte) error {
+	value.Present = true
+	value.Null = false
+	value.Value = ""
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		value.Null = true
+		return nil
+	}
+	return json.Unmarshal(data, &value.Value)
+}
+
+func syncedCreatePayment(
+	value syncOptionalPaymentMethod,
+) (domain.PaymentMethod, domain.PaymentStatus, *int, error) {
+	if !value.Present {
+		confirmedRevision := 1
+		return domain.PaymentMethodLegacy, domain.PaymentStatusSuccess, &confirmedRevision, nil
+	}
+	if value.Null {
+		return "", "", nil, domain.Validation(
+			"Metode pembayaran wajib dipilih",
+			map[string]any{"field": "paymentMethod"},
+		)
+	}
+	if err := domain.ValidateSelectablePaymentMethod(value.Value); err != nil {
+		return "", "", nil, err
+	}
+	return value.Value, domain.PaymentStatusPending, nil, nil
+}
+
+func syncedCorrectionPayment(
+	value syncOptionalPaymentMethod,
+) (domain.PaymentMethod, bool, error) {
+	if !value.Present {
+		return domain.PaymentMethodLegacy, true, nil
+	}
+	if value.Null {
+		return "", false, domain.Validation(
+			"Metode pembayaran wajib dipilih",
+			map[string]any{"field": "paymentMethod"},
+		)
+	}
+	if err := domain.ValidateSelectablePaymentMethod(value.Value); err != nil {
+		return "", false, err
+	}
+	return value.Value, false, nil
+}
+
+func (s *Store) requireLegacyPaymentCompatibility(
+	ctx context.Context,
+	tx pgx.Tx,
+	operation domain.SyncMutation,
+) error {
+	defer observability.StartSegment(ctx, "Postgres.requireLegacyPaymentCompatibility")()
+
+	var terminalCreatedAt, serverNow time.Time
+	if err := tx.QueryRow(ctx, `
+		SELECT created_at, CURRENT_TIMESTAMP
+		FROM terminals
+		WHERE id = $1 AND is_active AND revoked_at IS NULL`,
+		operation.TerminalID,
+	).Scan(&terminalCreatedAt, &serverNow); err != nil {
+		return dbError(err, "verify legacy payment compatibility")
+	}
+	if legacyPaymentOperationEligible(
+		operation.OccurredAt,
+		terminalCreatedAt,
+		serverNow,
+	) {
+		return nil
+	}
+	return domain.Validation(
+		"Versi aplikasi ini wajib mengirim metode pembayaran. Perbarui aplikasi lalu coba lagi",
+		map[string]any{"field": "paymentMethod"},
+	)
+}
+
+func legacyPaymentOperationEligible(
+	operationOccurredAt time.Time,
+	terminalCreatedAt time.Time,
+	serverNow time.Time,
+) bool {
+	return terminalCreatedAt.Before(paymentMethodRolloutAt) &&
+		operationOccurredAt.Before(paymentMethodRolloutAt) &&
+		serverNow.Before(legacyPaymentCutoffAt)
+}
+
+func (s *Store) logLegacyPaymentCompatibility(
+	ctx context.Context,
+	operation domain.SyncMutation,
+) {
+	defer observability.StartSegment(ctx, "Postgres.logLegacyPaymentCompatibility")()
+	logger := s.Logger
+	if logger == nil {
+		logger = observability.Logger()
+	}
+	logger.
+		WithContext(ctx).
+		WithFields(map[string]any{
+			"aggregate":   operation.Aggregate,
+			"action":      operation.Action,
+			"aggregateId": operation.AggregateID,
+			"operationId": operation.OperationID,
+			"terminalId":  operation.TerminalID,
+		}).
+		Warn("accepted legacy sync payload without paymentMethod")
+}
+
 func operationErrorStatus(err *domain.Error) int {
 	switch err.Code {
 	case domain.CodeValidation:
@@ -190,7 +394,8 @@ func operationErrorStatus(err *domain.Error) int {
 		return http.StatusForbidden
 	case domain.CodeNotFound:
 		return http.StatusNotFound
-	case domain.CodeRevisionConflict, domain.CodeConflict, domain.CodeIdempotencyMismatch:
+	case domain.CodeRevisionConflict, domain.CodePaymentStateConflict,
+		domain.CodeConflict, domain.CodeIdempotencyMismatch:
 		return http.StatusConflict
 	case domain.CodeRateLimited:
 		return http.StatusTooManyRequests

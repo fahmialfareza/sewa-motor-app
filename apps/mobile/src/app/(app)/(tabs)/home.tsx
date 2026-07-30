@@ -1,5 +1,5 @@
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { useAuth } from "@/auth/AuthProvider";
@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { getDashboardStats, listTransactions } from "@/db/repositories";
 import type { DashboardStats, Transaction } from "@/domain/types";
+import { useSyncRuntime } from "@/sync/SyncProvider";
 import {
   colors,
   radius,
@@ -25,7 +26,6 @@ const emptyStats: DashboardStats = {
   transactionCount: 0,
   quantities: [],
   buckets: [0, 0, 0, 0, 0, 0, 0],
-  pendingCount: 0,
 };
 
 const labels: Record<ReportingPeriod, string> = {
@@ -37,24 +37,51 @@ const labels: Record<ReportingPeriod, string> = {
 export default function HomeScreen() {
   const router = useRouter();
   const { session } = useAuth();
+  const { lastSyncedAt, pendingCount } = useSyncRuntime();
   const [period, setPeriod] = useState<ReportingPeriod>("daily");
   const [stats, setStats] = useState(emptyStats);
   const [recent, setRecent] = useState<Transaction[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const requestId = useRef(0);
+  const observedSyncAt = useRef(lastSyncedAt);
 
   const load = useCallback(async () => {
-    const [nextStats, nextRecent] = await Promise.all([
-      getDashboardStats(period),
-      listTransactions({ limit: 5 }),
-    ]);
-    setStats(nextStats);
-    setRecent(nextRecent);
+    const currentRequestId = ++requestId.current;
+    try {
+      const [nextStats, nextRecent] = await Promise.all([
+        getDashboardStats(period),
+        listTransactions({ limit: 5 }),
+      ]);
+      if (currentRequestId !== requestId.current) return;
+      setStats(nextStats);
+      setRecent(nextRecent);
+      setLoaded(true);
+      setLoadError(null);
+    } catch (reason) {
+      if (currentRequestId !== requestId.current) return;
+      setLoadError(
+        reason instanceof Error
+          ? reason.message
+          : "Ringkasan dasbor tidak dapat dimuat.",
+      );
+    }
   }, [period]);
 
   useFocusEffect(
     useCallback(() => {
       void load();
+      return () => {
+        requestId.current += 1;
+      };
     }, [load]),
   );
+
+  useEffect(() => {
+    if (lastSyncedAt === observedSyncAt.current) return;
+    observedSyncAt.current = lastSyncedAt;
+    void load();
+  }, [lastSyncedAt, load]);
 
   const maximum = Math.max(...stats.buckets, 1);
 
@@ -96,18 +123,37 @@ export default function HomeScreen() {
         Mulai transaksi baru
       </Button>
 
+      {loadError ? (
+        <Card style={styles.loadError}>
+          <View style={styles.loadErrorCopy}>
+            <Text accessibilityRole="alert" style={styles.loadErrorTitle}>
+              Ringkasan belum diperbarui
+            </Text>
+            <Text style={styles.loadErrorMessage}>{loadError}</Text>
+          </View>
+          <Button onPress={() => void load()} variant="secondary">
+            Coba lagi
+          </Button>
+        </Card>
+      ) : null}
+
       <Card style={styles.revenue}>
         <View style={styles.metricTop}>
           <View>
             <Text style={textStyles.label}>PENDAPATAN KOTOR</Text>
-            <Text style={textStyles.price}>{formatRupiah(stats.gross)}</Text>
+            <Text style={textStyles.price}>
+              {loaded ? formatRupiah(stats.gross) : "—"}
+            </Text>
           </View>
           <View style={styles.countPill}>
             <Text style={styles.countText}>
-              {stats.transactionCount} transaksi
+              {loaded ? `${stats.transactionCount} transaksi lunas` : "Memuat…"}
             </Text>
           </View>
         </View>
+        <Text style={styles.revenueNote}>
+          Menghitung pembayaran berhasil pada revisi transaksi saat ini.
+        </Text>
         <View style={styles.chart}>
           {stats.buckets.map((amount, index) => (
             <View
@@ -128,7 +174,12 @@ export default function HomeScreen() {
       </Card>
 
       <View style={styles.metricGrid}>
-        {stats.quantities.length > 0 ? (
+        {!loaded ? (
+          <Card style={styles.smallMetric}>
+            <Text style={styles.metricLabel}>Paket terjual</Text>
+            <Text style={styles.metricValue}>Memuat…</Text>
+          </Card>
+        ) : stats.quantities.length > 0 ? (
           stats.quantities.map((quantity) => (
             <Card key={quantity.name} style={styles.smallMetric}>
               <View
@@ -159,10 +210,10 @@ export default function HomeScreen() {
           <Text
             style={[
               styles.metricValue,
-              stats.pendingCount > 0 && { color: colors.warning },
+              pendingCount > 0 && { color: colors.warning },
             ]}
           >
-            {stats.pendingCount} data
+            {pendingCount} perubahan
           </Text>
         </Card>
       </View>
@@ -230,6 +281,14 @@ const styles = StyleSheet.create({
   periodText: { ...textStyles.body, fontFamily: typography.bodyMedium },
   periodTextSelected: { color: colors.onPrimary },
   revenue: { gap: spacing.lg },
+  revenueNote: { ...textStyles.body, color: colors.textMuted, fontSize: 12 },
+  loadError: {
+    gap: spacing.md,
+    backgroundColor: colors.errorSoft,
+  },
+  loadErrorCopy: { gap: spacing.xs },
+  loadErrorTitle: { ...textStyles.heading, color: colors.error },
+  loadErrorMessage: { ...textStyles.body, color: colors.textMuted },
   metricTop: {
     flexDirection: "row",
     justifyContent: "space-between",

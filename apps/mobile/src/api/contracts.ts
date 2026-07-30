@@ -18,6 +18,8 @@ export type ApiTransactionItem = ApiSchema["TransactionItem"];
 export type ApiTransaction = ApiSchema["Transaction"];
 export type ApiTransactionSnapshot = ApiSchema["TransactionSnapshot"];
 export type RevisionConflictDetails = ApiSchema["RevisionConflictDetails"];
+export type PaymentStateConflictDetails =
+  ApiSchema["PaymentStateConflictDetails"];
 export type SyncPushResult = ApiSchema["SyncMutationResult"];
 export type SyncPushResponse = ApiSchema["SyncPushResult"];
 export type ApiSyncChange = ApiSchema["SyncChange"];

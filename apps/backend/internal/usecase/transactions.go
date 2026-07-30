@@ -38,9 +38,17 @@ func (t Transactions) Create(ctx context.Context, principal domain.Principal, in
 	if err := domain.ValidateItems(input.Items); err != nil {
 		return domain.Transaction{}, err
 	}
+	if err := domain.ValidateSelectablePaymentMethod(input.PaymentMethod); err != nil {
+		return domain.Transaction{}, err
+	}
+	if err := domain.ValidateQrisPayloadBinding(input.PaymentMethod, input.QrisPayloadHash); err != nil {
+		return domain.Transaction{}, err
+	}
 	if input.OccurredAt.IsZero() || input.OccurredAt.After(t.Clock.Now().Add(10*time.Minute)) {
 		return domain.Transaction{}, domain.Validation("Waktu transaksi tidak valid", map[string]any{"field": "occurredAt"})
 	}
+	input.InitialPaymentStatus = domain.PaymentStatusPending
+	input.InitialPaymentConfirmedRevision = nil
 	input.Identity = identity(principal)
 	return t.Repo.CreateTransaction(ctx, input)
 }
@@ -70,11 +78,58 @@ func (t Transactions) Correct(ctx context.Context, principal domain.Principal, i
 	if err := domain.ValidateItems(input.Items); err != nil {
 		return domain.Transaction{}, err
 	}
+	if err := domain.ValidateSelectablePaymentMethod(input.PaymentMethod); err != nil {
+		return domain.Transaction{}, err
+	}
+	if err := domain.ValidateQrisPayloadBinding(input.PaymentMethod, input.QrisPayloadHash); err != nil {
+		return domain.Transaction{}, err
+	}
 	if input.OccurredAt.IsZero() {
 		return domain.Transaction{}, domain.Validation("Waktu transaksi tidak valid", map[string]any{"field": "occurredAt"})
 	}
 	input.Identity = identity(principal)
 	return t.Repo.CorrectTransaction(ctx, input)
+}
+
+func (t Transactions) SetPaymentStatus(
+	ctx context.Context,
+	principal domain.Principal,
+	input domain.SetPaymentStatusInput,
+) (domain.Transaction, error) {
+	defer observability.StartSegment(ctx, "Usecase.Transactions.SetPaymentStatus")()
+	if err := RequireTerminal(principal); err != nil {
+		return domain.Transaction{}, err
+	}
+	if err := domain.ValidateTransactionID(input.ID); err != nil {
+		return domain.Transaction{}, err
+	}
+	if input.BaseRevision < 1 {
+		return domain.Transaction{}, domain.Validation(
+			"Revisi transaksi wajib diisi",
+			map[string]any{"field": "baseRevision"},
+		)
+	}
+	if err := domain.ValidatePaymentOutcome(input.Status); err != nil {
+		return domain.Transaction{}, err
+	}
+	if input.OccurredAt.IsZero() {
+		return domain.Transaction{}, domain.Validation(
+			"Waktu konfirmasi pembayaran tidak valid",
+			map[string]any{"field": "occurredAt"},
+		)
+	}
+	current, err := t.Repo.GetTransaction(ctx, input.ID, principal.IsSuperadmin())
+	if err != nil {
+		return domain.Transaction{}, err
+	}
+	if !domain.CanCorrectTransaction(principal.Role, principal.UserID, current.OriginActor.ID) {
+		return domain.Transaction{}, domain.NewError(
+			domain.CodeForbidden,
+			"Admin hanya dapat mengubah pembayaran transaksi miliknya sendiri",
+		)
+	}
+	input.Identity = identity(principal)
+	return t.Repo.SetTransactionPaymentStatus(ctx, input)
 }
 
 func (t Transactions) Get(ctx context.Context, principal domain.Principal, id string) (domain.Transaction, error) {

@@ -273,8 +273,36 @@ export interface paths {
         /** List immutable transaction revisions */
         get: operations["listTransactionRevisions"];
         put?: never;
-        /** Correct a transaction by appending a revision */
+        /**
+         * Correct a transaction by appending a revision
+         * @description A correction resets payment to pending for the new revision.
+         */
         post: operations["correctTransaction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/transactions/{transactionId}/payment-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Raw ULID without the display-only TRX- prefix. */
+                transactionId: components["parameters"]["TransactionId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark the current transaction revision payment as successful or failed
+         * @description Admins may update their own transactions and superadmins may update any
+         *     transaction. Repeating the current outcome is idempotent. A successful
+         *     payment is final until a correction creates a new pending revision.
+         */
+        post: operations["setTransactionPaymentStatus"];
         delete?: never;
         options?: never;
         head?: never;
@@ -294,7 +322,11 @@ export interface paths {
         /** List print attempts */
         get: operations["listPrintAttempts"];
         put?: never;
-        /** Append a terminal print attempt */
+        /**
+         * Append a terminal print attempt
+         * @description Printing is accepted only when payment succeeded for the exact current,
+         *     non-deleted transaction revision.
+         */
         post: operations["recordPrintAttempt"];
         delete?: never;
         options?: never;
@@ -331,7 +363,9 @@ export interface paths {
         /**
          * Download a filtered XLSX or PDF
          * @description Online-only. The caller must ensure relevant pending or conflicted local
-         *     mutations are resolved before requesting the export.
+         *     mutations are resolved before requesting the export. The export contains
+         *     every payment state matching `filters`; revenue dashboard aggregation is
+         *     separately restricted to successful payment on the current revision.
          */
         post: operations["exportTransactions"];
         delete?: never;
@@ -451,6 +485,25 @@ export interface components {
         Rupiah: number;
         /** @enum {string} */
         UserRole: "admin" | "superadmin";
+        /**
+         * @description Stored payment method. `legacy` is read-only compatibility for
+         *     transactions created before payment selection was introduced.
+         * @enum {string}
+         */
+        PaymentMethod: "cash" | "qris" | "legacy";
+        /** @enum {string} */
+        SelectablePaymentMethod: "cash" | "qris";
+        /**
+         * @description Lowercase SHA-256 digest of the exact configured static merchant QRIS
+         *     payload. It binds a QRIS transaction revision to the exact payload used
+         *     to generate its amount-specific QR code; it does not verify merchant
+         *     ownership or payment settlement.
+         */
+        QrisPayloadHash: string;
+        /** @enum {string} */
+        PaymentStatus: "pending" | "success" | "failed";
+        /** @enum {string} */
+        PaymentOutcome: "success" | "failed";
         /** @enum {string} */
         PrintState: "pending" | "success" | "failed" | "unknown" | "needs-reprint";
         /** @enum {string} */
@@ -494,6 +547,25 @@ export interface components {
             baseRevision: number;
             currentRevision: number;
             localSnapshot: components["schemas"]["TransactionSnapshot"];
+            serverSnapshot: components["schemas"]["TransactionSnapshot"];
+        };
+        PaymentStateConflictEnvelope: {
+            error: components["schemas"]["ApiError"] & {
+                /** @constant */
+                code?: "PAYMENT_STATE_CONFLICT";
+                details?: components["schemas"]["PaymentStateConflictDetails"];
+            };
+        };
+        PaymentStateConflictDetails: {
+            /** @constant */
+            kind: "payment_state";
+            /** @enum {string} */
+            reason: "revision_changed" | "payment_final";
+            baseRevision: number;
+            currentRevision: number;
+            requestedStatus: components["schemas"]["PaymentOutcome"];
+            paymentStatus: components["schemas"]["PaymentStatus"];
+            paymentConfirmedRevision: number | null;
             serverSnapshot: components["schemas"]["TransactionSnapshot"];
         };
         HealthStatus: {
@@ -660,6 +732,14 @@ export interface components {
         TransactionSnapshot: {
             /** Format: date-time */
             occurredAt: string;
+            /** @description Immutable revisions created before payment tracking are read-normalized to `legacy`. */
+            paymentMethod: components["schemas"]["PaymentMethod"];
+            /** @description Present only when this revision is bound to a QRIS merchant payload. */
+            qrisPayloadHash?: components["schemas"]["QrisPayloadHash"];
+            /** @description Immutable legacy revisions are read-normalized to `success`. */
+            paymentStatus: components["schemas"]["PaymentStatus"];
+            /** @description The snapshot revision when payment succeeded; null until payment succeeds. */
+            paymentConfirmedRevision: number | null;
             items: components["schemas"]["TransactionItemSnapshot"][];
             subtotal: components["schemas"]["Rupiah"];
             total: components["schemas"]["Rupiah"];
@@ -669,6 +749,8 @@ export interface components {
             transactionId: components["schemas"]["ULID"];
             revision: number;
             reason: string;
+            /** @description Present only for a QRIS revision created after payload binding was introduced. */
+            qrisPayloadHash?: components["schemas"]["QrisPayloadHash"];
             before: components["schemas"]["TransactionSnapshot"];
             after: components["schemas"]["TransactionSnapshot"];
             originActor: components["schemas"]["UserSummary"];
@@ -699,6 +781,15 @@ export interface components {
             items: components["schemas"]["TransactionItem"][];
             subtotal: components["schemas"]["Rupiah"];
             total: components["schemas"]["Rupiah"];
+            paymentMethod: components["schemas"]["PaymentMethod"];
+            /** @description Present only for a QRIS revision created after payload binding was introduced. */
+            qrisPayloadHash?: components["schemas"]["QrisPayloadHash"];
+            paymentStatus: components["schemas"]["PaymentStatus"];
+            /**
+             * @description The transaction revision confirmed by a successful payment. It is
+             *     null while payment is pending or failed.
+             */
+            paymentConfirmedRevision: number | null;
             originActor: components["schemas"]["UserSummary"];
             updatedBy: components["schemas"]["UserSummary"];
             terminal: components["schemas"]["TerminalSummary"];
@@ -713,6 +804,9 @@ export interface components {
             id: components["schemas"]["ULID"];
             /** Format: date-time */
             occurredAt: string;
+            paymentMethod: components["schemas"]["SelectablePaymentMethod"];
+            /** @description Required when `paymentMethod` is `qris`; omit for `cash`. */
+            qrisPayloadHash?: components["schemas"]["QrisPayloadHash"];
             items: components["schemas"]["TransactionLineInput"][];
         };
         CorrectTransactionRequest: {
@@ -720,7 +814,16 @@ export interface components {
             reason: string;
             /** Format: date-time */
             occurredAt: string;
+            paymentMethod: components["schemas"]["SelectablePaymentMethod"];
+            /** @description Required when `paymentMethod` is `qris`; omit for `cash`. */
+            qrisPayloadHash?: components["schemas"]["QrisPayloadHash"];
             items: components["schemas"]["TransactionLineInput"][];
+        };
+        SetPaymentStatusRequest: {
+            baseRevision: number;
+            status: components["schemas"]["PaymentOutcome"];
+            /** Format: date-time */
+            occurredAt: string;
         };
         DeleteTransactionRequest: {
             baseRevision: number;
@@ -823,6 +926,8 @@ export interface components {
             packageId?: components["schemas"]["UUID"];
             creatorId?: components["schemas"]["UUID"];
             terminalId?: components["schemas"]["UUID"];
+            paymentMethod?: components["schemas"]["PaymentMethod"];
+            paymentStatus?: components["schemas"]["PaymentStatus"];
             /** @default false */
             includeDeleted: boolean;
         };
@@ -881,17 +986,35 @@ export interface components {
         SyncAggregate: "transaction" | "print_attempt";
         /**
          * @description Print attempts use `aggregate: print_attempt` with `action: create`.
+         *     As a temporary, telemetry-backed compatibility path, the server accepts a
+         *     truly absent `paymentMethod` only for an already-signed transaction
+         *     `create` or `correct` queued before 2026-07-29 WIB by a terminal enrolled
+         *     before that rollout. Server acceptance ends after 2026-08-12 WIB.
+         *     Explicit `null` is rejected. Current clients must always send `cash` or
+         *     `qris`.
          * @enum {string}
          */
-        SyncAction: "create" | "correct";
+        SyncAction: "create" | "correct" | "set_payment_status";
         CreateTransactionMutationPayload: {
             id: components["schemas"]["ULID"];
+            /** @description Required for current clients; explicit null is never accepted. */
+            paymentMethod: components["schemas"]["SelectablePaymentMethod"];
+            /** @description Required when `paymentMethod` is `qris`; omit for `cash`. */
+            qrisPayloadHash?: components["schemas"]["QrisPayloadHash"];
             items: components["schemas"]["TransactionLineInput"][];
         };
         CorrectTransactionMutationPayload: {
             id: components["schemas"]["ULID"];
             reason: string;
+            /** @description Required for current clients; explicit null is never accepted. */
+            paymentMethod: components["schemas"]["SelectablePaymentMethod"];
+            /** @description Required when `paymentMethod` is `qris`; omit for `cash`. */
+            qrisPayloadHash?: components["schemas"]["QrisPayloadHash"];
             items: components["schemas"]["TransactionLineInput"][];
+        };
+        SetPaymentStatusMutationPayload: {
+            id: components["schemas"]["ULID"];
+            status: components["schemas"]["PaymentOutcome"];
         };
         PrintAttemptMutationPayload: {
             id: components["schemas"]["UUID"];
@@ -926,7 +1049,7 @@ export interface components {
             terminalId: components["schemas"]["UUID"];
             /** Format: date-time */
             occurredAt: string;
-            payload: components["schemas"]["CreateTransactionMutationPayload"] | components["schemas"]["CorrectTransactionMutationPayload"] | components["schemas"]["PrintAttemptMutationPayload"];
+            payload: components["schemas"]["CreateTransactionMutationPayload"] | components["schemas"]["CorrectTransactionMutationPayload"] | components["schemas"]["SetPaymentStatusMutationPayload"] | components["schemas"]["PrintAttemptMutationPayload"];
         };
         /**
          * @description A signed outbox operation. `signature` is standard Base64 of the 64-byte
@@ -947,7 +1070,7 @@ export interface components {
             status: components["schemas"]["SyncMutationStatus"];
             replayed: boolean;
             data: components["schemas"]["Transaction"] | components["schemas"]["PrintAttempt"] | null;
-            conflict: components["schemas"]["RevisionConflictDetails"] | null;
+            conflict: components["schemas"]["RevisionConflictDetails"] | components["schemas"]["PaymentStateConflictDetails"] | null;
             error: components["schemas"]["ApiError"] | null;
         };
         SyncPushResult: {
@@ -1190,6 +1313,19 @@ export interface components {
             };
             content: {
                 "application/json": components["schemas"]["RevisionConflictEnvelope"];
+            };
+        };
+        /**
+         * @description The transaction revision changed or payment already succeeded. Details
+         *     contain the authoritative current payment state and server snapshot.
+         */
+        PaymentStateConflict: {
+            headers: {
+                "X-Request-Id": components["headers"]["RequestId"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["PaymentStateConflictEnvelope"];
             };
         };
         UnprocessableEntity: {
@@ -1586,6 +1722,8 @@ export interface operations {
                 packageId?: components["schemas"]["UUID"];
                 creatorId?: components["schemas"]["UUID"];
                 terminalId?: components["schemas"]["UUID"];
+                paymentMethod?: components["schemas"]["PaymentMethod"];
+                paymentStatus?: components["schemas"]["PaymentStatus"];
                 includeDeleted?: boolean;
             };
             header?: never;
@@ -1699,6 +1837,31 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["RevisionConflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    setTransactionPaymentStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Raw ULID without the display-only TRX- prefix. */
+                transactionId: components["parameters"]["TransactionId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetPaymentStatusRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["TransactionResponse"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["PaymentStateConflict"];
             422: components["responses"]["UnprocessableEntity"];
         };
     };

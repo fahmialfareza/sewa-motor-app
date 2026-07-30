@@ -13,13 +13,24 @@ import {
 import { useAuth } from "@/auth/AuthProvider";
 import { AppScreen } from "@/components/layout/AppScreen";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PaymentMethodSelector } from "@/components/transactions/PaymentMethodSelector";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Icon } from "@/components/ui/Icon";
 import { QuantityStepper } from "@/components/ui/QuantityStepper";
 import { StateView } from "@/components/ui/StateView";
 import { createTransaction, listPackages } from "@/db/repositories";
-import type { RentalPackage } from "@/domain/types";
+import {
+  createDynamicQris,
+  fingerprintStaticQris,
+  validateStaticQris,
+} from "@/domain/qris";
+import type {
+  QrisPayloadHash,
+  RentalPackage,
+  SelectablePaymentMethod,
+} from "@/domain/types";
+import { readQrisConfig } from "@/security/secure-store";
 import { useSyncRuntime } from "@/sync/SyncProvider";
 import {
   colors,
@@ -36,10 +47,14 @@ export default function SaleComposerScreen() {
   const sync = useSyncRuntime();
   const [packages, setPackages] = useState<RentalPackage[]>([]);
   const [quantities, setQuantities] = useState<Record<string, number>>({});
+  const [paymentMethod, setPaymentMethod] =
+    useState<SelectablePaymentMethod | null>(null);
   const [loadingPackages, setLoadingPackages] = useState(true);
   const [packageError, setPackageError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [qrisAvailable, setQrisAvailable] = useState(false);
+  const [qrisConfigChecked, setQrisConfigChecked] = useState(false);
 
   const loadPackages = useCallback(async () => {
     setLoadingPackages(true);
@@ -57,10 +72,27 @@ export default function SaleComposerScreen() {
     }
   }, []);
 
+  const loadQrisAvailability = useCallback(async () => {
+    try {
+      const config = await readQrisConfig();
+      const available =
+        config !== null && Boolean(validateStaticQris(config.staticPayload));
+      setQrisAvailable(available);
+      if (!available) {
+        setPaymentMethod((current) => (current === "qris" ? null : current));
+      }
+    } catch {
+      setQrisAvailable(false);
+      setPaymentMethod((current) => (current === "qris" ? null : current));
+    } finally {
+      setQrisConfigChecked(true);
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
-      void loadPackages();
-    }, [loadPackages]),
+      void Promise.all([loadPackages(), loadQrisAvailability()]);
+    }, [loadPackages, loadQrisAvailability]),
   );
 
   const total = useMemo(
@@ -103,21 +135,40 @@ export default function SaleComposerScreen() {
 
   const save = async () => {
     if (!session) return;
+    if (!paymentMethod) {
+      setError("Pilih metode pembayaran tunai atau QRIS.");
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
+      let qrisPayloadHash: QrisPayloadHash | null = null;
+      if (paymentMethod === "qris") {
+        const qrisConfig = await readQrisConfig();
+        if (!qrisConfig) {
+          throw new Error(
+            "QRIS belum dikonfigurasi. Minta superadmin mengatur QRIS merchant.",
+          );
+        }
+        const staticQris = validateStaticQris(qrisConfig.staticPayload);
+        createDynamicQris(staticQris.payload, total);
+        qrisPayloadHash = await fingerprintStaticQris(staticQris.payload);
+      }
       const transaction = await createTransaction(
         packages.map((item) => ({
           package: item,
           quantity: quantities[item.id] ?? 0,
         })),
+        paymentMethod,
+        qrisPayloadHash,
         session,
       );
       setQuantities({});
+      setPaymentMethod(null);
       await sync.refresh();
       void sync.syncNow();
       router.push({
-        pathname: "/transactions/[id]/print",
+        pathname: "/transactions/[id]",
         params: { id: transaction.id },
       });
     } catch (reason) {
@@ -137,12 +188,16 @@ export default function SaleComposerScreen() {
       scroll={false}
       stickyFooter={
         <StickyTransactionSummary
-          disabled={total === 0}
+          disabled={total === 0 || !paymentMethod}
           error={error}
           itemCount={selectedItemCount}
           loading={saving}
           onSave={() => void save()}
+          onPaymentMethodChange={setPaymentMethod}
           packageCount={selectedPackages.length}
+          paymentMethod={paymentMethod}
+          qrisAvailable={qrisAvailable}
+          qrisConfigChecked={qrisConfigChecked}
           quantities={quantities}
           selectedPackages={selectedPackages}
           total={total}
@@ -294,6 +349,10 @@ function StickyTransactionSummary({
   loading,
   error,
   onSave,
+  paymentMethod,
+  qrisAvailable,
+  qrisConfigChecked,
+  onPaymentMethodChange,
   selectedPackages,
   quantities,
 }: {
@@ -304,6 +363,10 @@ function StickyTransactionSummary({
   loading: boolean;
   error: string | null;
   onSave: () => void;
+  paymentMethod: SelectablePaymentMethod | null;
+  qrisAvailable: boolean;
+  qrisConfigChecked: boolean;
+  onPaymentMethodChange: (method: SelectablePaymentMethod) => void;
   selectedPackages: RentalPackage[];
   quantities: Record<string, number>;
 }) {
@@ -353,6 +416,16 @@ function StickyTransactionSummary({
           {formatRupiah(total)}
         </Text>
       </View>
+      <PaymentMethodSelector
+        onChange={onPaymentMethodChange}
+        qrisDisabled={!qrisConfigChecked || !qrisAvailable}
+        qrisDisabledReason={
+          qrisConfigChecked
+            ? "QRIS belum dikonfigurasi oleh superadmin."
+            : "Memeriksa konfigurasi QRIS…"
+        }
+        value={paymentMethod}
+      />
       {error ? (
         <Text accessibilityRole="alert" style={styles.stickyError}>
           {error}

@@ -173,6 +173,161 @@ const migrations: Migration[] = [
           revision,
           package_id,
           package_revision
+      );
+    `,
+  },
+  {
+    version: 4,
+    name: "add_transaction_payment_state",
+    sql: `
+      ALTER TABLE transactions
+        ADD COLUMN payment_method TEXT NOT NULL DEFAULT 'legacy'
+        CHECK(payment_method IN ('cash', 'qris', 'legacy'));
+      ALTER TABLE transactions
+        ADD COLUMN payment_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(payment_status IN ('pending', 'success', 'failed'));
+      ALTER TABLE transactions
+        ADD COLUMN payment_confirmed_revision INTEGER;
+
+      UPDATE transactions
+      SET payment_method = 'legacy',
+          payment_status = 'success',
+          payment_confirmed_revision = revision;
+
+      CREATE INDEX IF NOT EXISTS transactions_payment_status_idx
+        ON transactions(payment_status);
+    `,
+  },
+  {
+    version: 5,
+    name: "preserve_print_revision_and_outbox_dependencies",
+    sql: `
+      ALTER TABLE print_attempts
+        ADD COLUMN transaction_revision INTEGER;
+
+      UPDATE transactions
+      SET print_state = 'unknown'
+      WHERE id IN (
+        SELECT transaction_id
+        FROM print_attempts
+        WHERE result = 'pending'
+          AND transaction_revision IS NULL
+      );
+
+      UPDATE print_attempts
+      SET result = 'unknown',
+          completed_at = COALESCE(completed_at, requested_at),
+          error = COALESCE(
+            error,
+            'Revisi cetak lama tidak tersedia setelah pemutakhiran aplikasi.'
+          )
+      WHERE result = 'pending'
+        AND transaction_revision IS NULL;
+
+      ALTER TABLE outbox_operations
+        ADD COLUMN dependency_key TEXT;
+
+      UPDATE outbox_operations
+      SET dependency_key = CASE
+        WHEN aggregate = 'print_attempt'
+          THEN COALESCE(
+            json_extract(operation_json, '$.payload.transactionId'),
+            aggregate_id
+          )
+        ELSE aggregate_id
+      END
+      WHERE dependency_key IS NULL;
+
+      CREATE INDEX IF NOT EXISTS outbox_dependency_order_idx
+        ON outbox_operations(dependency_key);
+    `,
+  },
+  {
+    version: 6,
+    name: "quarantine_terminal_outbox_dependencies",
+    sql: `
+      UPDATE outbox_operations
+      SET state = 'resolved',
+          last_error = NULL,
+          next_attempt_at = NULL
+      WHERE state = 'discarded'
+        AND last_error = 'REVISION_CONFLICT'
+        AND EXISTS (
+          SELECT 1
+          FROM sync_conflicts
+          WHERE sync_conflicts.transaction_id =
+                outbox_operations.dependency_key
+            AND sync_conflicts.resolved_at IS NOT NULL
+        );
+
+      UPDATE outbox_operations
+      SET state = 'rejected'
+      WHERE state = 'discarded'
+        AND last_error IS NOT NULL;
+
+      UPDATE outbox_operations AS successor
+      SET state = 'rejected',
+          attempts = attempts + 1,
+          last_error = COALESCE(
+            last_error,
+            'Operasi dikarantina karena operasi sebelumnya belum dipulihkan.'
+          ),
+          next_attempt_at = NULL
+      WHERE successor.state IN ('pending', 'error')
+        AND EXISTS (
+          SELECT 1
+          FROM outbox_operations predecessor
+          WHERE predecessor.dependency_key = successor.dependency_key
+            AND predecessor.rowid < successor.rowid
+            AND predecessor.state IN ('conflict', 'rejected')
+        );
+
+      UPDATE transactions
+      SET payment_status = 'pending',
+          payment_confirmed_revision = NULL,
+          sync_state = CASE
+            WHEN EXISTS (
+              SELECT 1
+              FROM outbox_operations blocked
+              WHERE blocked.dependency_key = transactions.id
+                AND blocked.state = 'conflict'
+            ) THEN 'conflict'
+            ELSE 'error'
+          END
+      WHERE EXISTS (
+        SELECT 1
+        FROM outbox_operations blocked
+        WHERE blocked.dependency_key = transactions.id
+          AND blocked.aggregate = 'transaction'
+          AND blocked.state IN ('conflict', 'rejected')
+      );
+    `,
+  },
+  {
+    version: 7,
+    name: "normalize_transaction_timestamps_to_utc",
+    sql: `
+      UPDATE transactions
+      SET occurred_at = strftime(
+        '%Y-%m-%dT%H:%M:%fZ',
+        occurred_at
+      )
+      WHERE strftime('%s', occurred_at) IS NOT NULL;
+    `,
+  },
+  {
+    version: 8,
+    name: "bind_qris_payload_to_transaction_revision",
+    sql: `
+      ALTER TABLE transactions
+        ADD COLUMN qris_payload_hash TEXT
+        CHECK(
+          qris_payload_hash IS NULL
+          OR (
+            length(qris_payload_hash) = 64
+            AND qris_payload_hash = lower(qris_payload_hash)
+            AND qris_payload_hash NOT GLOB '*[^0-9a-f]*'
+          )
         );
     `,
   },

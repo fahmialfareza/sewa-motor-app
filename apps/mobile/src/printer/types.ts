@@ -1,4 +1,4 @@
-import type { Transaction } from "@/domain/types";
+import type { PaymentMethod, Transaction } from "@/domain/types";
 
 export interface ReceiptLine {
   name: string;
@@ -12,6 +12,7 @@ export interface ReceiptDocument {
   revision: number;
   occurredAt: string;
   cashierName: string;
+  paymentMethod: PaymentMethod;
   lines: ReceiptLine[];
   subtotal: number;
   total: number;
@@ -53,6 +54,7 @@ export function receiptFromTransaction(
     revision: transaction.revision,
     occurredAt: transaction.occurredAt,
     cashierName: transaction.updatedActorName,
+    paymentMethod: transaction.paymentMethod,
     lines: transaction.items.map((item) => ({
       name: item.name,
       unitPrice: item.unitPrice,

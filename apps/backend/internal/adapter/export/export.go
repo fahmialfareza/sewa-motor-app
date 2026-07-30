@@ -76,7 +76,8 @@ func buildSheet(rows []domain.ExportRow) string {
 	headers := []string{
 		"ID Transaksi", "Waktu (Asia/Jakarta)", "Revisi", "Kode Paket", "Nama Paket",
 		"Revisi Paket", "Harga Satuan", "Jumlah", "Total Baris", "Total Transaksi",
-		"Pembuat", "Username", "Status Cetak",
+		"Pembuat", "Username", "Metode Pembayaran", "QRIS Payload Hash",
+		"Status Pembayaran", "Status Cetak",
 	}
 	var body strings.Builder
 	body.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`)
@@ -110,6 +111,9 @@ func buildSheet(rows []domain.ExportRow) string {
 			row.TransactionTotal,
 			row.CreatorName,
 			row.CreatorUsername,
+			string(row.PaymentMethod),
+			stringPointerValue(row.QrisPayloadHash),
+			string(row.PaymentStatus),
 			row.PrintState,
 		}
 		for column, value := range values {
@@ -126,7 +130,7 @@ func buildSheet(rows []domain.ExportRow) string {
 		body.WriteString(`</row>`)
 	}
 	lastRow := len(rows) + 1
-	body.WriteString(fmt.Sprintf(`</sheetData><autoFilter ref="A1:M%d"/></worksheet>`, lastRow))
+	body.WriteString(fmt.Sprintf(`</sheetData><autoFilter ref="A1:P%d"/></worksheet>`, lastRow))
 	return body.String()
 }
 
@@ -170,19 +174,28 @@ func (Generator) PDF(rows []domain.ExportRow, from, to *time.Time) ([]byte, erro
 	seen := make(map[string]struct{})
 	var total int64
 	for _, row := range rows {
+		firstLineForTransaction := false
 		if _, ok := seen[row.TransactionID]; !ok {
 			seen[row.TransactionID] = struct{}{}
-			total += row.TransactionTotal
+			firstLineForTransaction = true
+			if row.PaymentStatus == domain.PaymentStatusSuccess {
+				total += row.TransactionTotal
+			}
 		}
 		lines = append(lines, fmt.Sprintf(
-			"TRX-%s | %s | %s | %d x Rp%s | Rp%s",
+			"TRX-%s | %s | %s | %d x Rp%s | Rp%s | %s | %s",
 			row.TransactionID,
 			row.OccurredAt.In(location).Format("02-01-2006 15:04"),
 			row.PackageName,
 			row.Quantity,
 			formatInteger(row.UnitPrice),
 			formatInteger(row.LineTotal),
+			row.PaymentMethod,
+			row.PaymentStatus,
 		))
+		if firstLineForTransaction && row.QrisPayloadHash != nil {
+			lines = append(lines, "QRIS payload hash: "+*row.QrisPayloadHash)
+		}
 	}
 	lines = append(lines,
 		fmt.Sprintf("Jumlah transaksi: %d", len(seen)),
@@ -256,4 +269,11 @@ func formatInteger(value int64) string {
 		raw = raw[:index] + "." + raw[index:]
 	}
 	return raw
+}
+
+func stringPointerValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }

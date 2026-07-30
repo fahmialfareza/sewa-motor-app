@@ -36,6 +36,21 @@ func (r Reporting) Export(ctx context.Context, principal domain.Principal, forma
 	if err := RequireReady(principal); err != nil {
 		return nil, "", err
 	}
+	if filter.PaymentMethod != nil && !filter.PaymentMethod.Valid() {
+		return nil, "", domain.Validation(
+			"Metode pembayaran tidak valid",
+			map[string]any{"field": "filters.paymentMethod"},
+		)
+	}
+	if filter.PaymentStatus != nil && !filter.PaymentStatus.Valid() {
+		return nil, "", domain.Validation(
+			"Status pembayaran tidak valid",
+			map[string]any{"field": "filters.paymentStatus"},
+		)
+	}
+	if !principal.IsSuperadmin() {
+		filter.IncludeDeleted = false
+	}
 	filter.Limit = 10000
 	rows, err := r.Repo.ExportRows(ctx, filter)
 	if err != nil {

@@ -15,6 +15,7 @@ import {
 } from "@/utils/format";
 
 import { StatusBadge } from "../ui/StatusBadge";
+import { PaymentMethodBadge, PaymentStatusBadge } from "../ui/PaymentBadge";
 
 export function TransactionRow({
   transaction,
@@ -64,9 +65,8 @@ export function TransactionRow({
           </Text>
           <View style={styles.badges}>
             <StatusBadge kind={transaction.syncState} />
-            {transaction.printState !== "pending" ? (
-              <StatusBadge kind={transaction.printState} />
-            ) : null}
+            <PaymentMethodBadge method={transaction.paymentMethod} />
+            <PaymentStatusBadge status={transaction.paymentStatus} />
           </View>
         </View>
       </View>

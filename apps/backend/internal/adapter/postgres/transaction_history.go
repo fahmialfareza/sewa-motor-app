@@ -14,7 +14,8 @@ func (s *Store) ListTransactionRevisions(ctx context.Context, id string) ([]doma
 	}
 	rows, err := s.Pool.Query(ctx, `
 		SELECT transaction_id, revision, base_revision, change_type, reason,
-		       before_snapshot, after_snapshot, origin_actor_id, submitted_by_actor_id,
+		       qris_payload_hash, before_snapshot, after_snapshot,
+		       origin_actor_id, submitted_by_actor_id,
 		       terminal_id, client_occurred_at, server_received_at
 		FROM transaction_revisions
 		WHERE transaction_id = $1 AND revision > 1
@@ -30,12 +31,25 @@ func (s *Store) ListTransactionRevisions(ctx context.Context, id string) ([]doma
 		var revision domain.TransactionRevision
 		if err := rows.Scan(
 			&revision.TransactionID, &revision.Revision, &revision.BaseRevision,
-			&revision.ChangeType, &revision.Reason, &revision.BeforeSnapshot,
+			&revision.ChangeType, &revision.Reason, &revision.QrisPayloadHash,
+			&revision.BeforeSnapshot,
 			&revision.AfterSnapshot, &revision.OriginActorID, &revision.SubmittedBy,
 			&revision.TerminalID, &revision.ClientOccurredAt, &revision.ServerReceivedAt,
 		); err != nil {
 			return nil, dbError(err, "scan transaction revision")
 		}
+		beforeRevision := revision.Revision - 1
+		if revision.BaseRevision != nil {
+			beforeRevision = *revision.BaseRevision
+		}
+		revision.BeforeSnapshot = domain.NormalizeTransactionSnapshot(
+			revision.BeforeSnapshot,
+			beforeRevision,
+		)
+		revision.AfterSnapshot = domain.NormalizeTransactionSnapshot(
+			revision.AfterSnapshot,
+			revision.Revision,
+		)
 		itemRows, err := s.Pool.Query(ctx, `
 			SELECT line_number, package_id, package_revision, package_code, package_name,
 			       package_description, unit_price, quantity, line_total

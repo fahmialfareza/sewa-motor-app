@@ -11,7 +11,10 @@ import (
 	"github.com/google/uuid"
 )
 
-var ulidPattern = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
+var (
+	ulidPattern            = regexp.MustCompile(`^[0-9A-HJKMNP-TV-Z]{26}$`)
+	qrisPayloadHashPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
+)
 
 type LoginInput struct {
 	Username       string
@@ -78,18 +81,33 @@ type MutationIdentity struct {
 }
 
 type CreateTransactionInput struct {
-	ID         string      `json:"id"`
-	OccurredAt time.Time   `json:"occurredAt"`
-	Items      []ItemInput `json:"items"`
-	Identity   MutationIdentity
+	ID                              string        `json:"id"`
+	OccurredAt                      time.Time     `json:"occurredAt"`
+	PaymentMethod                   PaymentMethod `json:"paymentMethod"`
+	QrisPayloadHash                 *string       `json:"qrisPayloadHash,omitempty"`
+	Items                           []ItemInput   `json:"items"`
+	InitialPaymentStatus            PaymentStatus `json:"-"`
+	InitialPaymentConfirmedRevision *int          `json:"-"`
+	Identity                        MutationIdentity
 }
 
 type CorrectTransactionInput struct {
-	ID           string      `json:"-"`
-	BaseRevision int         `json:"baseRevision"`
-	Reason       string      `json:"reason"`
-	OccurredAt   time.Time   `json:"occurredAt"`
-	Items        []ItemInput `json:"items"`
+	ID                         string        `json:"-"`
+	BaseRevision               int           `json:"baseRevision"`
+	Reason                     string        `json:"reason"`
+	OccurredAt                 time.Time     `json:"occurredAt"`
+	PaymentMethod              PaymentMethod `json:"paymentMethod"`
+	QrisPayloadHash            *string       `json:"qrisPayloadHash,omitempty"`
+	Items                      []ItemInput   `json:"items"`
+	LegacyPaymentCompatibility bool          `json:"-"`
+	Identity                   MutationIdentity
+}
+
+type SetPaymentStatusInput struct {
+	ID           string        `json:"-"`
+	BaseRevision int           `json:"baseRevision"`
+	Status       PaymentStatus `json:"status"`
+	OccurredAt   time.Time     `json:"occurredAt"`
 	Identity     MutationIdentity
 }
 
@@ -115,6 +133,8 @@ type TransactionFilter struct {
 	PackageID      *uuid.UUID
 	CreatorID      *uuid.UUID
 	TerminalID     *uuid.UUID
+	PaymentMethod  *PaymentMethod
+	PaymentStatus  *PaymentStatus
 	IncludeDeleted bool
 	Limit          int
 	CursorOccurred *time.Time
@@ -192,6 +212,43 @@ func ValidateItems(items []ItemInput) error {
 func ValidateTransactionID(value string) error {
 	if !ulidPattern.MatchString(value) {
 		return Validation("ID transaksi harus berupa ULID 26 karakter", map[string]any{"field": "id"})
+	}
+	return nil
+}
+
+func ValidateSelectablePaymentMethod(value PaymentMethod) error {
+	if !value.Selectable() {
+		return Validation("Metode pembayaran harus cash atau qris", map[string]any{"field": "paymentMethod"})
+	}
+	return nil
+}
+
+// ValidateQrisPayloadBinding requires every newly written QRIS revision to be
+// bound to the exact merchant payload used by the terminal. The digest is not
+// normalized: accepting uppercase or surrounding whitespace would make the
+// persisted identity ambiguous.
+func ValidateQrisPayloadBinding(method PaymentMethod, hash *string) error {
+	if method == PaymentMethodQRIS {
+		if hash == nil || !qrisPayloadHashPattern.MatchString(*hash) {
+			return Validation(
+				"Hash payload QRIS wajib berupa 64 karakter heksadesimal huruf kecil",
+				map[string]any{"field": "qrisPayloadHash"},
+			)
+		}
+		return nil
+	}
+	if hash != nil {
+		return Validation(
+			"Hash payload QRIS hanya boleh digunakan untuk pembayaran QRIS",
+			map[string]any{"field": "qrisPayloadHash"},
+		)
+	}
+	return nil
+}
+
+func ValidatePaymentOutcome(value PaymentStatus) error {
+	if value != PaymentStatusSuccess && value != PaymentStatusFailed {
+		return Validation("Status pembayaran harus success atau failed", map[string]any{"field": "status"})
 	}
 	return nil
 }

@@ -4,6 +4,8 @@ import { apiRequest } from "@/api/client";
 import type {
   ApiPackage,
   ApiTransaction,
+  PaymentStateConflictDetails,
+  RevisionConflictDetails,
   SyncPullResponse,
   SyncPushResponse,
 } from "@/api/contracts";
@@ -100,7 +102,10 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
             kind: "success",
           });
           pushed += 1;
-        } else if (result.status === "conflict" && result.conflict) {
+        } else if (
+          result.status === "conflict" &&
+          isRevisionConflict(result.conflict)
+        ) {
           const current = await getTransaction(item.aggregateId);
           const local = current
             ? mergeSnapshot(
@@ -120,7 +125,57 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
               ),
             });
             conflicts += 1;
+          } else {
+            await markOutboxResult(item.operationId, item.aggregateId, {
+              kind: "rejected",
+              message:
+                result.error?.message ??
+                "Konflik revisi tidak dapat dipetakan ke transaksi lokal.",
+            });
           }
+        } else if (
+          result.status === "conflict" &&
+          isPaymentStateConflict(result.conflict)
+        ) {
+          const current = await getTransaction(item.aggregateId);
+          if (!current) {
+            await markOutboxResult(item.operationId, item.aggregateId, {
+              kind: "rejected",
+              message:
+                "Konflik pembayaran tidak dapat dipetakan ke transaksi lokal.",
+            });
+            conflicts += 1;
+            continue;
+          }
+          const authoritative = mergeSnapshot(
+            current,
+            result.conflict.serverSnapshot,
+            result.conflict.currentRevision,
+          );
+          await markOutboxResult(item.operationId, item.aggregateId, {
+            kind: "payment-conflict",
+            message:
+              result.error?.message ??
+              "Status pembayaran berubah di server. Muat ulang transaksi.",
+            paymentStatus: result.conflict.paymentStatus,
+            paymentConfirmedRevision: result.conflict.paymentConfirmedRevision,
+            authoritative: {
+              ...authoritative,
+              syncState: "error",
+              paymentStatus: result.conflict.paymentStatus,
+              paymentConfirmedRevision:
+                result.conflict.paymentConfirmedRevision,
+            },
+          });
+          conflicts += 1;
+        } else if (result.status === "conflict") {
+          await markOutboxResult(item.operationId, item.aggregateId, {
+            kind: "rejected",
+            message:
+              result.error?.message ??
+              "Server mengembalikan konflik yang tidak dapat diproses.",
+          });
+          conflicts += 1;
         } else if (result.status === "rejected") {
           await markOutboxResult(item.operationId, item.aggregateId, {
             kind: "rejected",
@@ -133,8 +188,6 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
           });
         }
       }
-
-      if (batch.length < 25) break;
     }
 
     let cursor = (await getSyncMetadata()).cursor;
@@ -238,4 +291,46 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
     await setSyncError(message);
     throw error;
   }
+}
+
+function isRevisionConflict(value: unknown): value is RevisionConflictDetails {
+  if (!value || typeof value !== "object") return false;
+  const conflict = value as Partial<RevisionConflictDetails>;
+  return (
+    Number.isInteger(conflict.baseRevision) &&
+    (conflict.baseRevision ?? -1) >= 0 &&
+    Number.isInteger(conflict.currentRevision) &&
+    (conflict.currentRevision ?? 0) >= 1 &&
+    typeof conflict.localSnapshot === "object" &&
+    conflict.localSnapshot !== null &&
+    typeof conflict.serverSnapshot === "object" &&
+    conflict.serverSnapshot !== null
+  );
+}
+
+function isPaymentStateConflict(
+  value: unknown,
+): value is PaymentStateConflictDetails {
+  if (!value || typeof value !== "object") return false;
+  const conflict = value as Record<string, unknown>;
+  if (
+    conflict.kind !== "payment_state" ||
+    !Number.isInteger(conflict.currentRevision) ||
+    Number(conflict.currentRevision) < 1 ||
+    typeof conflict.serverSnapshot !== "object" ||
+    conflict.serverSnapshot === null
+  ) {
+    return false;
+  }
+  if (conflict.paymentStatus === "success") {
+    return (
+      Number.isInteger(conflict.paymentConfirmedRevision) &&
+      Number(conflict.paymentConfirmedRevision) >= 1
+    );
+  }
+  return (
+    (conflict.paymentStatus === "pending" ||
+      conflict.paymentStatus === "failed") &&
+    conflict.paymentConfirmedRevision === null
+  );
 }

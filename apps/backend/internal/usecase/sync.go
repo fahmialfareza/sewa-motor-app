@@ -109,7 +109,8 @@ func syncError(ctx context.Context, result domain.SyncOperationResult, err error
 		result.Status = http.StatusForbidden
 	case domain.CodeNotFound:
 		result.Status = http.StatusNotFound
-	case domain.CodeRevisionConflict, domain.CodeConflict, domain.CodeIdempotencyMismatch:
+	case domain.CodeRevisionConflict, domain.CodePaymentStateConflict,
+		domain.CodeConflict, domain.CodeIdempotencyMismatch:
 		result.Status = http.StatusConflict
 	default:
 		result.Status = http.StatusInternalServerError

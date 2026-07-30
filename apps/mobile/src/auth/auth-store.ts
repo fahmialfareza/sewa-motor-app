@@ -116,7 +116,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
         sessionId: `DEV-SESSION-${role}`,
         user: {
           id: `DEV-${role.toUpperCase()}`,
-          fullName: role === "superadmin" ? "Budi Santoso" : "Andi Wijaya",
+          fullName: role === "superadmin" ? "Penyok" : "Putu",
           username: role,
           role,
           active: true,

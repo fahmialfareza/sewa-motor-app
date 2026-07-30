@@ -8,6 +8,8 @@ import type {
   Transaction,
   TransactionItem,
 } from "@/domain/types";
+import { normalizeQrisPayloadHash } from "@/domain/qris";
+import { normalizeUtcTimestamp } from "@/utils/time";
 
 const STANDARD_ID = "00000000-0000-4000-8000-000000000001";
 const SUNRISE_ID = "00000000-0000-4000-8000-000000000002";
@@ -35,7 +37,7 @@ export function mapApiTransaction(value: ApiTransaction): Transaction {
   return {
     id: value.id,
     revision: value.revision,
-    occurredAt: value.occurredAt,
+    occurredAt: normalizeUtcTimestamp(value.occurredAt),
     subtotal: value.subtotal,
     total: value.total,
     originActorId: value.originActor.id,
@@ -44,6 +46,13 @@ export function mapApiTransaction(value: ApiTransaction): Transaction {
     terminalId: value.terminal.id,
     syncState: "synced",
     printState: value.print.state,
+    paymentMethod: value.paymentMethod,
+    paymentStatus: value.paymentStatus,
+    paymentConfirmedRevision: value.paymentConfirmedRevision,
+    qrisPayloadHash:
+      value.paymentMethod === "qris"
+        ? normalizeQrisPayloadHash(value.qrisPayloadHash)
+        : null,
     deletedAt: value.deletion?.deletedAt ?? null,
     items: value.items.map((item) => ({
       ...item,
@@ -60,16 +69,21 @@ export function mergeSnapshot(
   return {
     ...base,
     revision,
-    occurredAt: snapshot.occurredAt,
+    occurredAt: normalizeUtcTimestamp(snapshot.occurredAt),
     subtotal: snapshot.subtotal,
     total: snapshot.total,
+    paymentMethod: snapshot.paymentMethod,
+    paymentStatus: snapshot.paymentStatus,
+    paymentConfirmedRevision: snapshot.paymentConfirmedRevision,
+    qrisPayloadHash:
+      snapshot.paymentMethod === "qris"
+        ? normalizeQrisPayloadHash(snapshot.qrisPayloadHash)
+        : null,
     syncState: "conflict",
-    items: snapshot.items.map(
-      (item, index): TransactionItem => ({
-        id: `${base.id}:${revision}:${index + 1}`,
-        ...item,
-        accent: accentForPackage(item.packageId),
-      }),
-    ),
+    items: snapshot.items.map((item, index): TransactionItem => ({
+      id: `${base.id}:${revision}:${index + 1}`,
+      ...item,
+      accent: accentForPackage(item.packageId),
+    })),
   };
 }

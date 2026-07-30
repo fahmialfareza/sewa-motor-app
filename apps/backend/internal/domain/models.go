@@ -16,6 +16,40 @@ const (
 
 func (r Role) Valid() bool { return r == RoleAdmin || r == RoleSuperadmin }
 
+type PaymentMethod string
+
+const (
+	PaymentMethodCash   PaymentMethod = "cash"
+	PaymentMethodQRIS   PaymentMethod = "qris"
+	PaymentMethodLegacy PaymentMethod = "legacy"
+)
+
+func (method PaymentMethod) Valid() bool {
+	return method == PaymentMethodCash ||
+		method == PaymentMethodQRIS ||
+		method == PaymentMethodLegacy
+}
+
+// Selectable reports whether a payment method may be chosen for a new or
+// corrected transaction. Legacy is read-only rollout compatibility.
+func (method PaymentMethod) Selectable() bool {
+	return method == PaymentMethodCash || method == PaymentMethodQRIS
+}
+
+type PaymentStatus string
+
+const (
+	PaymentStatusPending PaymentStatus = "pending"
+	PaymentStatusSuccess PaymentStatus = "success"
+	PaymentStatusFailed  PaymentStatus = "failed"
+)
+
+func (status PaymentStatus) Valid() bool {
+	return status == PaymentStatusPending ||
+		status == PaymentStatusSuccess ||
+		status == PaymentStatusFailed
+}
+
 type Principal struct {
 	UserID             uuid.UUID  `json:"userId"`
 	SessionID          uuid.UUID  `json:"sessionId"`
@@ -90,23 +124,27 @@ type ActorSummary struct {
 }
 
 type Transaction struct {
-	ID                    string            `json:"id"`
-	DisplayID             string            `json:"displayId"`
-	Revision              int               `json:"revision"`
-	OccurredAt            time.Time         `json:"occurredAt"`
-	ServerReceivedAt      time.Time         `json:"serverReceivedAt"`
-	Subtotal              int64             `json:"subtotal"`
-	Total                 int64             `json:"total"`
-	PrintState            string            `json:"printState"`
-	LatestPrintedRevision *int              `json:"latestPrintedRevision,omitempty"`
-	OriginActor           ActorSummary      `json:"originActor"`
-	UpdatedBy             ActorSummary      `json:"updatedBy"`
-	TerminalID            *uuid.UUID        `json:"terminalId,omitempty"`
-	Items                 []TransactionItem `json:"items"`
-	DeletedAt             *time.Time        `json:"deletedAt,omitempty"`
-	DeletedBy             *ActorSummary     `json:"deletedBy,omitempty"`
-	DeleteReason          *string           `json:"deleteReason,omitempty"`
-	UpdatedAt             time.Time         `json:"updatedAt"`
+	ID                       string            `json:"id"`
+	DisplayID                string            `json:"displayId"`
+	Revision                 int               `json:"revision"`
+	OccurredAt               time.Time         `json:"occurredAt"`
+	ServerReceivedAt         time.Time         `json:"serverReceivedAt"`
+	Subtotal                 int64             `json:"subtotal"`
+	Total                    int64             `json:"total"`
+	PaymentMethod            PaymentMethod     `json:"paymentMethod"`
+	QrisPayloadHash          *string           `json:"qrisPayloadHash,omitempty"`
+	PaymentStatus            PaymentStatus     `json:"paymentStatus"`
+	PaymentConfirmedRevision *int              `json:"paymentConfirmedRevision,omitempty"`
+	PrintState               string            `json:"printState"`
+	LatestPrintedRevision    *int              `json:"latestPrintedRevision,omitempty"`
+	OriginActor              ActorSummary      `json:"originActor"`
+	UpdatedBy                ActorSummary      `json:"updatedBy"`
+	TerminalID               *uuid.UUID        `json:"terminalId,omitempty"`
+	Items                    []TransactionItem `json:"items"`
+	DeletedAt                *time.Time        `json:"deletedAt,omitempty"`
+	DeletedBy                *ActorSummary     `json:"deletedBy,omitempty"`
+	DeleteReason             *string           `json:"deleteReason,omitempty"`
+	UpdatedAt                time.Time         `json:"updatedAt"`
 }
 
 type TransactionRevision struct {
@@ -115,6 +153,7 @@ type TransactionRevision struct {
 	BaseRevision     *int              `json:"baseRevision,omitempty"`
 	ChangeType       string            `json:"changeType"`
 	Reason           *string           `json:"reason,omitempty"`
+	QrisPayloadHash  *string           `json:"qrisPayloadHash,omitempty"`
 	BeforeSnapshot   json.RawMessage   `json:"beforeSnapshot,omitempty"`
 	AfterSnapshot    json.RawMessage   `json:"afterSnapshot"`
 	OriginActorID    uuid.UUID         `json:"originActorId"`
@@ -209,5 +248,8 @@ type ExportRow struct {
 	TransactionTotal int64
 	CreatorName      string
 	CreatorUsername  string
+	PaymentMethod    PaymentMethod
+	QrisPayloadHash  *string
+	PaymentStatus    PaymentStatus
 	PrintState       string
 }

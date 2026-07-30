@@ -16,7 +16,10 @@ func (s *Store) Dashboard(ctx context.Context, from, to time.Time, bucket string
 	if err := s.Pool.QueryRow(ctx, `
 		SELECT COALESCE(sum(total), 0), count(*)
 		FROM transactions
-		WHERE deleted_at IS NULL AND occurred_at >= $1 AND occurred_at < $2`,
+		WHERE deleted_at IS NULL
+		  AND payment_status = 'success'
+		  AND payment_confirmed_revision = current_revision
+		  AND occurred_at >= $1 AND occurred_at < $2`,
 		from, to,
 	).Scan(&result.GrossRevenue, &result.TransactionCount); err != nil {
 		return domain.Dashboard{}, dbError(err, "dashboard totals")
@@ -27,7 +30,10 @@ func (s *Store) Dashboard(ctx context.Context, from, to time.Time, bucket string
 		FROM transactions t
 		JOIN transaction_items i
 		  ON i.transaction_id = t.id AND i.revision = t.current_revision
-		WHERE t.deleted_at IS NULL AND t.occurred_at >= $1 AND t.occurred_at < $2
+		WHERE t.deleted_at IS NULL
+		  AND t.payment_status = 'success'
+		  AND t.payment_confirmed_revision = t.current_revision
+		  AND t.occurred_at >= $1 AND t.occurred_at < $2
 		GROUP BY i.package_id, i.package_name
 		ORDER BY i.package_name`,
 		from, to,
@@ -56,7 +62,10 @@ func (s *Store) Dashboard(ctx context.Context, from, to time.Time, bucket string
 			AT TIME ZONE 'Asia/Jakarta'
 		) AS bucket, sum(t.total), count(*)
 		FROM transactions t
-		WHERE t.deleted_at IS NULL AND t.occurred_at >= $1 AND t.occurred_at < $2
+		WHERE t.deleted_at IS NULL
+		  AND t.payment_status = 'success'
+		  AND t.payment_confirmed_revision = t.current_revision
+		  AND t.occurred_at >= $1 AND t.occurred_at < $2
 		GROUP BY bucket
 		ORDER BY bucket`,
 		from, to, bucket,
@@ -79,8 +88,9 @@ func (s *Store) Dashboard(ctx context.Context, from, to time.Time, bucket string
 	}
 	rows.Close()
 
+	success := domain.PaymentStatusSuccess
 	page, err := s.ListTransactions(ctx, domain.TransactionFilter{
-		From: &from, To: &to, Limit: 5,
+		From: &from, To: &to, PaymentStatus: &success, Limit: 5,
 	})
 	if err != nil {
 		return domain.Dashboard{}, err
@@ -91,8 +101,49 @@ func (s *Store) Dashboard(ctx context.Context, from, to time.Time, bucket string
 
 func (s *Store) ExportRows(ctx context.Context, filter domain.TransactionFilter) ([]domain.ExportRow, error) {
 	defer observability.StartSegment(ctx, "Postgres.ExportRows")()
+	conditions, args := exportQueryConditions(filter)
+	sql := `
+		SELECT t.id, t.occurred_at, t.current_revision,
+		       i.package_code, i.package_name, i.package_revision,
+		       i.unit_price, i.quantity, i.line_total, t.total,
+		       u.full_name, u.username, t.payment_method, t.qris_payload_hash,
+		       t.payment_status, t.print_state
+		FROM transactions t
+		JOIN transaction_items i
+		  ON i.transaction_id = t.id AND i.revision = t.current_revision
+		JOIN users u ON u.id = t.origin_actor_id
+		WHERE ` + strings.Join(conditions, " AND ") + `
+		ORDER BY t.occurred_at, t.id, i.line_number
+		LIMIT 100000`
+	rows, err := s.Pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, dbError(err, "query export rows")
+	}
+	defer rows.Close()
+	result := make([]domain.ExportRow, 0)
+	for rows.Next() {
+		var row domain.ExportRow
+		if err := rows.Scan(
+			&row.TransactionID, &row.OccurredAt, &row.Revision,
+			&row.PackageCode, &row.PackageName, &row.PackageRevision,
+			&row.UnitPrice, &row.Quantity, &row.LineTotal, &row.TransactionTotal,
+			&row.CreatorName, &row.CreatorUsername,
+			&row.PaymentMethod, &row.QrisPayloadHash,
+			&row.PaymentStatus, &row.PrintState,
+		); err != nil {
+			return nil, dbError(err, "scan export row")
+		}
+		result = append(result, row)
+	}
+	return result, dbError(rows.Err(), "iterate export rows")
+}
+
+func exportQueryConditions(filter domain.TransactionFilter) ([]string, []any) {
 	args := make([]any, 0, 8)
-	conditions := []string{"t.deleted_at IS NULL"}
+	conditions := []string{"TRUE"}
+	if !filter.IncludeDeleted {
+		conditions = append(conditions, "t.deleted_at IS NULL")
+	}
 	add := func(value any) string {
 		args = append(args, value)
 		return fmt.Sprintf("$%d", len(args))
@@ -115,35 +166,11 @@ func (s *Store) ExportRows(ctx context.Context, filter domain.TransactionFilter)
 	if filter.TerminalID != nil {
 		conditions = append(conditions, "t.terminal_id = "+add(*filter.TerminalID))
 	}
-	sql := `
-		SELECT t.id, t.occurred_at, t.current_revision,
-		       i.package_code, i.package_name, i.package_revision,
-		       i.unit_price, i.quantity, i.line_total, t.total,
-		       u.full_name, u.username, t.print_state
-		FROM transactions t
-		JOIN transaction_items i
-		  ON i.transaction_id = t.id AND i.revision = t.current_revision
-		JOIN users u ON u.id = t.origin_actor_id
-		WHERE ` + strings.Join(conditions, " AND ") + `
-		ORDER BY t.occurred_at, t.id, i.line_number
-		LIMIT 100000`
-	rows, err := s.Pool.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, dbError(err, "query export rows")
+	if filter.PaymentMethod != nil {
+		conditions = append(conditions, "t.payment_method = "+add(*filter.PaymentMethod))
 	}
-	defer rows.Close()
-	result := make([]domain.ExportRow, 0)
-	for rows.Next() {
-		var row domain.ExportRow
-		if err := rows.Scan(
-			&row.TransactionID, &row.OccurredAt, &row.Revision,
-			&row.PackageCode, &row.PackageName, &row.PackageRevision,
-			&row.UnitPrice, &row.Quantity, &row.LineTotal, &row.TransactionTotal,
-			&row.CreatorName, &row.CreatorUsername, &row.PrintState,
-		); err != nil {
-			return nil, dbError(err, "scan export row")
-		}
-		result = append(result, row)
+	if filter.PaymentStatus != nil {
+		conditions = append(conditions, "t.payment_status = "+add(*filter.PaymentStatus))
 	}
-	return result, dbError(rows.Err(), "iterate export rows")
+	return conditions, args
 }

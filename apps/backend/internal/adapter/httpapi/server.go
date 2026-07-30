@@ -90,6 +90,7 @@ func New(deps Dependencies) *gin.Engine {
 	protected.DELETE("/transactions/:transactionId", server.deleteTransaction)
 	protected.GET("/transactions/:transactionId/revisions", server.listRevisions)
 	protected.POST("/transactions/:transactionId/revisions", server.correctTransaction)
+	protected.POST("/transactions/:transactionId/payment-status", server.setTransactionPaymentStatus)
 	protected.GET("/transactions/:transactionId/print-attempts", server.listPrintAttempts)
 	protected.POST("/transactions/:transactionId/print-attempts", server.recordPrintAttempt)
 
@@ -279,7 +280,8 @@ func errorStatus(code string) int {
 		return http.StatusForbidden
 	case domain.CodeNotFound:
 		return http.StatusNotFound
-	case domain.CodeConflict, domain.CodeRevisionConflict, domain.CodeFinalSuperadmin,
+	case domain.CodeConflict, domain.CodeRevisionConflict, domain.CodePaymentStateConflict,
+		domain.CodeFinalSuperadmin,
 		domain.CodeSelfMutation, domain.CodeIdempotencyMismatch:
 		return http.StatusConflict
 	case domain.CodeRateLimited:

@@ -45,7 +45,7 @@ func run(args []string) error {
 
 	password, usingDefaultPassword := developmentPassword()
 	manifest, err := bootstrap.NewSampleSuperadminManifest(
-		env("DEV_SUPERADMIN_FULL_NAME", "Budi Santoso"),
+		env("DEV_SUPERADMIN_FULL_NAME", "Penyok"),
 		env("DEV_SUPERADMIN_USERNAME", "superadmin"),
 		password,
 	)

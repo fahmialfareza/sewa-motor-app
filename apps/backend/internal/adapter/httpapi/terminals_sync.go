@@ -103,13 +103,17 @@ func (s *Server) syncPush(c *gin.Context) {
 		var conflict any
 		var apiError any
 		if result.Error != nil {
-			if result.Error.Code == domain.CodeRevisionConflict || result.Error.Code == domain.CodeConflict {
+			var details any = result.Error.Details
+			if result.Error.Code == domain.CodeRevisionConflict {
+				details = normalizeRevisionConflictDetails(details)
+			}
+			if result.Error.Code == domain.CodeRevisionConflict ||
+				result.Error.Code == domain.CodePaymentStateConflict {
 				status = "conflict"
-				conflict = result.Error.Details
+				conflict = details
 			} else {
 				status = "rejected"
 			}
-			details := result.Error.Details
 			if details == nil {
 				details = map[string]any{}
 			}
@@ -129,6 +133,10 @@ func (s *Server) syncPush(c *gin.Context) {
 						writeError(c, domain.WrapInternal(err, "decode stored transaction result"))
 						return
 					}
+					// Successful idempotency records created before payment
+					// fields were introduced are append-only. Preserve their
+					// original implicit-paid semantics at the response boundary.
+					transaction = domain.NormalizeLegacyTransactionResult(transaction)
 					data, err = s.transactionView(c, transaction)
 				case "print_attempt":
 					var attempt domain.PrintAttempt
@@ -153,6 +161,51 @@ func (s *Server) syncPush(c *gin.Context) {
 		})
 	}
 	writeData(c, http.StatusOK, gin.H{"results": mapped})
+}
+
+func normalizeRevisionConflictDetails(details any) any {
+	body, err := json.Marshal(details)
+	if err != nil {
+		return details
+	}
+	var value map[string]json.RawMessage
+	if err = json.Unmarshal(body, &value); err != nil || value == nil {
+		return details
+	}
+	baseRevision, baseOK := rawPositiveInt(value["baseRevision"])
+	currentRevision, currentOK := rawPositiveInt(value["currentRevision"])
+	if !baseOK || !currentOK {
+		return details
+	}
+	if snapshot, exists := value["localSnapshot"]; exists {
+		value["localSnapshot"] = domain.NormalizeTransactionSnapshot(
+			snapshot,
+			baseRevision+1,
+		)
+	}
+	if snapshot, exists := value["serverSnapshot"]; exists {
+		value["serverSnapshot"] = domain.NormalizeTransactionSnapshot(
+			snapshot,
+			currentRevision,
+		)
+	}
+	body, err = json.Marshal(value)
+	if err != nil {
+		return details
+	}
+	var normalized any
+	if err = json.Unmarshal(body, &normalized); err != nil {
+		return details
+	}
+	return normalized
+}
+
+func rawPositiveInt(value json.RawMessage) (int, bool) {
+	var number int
+	if len(value) == 0 || json.Unmarshal(value, &number) != nil || number < 1 {
+		return 0, false
+	}
+	return number, true
 }
 
 func (s *Server) syncPull(c *gin.Context) {

@@ -18,6 +18,7 @@ export default function ConflictReviewScreen() {
   const sync = useSyncRuntime();
   const [conflict, setConflict] = useState<SyncConflict | null>(null);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (id) void getConflictForTransaction(id).then(setConflict);
@@ -26,6 +27,7 @@ export default function ConflictReviewScreen() {
   const decide = async (resolution: "server" | "retry-local") => {
     if (!conflict) return;
     setBusy(true);
+    setError(null);
     try {
       await resolveConflict(conflict, resolution);
       await sync.refresh();
@@ -34,6 +36,13 @@ export default function ConflictReviewScreen() {
         pathname: "/transactions/[id]",
         params: { id: conflict.transactionId },
       });
+    } catch (reason) {
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : "Konflik tidak dapat diselesaikan.",
+      );
+      setConflict(await getConflictForTransaction(conflict.transactionId));
     } finally {
       setBusy(false);
     }
@@ -72,13 +81,21 @@ export default function ConflictReviewScreen() {
       <Card style={styles.warning}>
         <Text style={styles.warningTitle}>Keputusan manual diperlukan</Text>
         <Text style={styles.muted}>
-          “Kirim ulang lokal” membuat operasi baru dengan base revision server
-          dan tanda tangan baru. Pastikan jumlah lokal memang yang benar.
+          {conflict.serverSnapshot.deletedAt
+            ? "Transaksi sudah dihapus di server. Versi server harus digunakan agar transaksi tidak muncul kembali."
+            : "“Kirim ulang lokal” membuat operasi baru dengan base revision server dan tanda tangan baru. Pastikan jumlah lokal memang yang benar."}
         </Text>
       </Card>
-      <Button loading={busy} onPress={() => void decide("retry-local")}>
-        Kirim ulang versi lokal
-      </Button>
+      {error ? (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {error}
+        </Text>
+      ) : null}
+      {!conflict.serverSnapshot.deletedAt ? (
+        <Button loading={busy} onPress={() => void decide("retry-local")}>
+          Kirim ulang versi lokal
+        </Button>
+      ) : null}
       <Button
         disabled={busy}
         onPress={() => void decide("server")}
@@ -117,6 +134,9 @@ function SnapshotCard({
         {label}
       </Text>
       <Text style={styles.revision}>Revisi #{transaction.revision}</Text>
+      {transaction.deletedAt ? (
+        <Text style={styles.deleted}>DIHAPUS DI SERVER</Text>
+      ) : null}
       {transaction.items.map((item) => (
         <View key={item.packageId} style={styles.snapshotLine}>
           <Text style={styles.itemName}>{item.name}</Text>
@@ -148,4 +168,6 @@ const styles = StyleSheet.create({
   warning: { gap: spacing.xs, backgroundColor: colors.warningSoft },
   warningTitle: { ...textStyles.heading, color: colors.warning },
   muted: { ...textStyles.body, color: colors.textMuted },
+  deleted: { ...textStyles.label, color: colors.error },
+  error: { ...textStyles.body, color: colors.error },
 });

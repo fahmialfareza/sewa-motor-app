@@ -114,22 +114,26 @@ type Terminal struct {
 }
 
 type Transaction struct {
-	ID                    string             `json:"id"`
-	CurrentRevision       int32              `json:"current_revision"`
-	OccurredAt            pgtype.Timestamptz `json:"occurred_at"`
-	ServerReceivedAt      pgtype.Timestamptz `json:"server_received_at"`
-	OriginActorID         pgtype.UUID        `json:"origin_actor_id"`
-	OriginSessionID       pgtype.UUID        `json:"origin_session_id"`
-	TerminalID            pgtype.UUID        `json:"terminal_id"`
-	UpdatedBy             pgtype.UUID        `json:"updated_by"`
-	Subtotal              int64              `json:"subtotal"`
-	Total                 int64              `json:"total"`
-	PrintState            string             `json:"print_state"`
-	LatestPrintedRevision pgtype.Int4        `json:"latest_printed_revision"`
-	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
-	DeletedAt             pgtype.Timestamptz `json:"deleted_at"`
-	DeletedBy             pgtype.UUID        `json:"deleted_by"`
-	DeleteReason          pgtype.Text        `json:"delete_reason"`
+	ID                       string             `json:"id"`
+	CurrentRevision          int32              `json:"current_revision"`
+	OccurredAt               pgtype.Timestamptz `json:"occurred_at"`
+	ServerReceivedAt         pgtype.Timestamptz `json:"server_received_at"`
+	OriginActorID            pgtype.UUID        `json:"origin_actor_id"`
+	OriginSessionID          pgtype.UUID        `json:"origin_session_id"`
+	TerminalID               pgtype.UUID        `json:"terminal_id"`
+	UpdatedBy                pgtype.UUID        `json:"updated_by"`
+	Subtotal                 int64              `json:"subtotal"`
+	Total                    int64              `json:"total"`
+	PaymentMethod            string             `json:"payment_method"`
+	QrisPayloadHash          pgtype.Text        `json:"qris_payload_hash"`
+	PaymentStatus            string             `json:"payment_status"`
+	PaymentConfirmedRevision pgtype.Int4        `json:"payment_confirmed_revision"`
+	PrintState               string             `json:"print_state"`
+	LatestPrintedRevision    pgtype.Int4        `json:"latest_printed_revision"`
+	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+	DeletedAt                pgtype.Timestamptz `json:"deleted_at"`
+	DeletedBy                pgtype.UUID        `json:"deleted_by"`
+	DeleteReason             pgtype.Text        `json:"delete_reason"`
 }
 
 type TransactionItem struct {
@@ -154,6 +158,7 @@ type TransactionRevision struct {
 	Reason               pgtype.Text        `json:"reason"`
 	BeforeSnapshot       []byte             `json:"before_snapshot"`
 	AfterSnapshot        []byte             `json:"after_snapshot"`
+	QrisPayloadHash      pgtype.Text        `json:"qris_payload_hash"`
 	OriginActorID        pgtype.UUID        `json:"origin_actor_id"`
 	OriginSessionID      pgtype.UUID        `json:"origin_session_id"`
 	TerminalID           pgtype.UUID        `json:"terminal_id"`

@@ -95,6 +95,12 @@ CREATE TABLE transactions (
     updated_by uuid NOT NULL REFERENCES users(id),
     subtotal bigint NOT NULL CHECK (subtotal >= 0),
     total bigint NOT NULL CHECK (total >= 0 AND total = subtotal),
+    payment_method text NOT NULL DEFAULT 'legacy'
+        CHECK (payment_method IN ('cash', 'qris', 'legacy')),
+    qris_payload_hash text,
+    payment_status text NOT NULL DEFAULT 'pending'
+        CHECK (payment_status IN ('pending', 'success', 'failed')),
+    payment_confirmed_revision integer,
     print_state text NOT NULL DEFAULT 'pending'
         CHECK (print_state IN ('pending', 'success', 'failed', 'unknown', 'needs-reprint')),
     latest_printed_revision integer,
@@ -102,6 +108,10 @@ CREATE TABLE transactions (
     deleted_at timestamptz,
     deleted_by uuid REFERENCES users(id),
     delete_reason text,
+    CHECK ((payment_status = 'success' AND payment_confirmed_revision = current_revision) OR
+           (payment_status IN ('pending', 'failed') AND payment_confirmed_revision IS NULL)),
+    CHECK (qris_payload_hash IS NULL OR
+           (payment_method = 'qris' AND qris_payload_hash ~ '^[0-9a-f]{64}$')),
     CHECK ((deleted_at IS NULL AND deleted_by IS NULL AND delete_reason IS NULL) OR
            (deleted_at IS NOT NULL AND deleted_by IS NOT NULL AND length(btrim(delete_reason)) > 0))
 );
@@ -109,6 +119,8 @@ CREATE TABLE transactions (
 CREATE INDEX transactions_occurred_idx ON transactions (occurred_at DESC, id DESC);
 CREATE INDEX transactions_origin_actor_idx ON transactions (origin_actor_id, occurred_at DESC);
 CREATE INDEX transactions_live_idx ON transactions (occurred_at DESC) WHERE deleted_at IS NULL;
+CREATE INDEX transactions_paid_occurred_idx ON transactions (payment_status, occurred_at DESC)
+    WHERE deleted_at IS NULL AND payment_status = 'success';
 
 CREATE TABLE transaction_revisions (
     transaction_id text NOT NULL REFERENCES transactions(id),
@@ -118,6 +130,7 @@ CREATE TABLE transaction_revisions (
     reason text,
     before_snapshot jsonb,
     after_snapshot jsonb NOT NULL,
+    qris_payload_hash text,
     origin_actor_id uuid NOT NULL REFERENCES users(id),
     origin_session_id uuid NOT NULL REFERENCES sessions(id),
     terminal_id uuid REFERENCES terminals(id),
@@ -125,6 +138,9 @@ CREATE TABLE transaction_revisions (
     submitted_by_session_id uuid NOT NULL REFERENCES sessions(id),
     client_occurred_at timestamptz NOT NULL,
     server_received_at timestamptz NOT NULL DEFAULT now(),
+    CHECK (qris_payload_hash IS NULL OR
+           ((after_snapshot ->> 'paymentMethod') = 'qris' AND
+            qris_payload_hash ~ '^[0-9a-f]{64}$')),
     PRIMARY KEY (transaction_id, revision),
     CHECK ((change_type = 'create' AND revision = 1 AND base_revision IS NULL AND reason IS NULL AND before_snapshot IS NULL)
         OR (change_type = 'correction' AND revision > 1 AND base_revision = revision - 1

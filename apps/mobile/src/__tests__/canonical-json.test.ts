@@ -51,4 +51,26 @@ describe("RFC 8785 canonical signing", () => {
       "g/c9NoDQdK+cE0t6NN5WKJdARDSzwxgSSNIUwD2L5EJrcJA1BR7YcI4cNwtHAkMVy6j7E8AkmvgMiN2lpjr0AA==",
     );
   });
+
+  it("canonicalizes payment status mutations with the current revision", () => {
+    const mutation = {
+      operationId: "11111111-1111-4111-8111-111111111111",
+      aggregate: "transaction",
+      aggregateId: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      action: "set_payment_status",
+      baseRevision: 7,
+      originSessionId: "22222222-2222-4222-8222-222222222222",
+      originActorId: "33333333-3333-4333-8333-333333333333",
+      terminalId: "44444444-4444-4444-8444-444444444444",
+      occurredAt: "2026-07-24T03:04:05.000Z",
+      payload: {
+        id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        status: "success",
+      },
+    };
+
+    expect(canonicalize(mutation)).toBe(
+      '{"action":"set_payment_status","aggregate":"transaction","aggregateId":"01ARZ3NDEKTSV4RRFFQ69G5FAV","baseRevision":7,"occurredAt":"2026-07-24T03:04:05.000Z","operationId":"11111111-1111-4111-8111-111111111111","originActorId":"33333333-3333-4333-8333-333333333333","originSessionId":"22222222-2222-4222-8222-222222222222","payload":{"id":"01ARZ3NDEKTSV4RRFFQ69G5FAV","status":"success"},"terminalId":"44444444-4444-4444-8444-444444444444"}',
+    );
+  });
 });

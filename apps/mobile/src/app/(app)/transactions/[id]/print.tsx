@@ -7,12 +7,15 @@ import { AppScreen } from "@/components/layout/AppScreen";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
+import { PaymentMethodBadge } from "@/components/ui/PaymentBadge";
+import { StateView } from "@/components/ui/StateView";
 import {
   beginPrintAttempt,
   completePrintAttempt,
   getTransaction,
 } from "@/db/repositories";
 import type { Transaction } from "@/domain/types";
+import { isPaymentConfirmedForCurrentRevision } from "@/domain/payments";
 import { getConfiguredPrinter } from "@/printer/service";
 import { receiptFromTransaction } from "@/printer/types";
 import { useSyncRuntime } from "@/sync/SyncProvider";
@@ -42,6 +45,25 @@ export default function PrintTransactionScreen() {
   }, [id, session]);
 
   if (!transaction || !session) return <AppScreen />;
+  if (!isPaymentConfirmedForCurrentRevision(transaction)) {
+    return (
+      <AppScreen>
+        <PageHeader back title="Cetak struk" />
+        <StateView
+          actionLabel="Buka detail transaksi"
+          icon="lock-outline"
+          message="Pembayaran harus berhasil untuk revisi transaksi saat ini sebelum struk dapat dicetak."
+          onAction={() =>
+            router.replace({
+              pathname: "/transactions/[id]",
+              params: { id: transaction.id },
+            })
+          }
+          title="Pencetakan terkunci"
+        />
+      </AppScreen>
+    );
+  }
   const isCopy =
     transaction.printState === "success" ||
     transaction.printState === "unknown" ||
@@ -56,6 +78,7 @@ export default function PrintTransactionScreen() {
       const { config, printer } = await getConfiguredPrinter();
       attemptId = await beginPrintAttempt({
         transactionId: transaction.id,
+        transactionRevision: transaction.revision,
         adapter: config.adapter,
         isCopy: printAsCopy,
         session,
@@ -109,20 +132,23 @@ export default function PrintTransactionScreen() {
 
   return (
     <AppScreen>
-      <PageHeader back title={success ? "Struk tercetak" : "Simpan & cetak"} />
+      <PageHeader back title={success ? "Struk tercetak" : "Cetak struk"} />
       <View style={[styles.icon, success && styles.iconSuccess]}>
         <Text style={styles.iconGlyph}>{success ? "✓" : "✓"}</Text>
       </View>
       <Text style={styles.title}>
-        {success ? "Struk berhasil dicetak!" : "Transaksi sudah tersimpan"}
+        {success ? "Struk berhasil dicetak!" : "Pembayaran berhasil"}
       </Text>
       <Text style={styles.subtitle}>
         {success
           ? "Penjualan tetap tercatat dan hasil cetak masuk ke antrean sinkron."
-          : "Transaksi sudah terlihat di riwayat. Mencetak tidak memengaruhi data penjualan."}
+          : "Pembayaran sudah dikonfirmasi untuk revisi transaksi ini. Struk siap dicetak."}
       </Text>
       <Card style={styles.summary}>
-        <Text style={styles.id}>{displayTransactionId(transaction.id)}</Text>
+        <View style={styles.summaryHeader}>
+          <Text style={styles.id}>{displayTransactionId(transaction.id)}</Text>
+          <PaymentMethodBadge method={transaction.paymentMethod} />
+        </View>
         {transaction.items.map((item) => (
           <View key={item.id} style={styles.line}>
             <Text style={styles.lineName}>
@@ -203,6 +229,12 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   summary: { gap: spacing.sm },
+  summaryHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+  },
   id: { ...textStyles.label, color: colors.primary },
   line: { flexDirection: "row", justifyContent: "space-between", gap: 8 },
   lineName: { ...textStyles.body, flex: 1 },

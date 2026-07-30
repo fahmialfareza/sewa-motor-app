@@ -1,6 +1,7 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import type { PrintState, SyncState, Transaction } from "@/domain/types";
+import { paymentMethodLabel, paymentStatusLabel } from "@/domain/payments";
 import {
   colors,
   minimumTouchTarget,
@@ -16,6 +17,7 @@ import {
 } from "@/utils/format";
 
 import { Icon } from "../ui/Icon";
+import { PaymentMethodBadge, PaymentStatusBadge } from "../ui/PaymentBadge";
 import { StatusBadge } from "../ui/StatusBadge";
 
 const syncStateLabel: Record<SyncState, string> = {
@@ -60,6 +62,8 @@ export function HistoryTransactionCard({
     formatJakartaDateTime(transaction.occurredAt),
     `${itemQuantity} item`,
     `dibuat oleh ${transaction.updatedActorName}`,
+    paymentMethodLabel[transaction.paymentMethod],
+    paymentStatusLabel[transaction.paymentStatus],
     syncStateLabel[transaction.syncState],
     printStateLabel[transaction.printState],
   ].join(", ");
@@ -103,9 +107,8 @@ export function HistoryTransactionCard({
               {transaction.updatedActorName}
             </Text>
           </View>
-          {transaction.printState !== "pending" ? (
-            <StatusBadge kind={transaction.printState} />
-          ) : null}
+          <PaymentMethodBadge method={transaction.paymentMethod} />
+          <PaymentStatusBadge status={transaction.paymentStatus} />
           <View style={styles.chevron}>
             <Icon color={colors.primary} name="chevron-right" size={22} />
           </View>

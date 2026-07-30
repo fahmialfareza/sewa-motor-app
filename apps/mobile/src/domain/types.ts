@@ -1,11 +1,11 @@
 export type Role = "admin" | "superadmin";
 export type SyncState = "pending" | "synced" | "conflict" | "error";
 export type PrintState =
-  | "pending"
-  | "success"
-  | "failed"
-  | "unknown"
-  | "needs-reprint";
+  "pending" | "success" | "failed" | "unknown" | "needs-reprint";
+export type SelectablePaymentMethod = "cash" | "qris";
+export type PaymentMethod = SelectablePaymentMethod | "legacy";
+export type PaymentStatus = "pending" | "success" | "failed";
+export type QrisPayloadHash = string;
 
 export interface UserSummary {
   id: string;
@@ -58,6 +58,10 @@ export interface Transaction {
   terminalId: string;
   syncState: SyncState;
   printState: PrintState;
+  paymentMethod: PaymentMethod;
+  paymentStatus: PaymentStatus;
+  paymentConfirmedRevision: number | null;
+  qrisPayloadHash: QrisPayloadHash | null;
   deletedAt: string | null;
   items: TransactionItem[];
 }
@@ -80,5 +84,4 @@ export interface DashboardStats {
   transactionCount: number;
   quantities: { name: string; quantity: number; accent: string }[];
   buckets: number[];
-  pendingCount: number;
 }

@@ -11,7 +11,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   orientation: "portrait",
   userInterfaceStyle: "light",
   scheme: "sewamotor",
-  newArchEnabled: true,
   android: {
     package: ANDROID_APPLICATION_ID,
     adaptiveIcon: {
@@ -30,6 +29,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       "android.permission.READ_MEDIA_IMAGES",
       "android.permission.READ_MEDIA_VIDEO",
     ],
+  },
+  ios: {
+    bundleIdentifier: "com.fahmialfareza.sewamotorpos",
   },
   plugins: [
     "expo-router",
@@ -56,7 +58,28 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
         faceIDPermission: "Izinkan Sewa Motor POS mengakses kredensial aman.",
       },
     ],
+    [
+      "expo-camera",
+      {
+        cameraPermission:
+          "Izinkan Sewa Motor POS menggunakan kamera untuk membaca QRIS merchant.",
+        microphonePermission: false,
+        recordAudioAndroid: false,
+        barcodeScannerEnabled: true,
+      },
+    ],
+    [
+      "expo-image-picker",
+      {
+        photosPermission:
+          "Izinkan Sewa Motor POS memilih gambar QRIS merchant.",
+        cameraPermission:
+          "Izinkan Sewa Motor POS mengambil foto QRIS merchant.",
+        microphonePermission: false,
+      },
+    ],
     "expo-background-task",
+    "expo-sharing",
   ],
   experiments: {
     typedRoutes: false,

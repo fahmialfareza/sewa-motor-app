@@ -56,6 +56,37 @@ const (
 	Unavailable HealthStatusStatus = "unavailable"
 )
 
+// Defines values for PaymentMethod.
+const (
+	PaymentMethodCash   PaymentMethod = "cash"
+	PaymentMethodLegacy PaymentMethod = "legacy"
+	PaymentMethodQris   PaymentMethod = "qris"
+)
+
+// Defines values for PaymentOutcome.
+const (
+	PaymentOutcomeFailed  PaymentOutcome = "failed"
+	PaymentOutcomeSuccess PaymentOutcome = "success"
+)
+
+// Defines values for PaymentStateConflictDetailsKind.
+const (
+	PaymentState PaymentStateConflictDetailsKind = "payment_state"
+)
+
+// Defines values for PaymentStateConflictDetailsReason.
+const (
+	PaymentFinal    PaymentStateConflictDetailsReason = "payment_final"
+	RevisionChanged PaymentStateConflictDetailsReason = "revision_changed"
+)
+
+// Defines values for PaymentStatus.
+const (
+	PaymentStatusFailed  PaymentStatus = "failed"
+	PaymentStatusPending PaymentStatus = "pending"
+	PaymentStatusSuccess PaymentStatus = "success"
+)
+
 // Defines values for PrintAttemptStatus.
 const (
 	PrintAttemptStatusFailed  PrintAttemptStatus = "failed"
@@ -96,6 +127,12 @@ const (
 	RecordPrintAttemptRequestStatusUnknown RecordPrintAttemptRequestStatus = "unknown"
 )
 
+// Defines values for SelectablePaymentMethod.
+const (
+	SelectablePaymentMethodCash SelectablePaymentMethod = "cash"
+	SelectablePaymentMethodQris SelectablePaymentMethod = "qris"
+)
+
 // Defines values for StatisticsPeriod.
 const (
 	Day   StatisticsPeriod = "day"
@@ -105,8 +142,9 @@ const (
 
 // Defines values for SyncAction.
 const (
-	Correct SyncAction = "correct"
-	Create  SyncAction = "create"
+	Correct          SyncAction = "correct"
+	Create           SyncAction = "create"
+	SetPaymentStatus SyncAction = "set_payment_status"
 )
 
 // Defines values for SyncAggregate.
@@ -185,17 +223,31 @@ type ChangePasswordRequest struct {
 // CorrectTransactionMutationPayload defines model for CorrectTransactionMutationPayload.
 type CorrectTransactionMutationPayload struct {
 	// Id Canonical uppercase ULID without a display prefix.
-	Id     ULID                   `json:"id"`
-	Items  []TransactionLineInput `json:"items"`
-	Reason string                 `json:"reason"`
+	Id            ULID                    `json:"id"`
+	Items         []TransactionLineInput  `json:"items"`
+	PaymentMethod SelectablePaymentMethod `json:"paymentMethod"`
+
+	// QrisPayloadHash Lowercase SHA-256 digest of the exact configured static merchant QRIS
+	// payload. It binds a QRIS transaction revision to the exact payload used
+	// to generate its amount-specific QR code; it does not verify merchant
+	// ownership or payment settlement.
+	QrisPayloadHash *QrisPayloadHash `json:"qrisPayloadHash,omitempty"`
+	Reason          string           `json:"reason"`
 }
 
 // CorrectTransactionRequest defines model for CorrectTransactionRequest.
 type CorrectTransactionRequest struct {
-	BaseRevision int                    `json:"baseRevision"`
-	Items        []TransactionLineInput `json:"items"`
-	OccurredAt   time.Time              `json:"occurredAt"`
-	Reason       string                 `json:"reason"`
+	BaseRevision  int                     `json:"baseRevision"`
+	Items         []TransactionLineInput  `json:"items"`
+	OccurredAt    time.Time               `json:"occurredAt"`
+	PaymentMethod SelectablePaymentMethod `json:"paymentMethod"`
+
+	// QrisPayloadHash Lowercase SHA-256 digest of the exact configured static merchant QRIS
+	// payload. It binds a QRIS transaction revision to the exact payload used
+	// to generate its amount-specific QR code; it does not verify merchant
+	// ownership or payment settlement.
+	QrisPayloadHash *QrisPayloadHash `json:"qrisPayloadHash,omitempty"`
+	Reason          string           `json:"reason"`
 }
 
 // CreatePackageRequest defines model for CreatePackageRequest.
@@ -210,16 +262,30 @@ type CreatePackageRequest struct {
 // CreateTransactionMutationPayload defines model for CreateTransactionMutationPayload.
 type CreateTransactionMutationPayload struct {
 	// Id Canonical uppercase ULID without a display prefix.
-	Id    ULID                   `json:"id"`
-	Items []TransactionLineInput `json:"items"`
+	Id            ULID                    `json:"id"`
+	Items         []TransactionLineInput  `json:"items"`
+	PaymentMethod SelectablePaymentMethod `json:"paymentMethod"`
+
+	// QrisPayloadHash Lowercase SHA-256 digest of the exact configured static merchant QRIS
+	// payload. It binds a QRIS transaction revision to the exact payload used
+	// to generate its amount-specific QR code; it does not verify merchant
+	// ownership or payment settlement.
+	QrisPayloadHash *QrisPayloadHash `json:"qrisPayloadHash,omitempty"`
 }
 
 // CreateTransactionRequest defines model for CreateTransactionRequest.
 type CreateTransactionRequest struct {
 	// Id Canonical uppercase ULID without a display prefix.
-	Id         ULID                   `json:"id"`
-	Items      []TransactionLineInput `json:"items"`
-	OccurredAt time.Time              `json:"occurredAt"`
+	Id            ULID                    `json:"id"`
+	Items         []TransactionLineInput  `json:"items"`
+	OccurredAt    time.Time               `json:"occurredAt"`
+	PaymentMethod SelectablePaymentMethod `json:"paymentMethod"`
+
+	// QrisPayloadHash Lowercase SHA-256 digest of the exact configured static merchant QRIS
+	// payload. It binds a QRIS transaction revision to the exact payload used
+	// to generate its amount-specific QR code; it does not verify merchant
+	// ownership or payment settlement.
+	QrisPayloadHash *QrisPayloadHash `json:"qrisPayloadHash,omitempty"`
 }
 
 // CreateUserRequest defines model for CreateUserRequest.
@@ -395,6 +461,44 @@ type PageMeta struct {
 	ServerTime time.Time          `json:"serverTime"`
 }
 
+// PaymentMethod Stored payment method. `legacy` is read-only compatibility for
+// transactions created before payment selection was introduced.
+type PaymentMethod string
+
+// PaymentOutcome defines model for PaymentOutcome.
+type PaymentOutcome string
+
+// PaymentStateConflictDetails defines model for PaymentStateConflictDetails.
+type PaymentStateConflictDetails struct {
+	BaseRevision             int                               `json:"baseRevision"`
+	CurrentRevision          int                               `json:"currentRevision"`
+	Kind                     PaymentStateConflictDetailsKind   `json:"kind"`
+	PaymentConfirmedRevision *int                              `json:"paymentConfirmedRevision"`
+	PaymentStatus            PaymentStatus                     `json:"paymentStatus"`
+	Reason                   PaymentStateConflictDetailsReason `json:"reason"`
+	RequestedStatus          PaymentOutcome                    `json:"requestedStatus"`
+	ServerSnapshot           TransactionSnapshot               `json:"serverSnapshot"`
+}
+
+// PaymentStateConflictDetailsKind defines model for PaymentStateConflictDetails.Kind.
+type PaymentStateConflictDetailsKind string
+
+// PaymentStateConflictDetailsReason defines model for PaymentStateConflictDetails.Reason.
+type PaymentStateConflictDetailsReason string
+
+// PaymentStateConflictEnvelope defines model for PaymentStateConflictEnvelope.
+type PaymentStateConflictEnvelope struct {
+	Error struct {
+		Code      interface{}                 `json:"code"`
+		Details   PaymentStateConflictDetails `json:"details"`
+		Message   string                      `json:"message"`
+		RequestId openapi_types.UUID          `json:"requestId"`
+	} `json:"error"`
+}
+
+// PaymentStatus defines model for PaymentStatus.
+type PaymentStatus string
+
 // PrintAttempt defines model for PrintAttempt.
 type PrintAttempt struct {
 	Actor             UserSummary             `json:"actor"`
@@ -475,6 +579,12 @@ type ProfileResult struct {
 	User      User      `json:"user"`
 }
 
+// QrisPayloadHash Lowercase SHA-256 digest of the exact configured static merchant QRIS
+// payload. It binds a QRIS transaction revision to the exact payload used
+// to generate its amount-specific QR code; it does not verify merchant
+// ownership or payment settlement.
+type QrisPayloadHash = string
+
 // RecordPrintAttemptRequest defines model for RecordPrintAttemptRequest.
 type RecordPrintAttemptRequest struct {
 	ErrorCode           *string                         `json:"errorCode"`
@@ -518,10 +628,33 @@ type RevisionConflictEnvelope struct {
 // Rupiah Whole Indonesian rupiah; decimals are never accepted.
 type Rupiah = int64
 
+// SelectablePaymentMethod defines model for SelectablePaymentMethod.
+type SelectablePaymentMethod string
+
+// SetPaymentStatusMutationPayload defines model for SetPaymentStatusMutationPayload.
+type SetPaymentStatusMutationPayload struct {
+	// Id Canonical uppercase ULID without a display prefix.
+	Id     ULID           `json:"id"`
+	Status PaymentOutcome `json:"status"`
+}
+
+// SetPaymentStatusRequest defines model for SetPaymentStatusRequest.
+type SetPaymentStatusRequest struct {
+	BaseRevision int            `json:"baseRevision"`
+	OccurredAt   time.Time      `json:"occurredAt"`
+	Status       PaymentOutcome `json:"status"`
+}
+
 // StatisticsPeriod defines model for StatisticsPeriod.
 type StatisticsPeriod string
 
 // SyncAction Print attempts use `aggregate: print_attempt` with `action: create`.
+// As a temporary, telemetry-backed compatibility path, the server accepts a
+// truly absent `paymentMethod` only for an already-signed transaction
+// `create` or `correct` queued before 2026-07-29 WIB by a terminal enrolled
+// before that rollout. Server acceptance ends after 2026-08-12 WIB.
+// Explicit `null` is rejected. Current clients must always send `cash` or
+// `qris`.
 type SyncAction string
 
 // SyncAggregate defines model for SyncAggregate.
@@ -555,6 +688,12 @@ type SyncChange_Payload struct {
 // SyncMutation defines model for SyncMutation.
 type SyncMutation struct {
 	// Action Print attempts use `aggregate: print_attempt` with `action: create`.
+	// As a temporary, telemetry-backed compatibility path, the server accepts a
+	// truly absent `paymentMethod` only for an already-signed transaction
+	// `create` or `correct` queued before 2026-07-29 WIB by a terminal enrolled
+	// before that rollout. Server acceptance ends after 2026-08-12 WIB.
+	// Explicit `null` is rejected. Current clients must always send `cash` or
+	// `qris`.
 	Action    SyncAction    `json:"action"`
 	Aggregate SyncAggregate `json:"aggregate"`
 
@@ -579,15 +718,20 @@ type SyncMutation_Payload struct {
 
 // SyncMutationResult defines model for SyncMutationResult.
 type SyncMutationResult struct {
-	AggregateId string                   `json:"aggregateId"`
-	Conflict    *RevisionConflictDetails `json:"conflict"`
-	Data        *SyncMutationResult_Data `json:"data"`
-	Error       *ApiError                `json:"error"`
+	AggregateId string                       `json:"aggregateId"`
+	Conflict    *SyncMutationResult_Conflict `json:"conflict"`
+	Data        *SyncMutationResult_Data     `json:"data"`
+	Error       *ApiError                    `json:"error"`
 
 	// OperationId Client-generated idempotency identity for a signed outbox mutation.
 	OperationId OperationID        `json:"operationId"`
 	Replayed    bool               `json:"replayed"`
 	Status      SyncMutationStatus `json:"status"`
+}
+
+// SyncMutationResult_Conflict defines model for SyncMutationResult.Conflict.
+type SyncMutationResult_Conflict struct {
+	union json.RawMessage
 }
 
 // SyncMutationResult_Data defines model for SyncMutationResult.Data.
@@ -601,6 +745,12 @@ type SyncMutationResult_Data struct {
 // canonicalization.
 type SyncMutationSignedBody struct {
 	// Action Print attempts use `aggregate: print_attempt` with `action: create`.
+	// As a temporary, telemetry-backed compatibility path, the server accepts a
+	// truly absent `paymentMethod` only for an already-signed transaction
+	// `create` or `correct` queued before 2026-07-29 WIB by a terminal enrolled
+	// before that rollout. Server acceptance ends after 2026-08-12 WIB.
+	// Explicit `null` is rejected. Current clients must always send `cash` or
+	// `qris`.
 	Action    SyncAction    `json:"action"`
 	Aggregate SyncAggregate `json:"aggregate"`
 
@@ -705,8 +855,23 @@ type Transaction struct {
 	Items       []TransactionItem `json:"items"`
 	OccurredAt  time.Time         `json:"occurredAt"`
 	OriginActor UserSummary       `json:"originActor"`
-	Print       PrintMetadata     `json:"print"`
-	Revision    int               `json:"revision"`
+
+	// PaymentConfirmedRevision The transaction revision confirmed by a successful payment. It is
+	// null while payment is pending or failed.
+	PaymentConfirmedRevision *int `json:"paymentConfirmedRevision"`
+
+	// PaymentMethod Stored payment method. `legacy` is read-only compatibility for
+	// transactions created before payment selection was introduced.
+	PaymentMethod PaymentMethod `json:"paymentMethod"`
+	PaymentStatus PaymentStatus `json:"paymentStatus"`
+	Print         PrintMetadata `json:"print"`
+
+	// QrisPayloadHash Lowercase SHA-256 digest of the exact configured static merchant QRIS
+	// payload. It binds a QRIS transaction revision to the exact payload used
+	// to generate its amount-specific QR code; it does not verify merchant
+	// ownership or payment settlement.
+	QrisPayloadHash *QrisPayloadHash `json:"qrisPayloadHash,omitempty"`
+	Revision        int              `json:"revision"`
 
 	// Subtotal Whole Indonesian rupiah; decimals are never accepted.
 	Subtotal Rupiah          `json:"subtotal"`
@@ -730,9 +895,14 @@ type TransactionFilter struct {
 	From           *time.Time `json:"from,omitempty"`
 	IncludeDeleted *bool      `json:"includeDeleted,omitempty"`
 	PackageId      *UUID      `json:"packageId,omitempty"`
-	Search         *string    `json:"search,omitempty"`
-	TerminalId     *UUID      `json:"terminalId,omitempty"`
-	To             *time.Time `json:"to,omitempty"`
+
+	// PaymentMethod Stored payment method. `legacy` is read-only compatibility for
+	// transactions created before payment selection was introduced.
+	PaymentMethod *PaymentMethod `json:"paymentMethod,omitempty"`
+	PaymentStatus *PaymentStatus `json:"paymentStatus,omitempty"`
+	Search        *string        `json:"search,omitempty"`
+	TerminalId    *UUID          `json:"terminalId,omitempty"`
+	To            *time.Time     `json:"to,omitempty"`
 }
 
 // TransactionItem defines model for TransactionItem.
@@ -786,11 +956,17 @@ type TransactionRevision struct {
 	ClientOccurredAt time.Time           `json:"clientOccurredAt"`
 	Id               UUID                `json:"id"`
 	OriginActor      UserSummary         `json:"originActor"`
-	Reason           string              `json:"reason"`
-	Revision         int                 `json:"revision"`
-	ServerReceivedAt time.Time           `json:"serverReceivedAt"`
-	SubmittedBy      UserSummary         `json:"submittedBy"`
-	Terminal         TerminalSummary     `json:"terminal"`
+
+	// QrisPayloadHash Lowercase SHA-256 digest of the exact configured static merchant QRIS
+	// payload. It binds a QRIS transaction revision to the exact payload used
+	// to generate its amount-specific QR code; it does not verify merchant
+	// ownership or payment settlement.
+	QrisPayloadHash  *QrisPayloadHash `json:"qrisPayloadHash,omitempty"`
+	Reason           string           `json:"reason"`
+	Revision         int              `json:"revision"`
+	ServerReceivedAt time.Time        `json:"serverReceivedAt"`
+	SubmittedBy      UserSummary      `json:"submittedBy"`
+	Terminal         TerminalSummary  `json:"terminal"`
 
 	// TransactionId Canonical uppercase ULID without a display prefix.
 	TransactionId ULID `json:"transactionId"`
@@ -806,6 +982,20 @@ type TransactionRevisionListEnvelope struct {
 type TransactionSnapshot struct {
 	Items      []TransactionItemSnapshot `json:"items"`
 	OccurredAt time.Time                 `json:"occurredAt"`
+
+	// PaymentConfirmedRevision The snapshot revision when payment succeeded; null until payment succeeds.
+	PaymentConfirmedRevision *int `json:"paymentConfirmedRevision"`
+
+	// PaymentMethod Stored payment method. `legacy` is read-only compatibility for
+	// transactions created before payment selection was introduced.
+	PaymentMethod PaymentMethod `json:"paymentMethod"`
+	PaymentStatus PaymentStatus `json:"paymentStatus"`
+
+	// QrisPayloadHash Lowercase SHA-256 digest of the exact configured static merchant QRIS
+	// payload. It binds a QRIS transaction revision to the exact payload used
+	// to generate its amount-specific QR code; it does not verify merchant
+	// ownership or payment settlement.
+	QrisPayloadHash *QrisPayloadHash `json:"qrisPayloadHash,omitempty"`
 
 	// Subtotal Whole Indonesian rupiah; decimals are never accepted.
 	Subtotal Rupiah `json:"subtotal"`
@@ -924,6 +1114,9 @@ type PackageList = PackageListEnvelope
 // PackageResponse defines model for PackageResponse.
 type PackageResponse = PackageEnvelope
 
+// PaymentStateConflict defines model for PaymentStateConflict.
+type PaymentStateConflict = PaymentStateConflictEnvelope
+
 // PrintAttemptList defines model for PrintAttemptList.
 type PrintAttemptList = PrintAttemptListEnvelope
 
@@ -992,13 +1185,15 @@ type ListTransactionsParams struct {
 	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 
 	// Search Raw ULID or display ID beginning with TRX-.
-	Search         *string    `form:"search,omitempty" json:"search,omitempty"`
-	From           *time.Time `form:"from,omitempty" json:"from,omitempty"`
-	To             *time.Time `form:"to,omitempty" json:"to,omitempty"`
-	PackageId      *UUID      `form:"packageId,omitempty" json:"packageId,omitempty"`
-	CreatorId      *UUID      `form:"creatorId,omitempty" json:"creatorId,omitempty"`
-	TerminalId     *UUID      `form:"terminalId,omitempty" json:"terminalId,omitempty"`
-	IncludeDeleted *bool      `form:"includeDeleted,omitempty" json:"includeDeleted,omitempty"`
+	Search         *string        `form:"search,omitempty" json:"search,omitempty"`
+	From           *time.Time     `form:"from,omitempty" json:"from,omitempty"`
+	To             *time.Time     `form:"to,omitempty" json:"to,omitempty"`
+	PackageId      *UUID          `form:"packageId,omitempty" json:"packageId,omitempty"`
+	CreatorId      *UUID          `form:"creatorId,omitempty" json:"creatorId,omitempty"`
+	TerminalId     *UUID          `form:"terminalId,omitempty" json:"terminalId,omitempty"`
+	PaymentMethod  *PaymentMethod `form:"paymentMethod,omitempty" json:"paymentMethod,omitempty"`
+	PaymentStatus  *PaymentStatus `form:"paymentStatus,omitempty" json:"paymentStatus,omitempty"`
+	IncludeDeleted *bool          `form:"includeDeleted,omitempty" json:"includeDeleted,omitempty"`
 }
 
 // ListUsersParams defines parameters for ListUsers.
@@ -1037,6 +1232,9 @@ type CreateTransactionJSONRequestBody = CreateTransactionRequest
 
 // DeleteTransactionJSONRequestBody defines body for DeleteTransaction for application/json ContentType.
 type DeleteTransactionJSONRequestBody = DeleteTransactionRequest
+
+// SetTransactionPaymentStatusJSONRequestBody defines body for SetTransactionPaymentStatus for application/json ContentType.
+type SetTransactionPaymentStatusJSONRequestBody = SetPaymentStatusRequest
 
 // RecordPrintAttemptJSONRequestBody defines body for RecordPrintAttempt for application/json ContentType.
 type RecordPrintAttemptJSONRequestBody = RecordPrintAttemptRequest
@@ -1245,6 +1443,32 @@ func (t *SyncMutation_Payload) MergeCorrectTransactionMutationPayload(v CorrectT
 	return err
 }
 
+// AsSetPaymentStatusMutationPayload returns the union data inside the SyncMutation_Payload as a SetPaymentStatusMutationPayload
+func (t SyncMutation_Payload) AsSetPaymentStatusMutationPayload() (SetPaymentStatusMutationPayload, error) {
+	var body SetPaymentStatusMutationPayload
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSetPaymentStatusMutationPayload overwrites any union data inside the SyncMutation_Payload as the provided SetPaymentStatusMutationPayload
+func (t *SyncMutation_Payload) FromSetPaymentStatusMutationPayload(v SetPaymentStatusMutationPayload) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSetPaymentStatusMutationPayload performs a merge with any union data inside the SyncMutation_Payload, using the provided SetPaymentStatusMutationPayload
+func (t *SyncMutation_Payload) MergeSetPaymentStatusMutationPayload(v SetPaymentStatusMutationPayload) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 // AsPrintAttemptMutationPayload returns the union data inside the SyncMutation_Payload as a PrintAttemptMutationPayload
 func (t SyncMutation_Payload) AsPrintAttemptMutationPayload() (PrintAttemptMutationPayload, error) {
 	var body PrintAttemptMutationPayload
@@ -1277,6 +1501,68 @@ func (t SyncMutation_Payload) MarshalJSON() ([]byte, error) {
 }
 
 func (t *SyncMutation_Payload) UnmarshalJSON(b []byte) error {
+	err := t.union.UnmarshalJSON(b)
+	return err
+}
+
+// AsRevisionConflictDetails returns the union data inside the SyncMutationResult_Conflict as a RevisionConflictDetails
+func (t SyncMutationResult_Conflict) AsRevisionConflictDetails() (RevisionConflictDetails, error) {
+	var body RevisionConflictDetails
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromRevisionConflictDetails overwrites any union data inside the SyncMutationResult_Conflict as the provided RevisionConflictDetails
+func (t *SyncMutationResult_Conflict) FromRevisionConflictDetails(v RevisionConflictDetails) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeRevisionConflictDetails performs a merge with any union data inside the SyncMutationResult_Conflict, using the provided RevisionConflictDetails
+func (t *SyncMutationResult_Conflict) MergeRevisionConflictDetails(v RevisionConflictDetails) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsPaymentStateConflictDetails returns the union data inside the SyncMutationResult_Conflict as a PaymentStateConflictDetails
+func (t SyncMutationResult_Conflict) AsPaymentStateConflictDetails() (PaymentStateConflictDetails, error) {
+	var body PaymentStateConflictDetails
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromPaymentStateConflictDetails overwrites any union data inside the SyncMutationResult_Conflict as the provided PaymentStateConflictDetails
+func (t *SyncMutationResult_Conflict) FromPaymentStateConflictDetails(v PaymentStateConflictDetails) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergePaymentStateConflictDetails performs a merge with any union data inside the SyncMutationResult_Conflict, using the provided PaymentStateConflictDetails
+func (t *SyncMutationResult_Conflict) MergePaymentStateConflictDetails(v PaymentStateConflictDetails) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+func (t SyncMutationResult_Conflict) MarshalJSON() ([]byte, error) {
+	b, err := t.union.MarshalJSON()
+	return b, err
+}
+
+func (t *SyncMutationResult_Conflict) UnmarshalJSON(b []byte) error {
 	err := t.union.UnmarshalJSON(b)
 	return err
 }
@@ -1395,6 +1681,32 @@ func (t *SyncMutationSignedBody_Payload) MergeCorrectTransactionMutationPayload(
 	return err
 }
 
+// AsSetPaymentStatusMutationPayload returns the union data inside the SyncMutationSignedBody_Payload as a SetPaymentStatusMutationPayload
+func (t SyncMutationSignedBody_Payload) AsSetPaymentStatusMutationPayload() (SetPaymentStatusMutationPayload, error) {
+	var body SetPaymentStatusMutationPayload
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromSetPaymentStatusMutationPayload overwrites any union data inside the SyncMutationSignedBody_Payload as the provided SetPaymentStatusMutationPayload
+func (t *SyncMutationSignedBody_Payload) FromSetPaymentStatusMutationPayload(v SetPaymentStatusMutationPayload) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeSetPaymentStatusMutationPayload performs a merge with any union data inside the SyncMutationSignedBody_Payload, using the provided SetPaymentStatusMutationPayload
+func (t *SyncMutationSignedBody_Payload) MergeSetPaymentStatusMutationPayload(v SetPaymentStatusMutationPayload) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
 // AsPrintAttemptMutationPayload returns the union data inside the SyncMutationSignedBody_Payload as a PrintAttemptMutationPayload
 func (t SyncMutationSignedBody_Payload) AsPrintAttemptMutationPayload() (PrintAttemptMutationPayload, error) {
 	var body PrintAttemptMutationPayload
@@ -1499,6 +1811,9 @@ type ServerInterface interface {
 	// Get the current transaction and print metadata
 	// (GET /transactions/{transactionId})
 	GetTransaction(c *gin.Context, transactionId TransactionId)
+	// Mark the current transaction revision payment as successful or failed
+	// (POST /transactions/{transactionId}/payment-status)
+	SetTransactionPaymentStatus(c *gin.Context, transactionId TransactionId)
 	// List print attempts
 	// (GET /transactions/{transactionId}/print-attempts)
 	ListPrintAttempts(c *gin.Context, transactionId TransactionId)
@@ -2008,6 +2323,22 @@ func (siw *ServerInterfaceWrapper) ListTransactions(c *gin.Context) {
 		return
 	}
 
+	// ------------- Optional query parameter "paymentMethod" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "paymentMethod", c.Request.URL.Query(), &params.PaymentMethod)
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter paymentMethod: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	// ------------- Optional query parameter "paymentStatus" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "paymentStatus", c.Request.URL.Query(), &params.PaymentStatus)
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter paymentStatus: %w", err), http.StatusBadRequest)
+		return
+	}
+
 	// ------------- Optional query parameter "includeDeleted" -------------
 
 	err = runtime.BindQueryParameter("form", true, false, "includeDeleted", c.Request.URL.Query(), &params.IncludeDeleted)
@@ -2091,6 +2422,32 @@ func (siw *ServerInterfaceWrapper) GetTransaction(c *gin.Context) {
 	}
 
 	siw.Handler.GetTransaction(c, transactionId)
+}
+
+// SetTransactionPaymentStatus operation middleware
+func (siw *ServerInterfaceWrapper) SetTransactionPaymentStatus(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "transactionId" -------------
+	var transactionId TransactionId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "transactionId", c.Param("transactionId"), &transactionId, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter transactionId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(BearerAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SetTransactionPaymentStatus(c, transactionId)
 }
 
 // ListPrintAttempts operation middleware
@@ -2433,6 +2790,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/transactions", wrapper.CreateTransaction)
 	router.DELETE(options.BaseURL+"/transactions/:transactionId", wrapper.DeleteTransaction)
 	router.GET(options.BaseURL+"/transactions/:transactionId", wrapper.GetTransaction)
+	router.POST(options.BaseURL+"/transactions/:transactionId/payment-status", wrapper.SetTransactionPaymentStatus)
 	router.GET(options.BaseURL+"/transactions/:transactionId/print-attempts", wrapper.ListPrintAttempts)
 	router.POST(options.BaseURL+"/transactions/:transactionId/print-attempts", wrapper.RecordPrintAttempt)
 	router.GET(options.BaseURL+"/transactions/:transactionId/revisions", wrapper.ListTransactionRevisions)
@@ -2560,6 +2918,15 @@ type PackageResponseJSONResponse struct {
 	Body PackageEnvelope
 
 	Headers PackageResponseResponseHeaders
+}
+
+type PaymentStateConflictResponseHeaders struct {
+	XRequestId openapi_types.UUID
+}
+type PaymentStateConflictJSONResponse struct {
+	Body PaymentStateConflictEnvelope
+
+	Headers PaymentStateConflictResponseHeaders
 }
 
 type PrintAttemptListResponseHeaders struct {
@@ -3842,6 +4209,91 @@ func (response GetTransaction404JSONResponse) VisitGetTransactionResponse(w http
 	return json.NewEncoder(w).Encode(response.Body)
 }
 
+type SetTransactionPaymentStatusRequestObject struct {
+	TransactionId TransactionId `json:"transactionId"`
+	Body          *SetTransactionPaymentStatusJSONRequestBody
+}
+
+type SetTransactionPaymentStatusResponseObject interface {
+	VisitSetTransactionPaymentStatusResponse(w http.ResponseWriter) error
+}
+
+type SetTransactionPaymentStatus200JSONResponse struct {
+	TransactionResponseJSONResponse
+}
+
+func (response SetTransactionPaymentStatus200JSONResponse) VisitSetTransactionPaymentStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SetTransactionPaymentStatus400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response SetTransactionPaymentStatus400JSONResponse) VisitSetTransactionPaymentStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SetTransactionPaymentStatus401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response SetTransactionPaymentStatus401JSONResponse) VisitSetTransactionPaymentStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SetTransactionPaymentStatus403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response SetTransactionPaymentStatus403JSONResponse) VisitSetTransactionPaymentStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SetTransactionPaymentStatus404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response SetTransactionPaymentStatus404JSONResponse) VisitSetTransactionPaymentStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SetTransactionPaymentStatus409JSONResponse struct {
+	PaymentStateConflictJSONResponse
+}
+
+func (response SetTransactionPaymentStatus409JSONResponse) VisitSetTransactionPaymentStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SetTransactionPaymentStatus422JSONResponse struct {
+	UnprocessableEntityJSONResponse
+}
+
+func (response SetTransactionPaymentStatus422JSONResponse) VisitSetTransactionPaymentStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(422)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
 type ListPrintAttemptsRequestObject struct {
 	TransactionId TransactionId `json:"transactionId"`
 }
@@ -4520,6 +4972,9 @@ type StrictServerInterface interface {
 	// Get the current transaction and print metadata
 	// (GET /transactions/{transactionId})
 	GetTransaction(ctx context.Context, request GetTransactionRequestObject) (GetTransactionResponseObject, error)
+	// Mark the current transaction revision payment as successful or failed
+	// (POST /transactions/{transactionId}/payment-status)
+	SetTransactionPaymentStatus(ctx context.Context, request SetTransactionPaymentStatusRequestObject) (SetTransactionPaymentStatusResponseObject, error)
 	// List print attempts
 	// (GET /transactions/{transactionId}/print-attempts)
 	ListPrintAttempts(ctx context.Context, request ListPrintAttemptsRequestObject) (ListPrintAttemptsResponseObject, error)
@@ -5199,6 +5654,41 @@ func (sh *strictHandler) GetTransaction(ctx *gin.Context, transactionId Transact
 		ctx.Status(http.StatusInternalServerError)
 	} else if validResponse, ok := response.(GetTransactionResponseObject); ok {
 		if err := validResponse.VisitGetTransactionResponse(ctx.Writer); err != nil {
+			ctx.Error(err)
+		}
+	} else if response != nil {
+		ctx.Error(fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SetTransactionPaymentStatus operation middleware
+func (sh *strictHandler) SetTransactionPaymentStatus(ctx *gin.Context, transactionId TransactionId) {
+	var request SetTransactionPaymentStatusRequestObject
+
+	request.TransactionId = transactionId
+
+	var body SetTransactionPaymentStatusJSONRequestBody
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		ctx.Status(http.StatusBadRequest)
+		ctx.Error(err)
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.SetTransactionPaymentStatus(ctx, request.(SetTransactionPaymentStatusRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SetTransactionPaymentStatus")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		ctx.Error(err)
+		ctx.Status(http.StatusInternalServerError)
+	} else if validResponse, ok := response.(SetTransactionPaymentStatusResponseObject); ok {
+		if err := validResponse.VisitSetTransactionPaymentStatusResponse(ctx.Writer); err != nil {
 			ctx.Error(err)
 		}
 	} else if response != nil {

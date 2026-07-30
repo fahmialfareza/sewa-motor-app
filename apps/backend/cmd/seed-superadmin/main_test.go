@@ -18,7 +18,7 @@ func TestDevelopmentPasswordUsesSimpleFallback(t *testing.T) {
 		t.Fatal("expected fallback password to be reported as the default")
 	}
 	if _, err := bootstrap.NewSampleSuperadminManifest(
-		"Budi Santoso",
+		"Penyok",
 		"superadmin",
 		password,
 	); err != nil {

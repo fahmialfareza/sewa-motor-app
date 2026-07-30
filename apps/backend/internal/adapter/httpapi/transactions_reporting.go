@@ -14,16 +14,20 @@ import (
 
 func (s *Server) createTransaction(c *gin.Context) {
 	var request struct {
-		ID         string             `json:"id"`
-		OccurredAt time.Time          `json:"occurredAt"`
-		Items      []domain.ItemInput `json:"items"`
+		ID              string               `json:"id"`
+		OccurredAt      time.Time            `json:"occurredAt"`
+		PaymentMethod   domain.PaymentMethod `json:"paymentMethod"`
+		QrisPayloadHash *string              `json:"qrisPayloadHash"`
+		Items           []domain.ItemInput   `json:"items"`
 	}
 	if err := decodeJSON(c, &request); err != nil {
 		writeError(c, err)
 		return
 	}
 	item, err := s.deps.Transactions.Create(c.Request.Context(), principal(c), domain.CreateTransactionInput{
-		ID: request.ID, OccurredAt: request.OccurredAt, Items: request.Items,
+		ID: request.ID, OccurredAt: request.OccurredAt,
+		PaymentMethod: request.PaymentMethod, QrisPayloadHash: request.QrisPayloadHash,
+		Items: request.Items,
 	})
 	if err != nil {
 		writeError(c, err)
@@ -114,15 +118,31 @@ func transactionFilterFromQuery(c *gin.Context) (domain.TransactionFilter, error
 			*target = &id
 		}
 	}
+	if value := c.Query("paymentMethod"); value != "" {
+		method := domain.PaymentMethod(value)
+		if !method.Valid() {
+			return filter, domain.Validation("Metode pembayaran tidak valid", map[string]any{"field": "paymentMethod"})
+		}
+		filter.PaymentMethod = &method
+	}
+	if value := c.Query("paymentStatus"); value != "" {
+		status := domain.PaymentStatus(value)
+		if !status.Valid() {
+			return filter, domain.Validation("Status pembayaran tidak valid", map[string]any{"field": "paymentStatus"})
+		}
+		filter.PaymentStatus = &status
+	}
 	return filter, nil
 }
 
 func (s *Server) correctTransaction(c *gin.Context) {
 	var request struct {
-		BaseRevision int                `json:"baseRevision"`
-		Reason       string             `json:"reason"`
-		OccurredAt   time.Time          `json:"occurredAt"`
-		Items        []domain.ItemInput `json:"items"`
+		BaseRevision    int                  `json:"baseRevision"`
+		Reason          string               `json:"reason"`
+		OccurredAt      time.Time            `json:"occurredAt"`
+		PaymentMethod   domain.PaymentMethod `json:"paymentMethod"`
+		QrisPayloadHash *string              `json:"qrisPayloadHash"`
+		Items           []domain.ItemInput   `json:"items"`
 	}
 	if err := decodeJSON(c, &request); err != nil {
 		writeError(c, err)
@@ -130,8 +150,39 @@ func (s *Server) correctTransaction(c *gin.Context) {
 	}
 	item, err := s.deps.Transactions.Correct(c.Request.Context(), principal(c), domain.CorrectTransactionInput{
 		ID: c.Param("transactionId"), BaseRevision: request.BaseRevision, Reason: request.Reason,
-		OccurredAt: request.OccurredAt, Items: request.Items,
+		OccurredAt: request.OccurredAt, PaymentMethod: request.PaymentMethod,
+		QrisPayloadHash: request.QrisPayloadHash, Items: request.Items,
 	})
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	view, err := s.transactionView(c, item)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	writeData(c, http.StatusOK, view)
+}
+
+func (s *Server) setTransactionPaymentStatus(c *gin.Context) {
+	var request struct {
+		BaseRevision int                  `json:"baseRevision"`
+		Status       domain.PaymentStatus `json:"status"`
+		OccurredAt   time.Time            `json:"occurredAt"`
+	}
+	if err := decodeJSON(c, &request); err != nil {
+		writeError(c, err)
+		return
+	}
+	item, err := s.deps.Transactions.SetPaymentStatus(
+		c.Request.Context(),
+		principal(c),
+		domain.SetPaymentStatusInput{
+			ID: c.Param("transactionId"), BaseRevision: request.BaseRevision,
+			Status: request.Status, OccurredAt: request.OccurredAt,
+		},
+	)
 	if err != nil {
 		writeError(c, err)
 		return
@@ -209,7 +260,7 @@ func (s *Server) listRevisions(c *gin.Context) {
 			}
 			terminal = terminalSummary(item)
 		}
-		data = append(data, gin.H{
+		view := gin.H{
 			"id":            uuid.NewSHA1(uuid.NameSpaceOID, []byte(fmt.Sprintf("%s:%d", revision.TransactionID, revision.Revision))),
 			"transactionId": revision.TransactionID, "revision": revision.Revision,
 			"reason": revision.Reason, "before": json.RawMessage(revision.BeforeSnapshot),
@@ -217,7 +268,11 @@ func (s *Server) listRevisions(c *gin.Context) {
 			"originActor": actorFromUser(origin), "submittedBy": actorFromUser(submitter),
 			"terminal": terminal, "clientOccurredAt": revision.ClientOccurredAt,
 			"serverReceivedAt": revision.ServerReceivedAt,
-		})
+		}
+		if revision.QrisPayloadHash != nil {
+			view["qrisPayloadHash"] = *revision.QrisPayloadHash
+		}
+		data = append(data, view)
 	}
 	writeData(c, http.StatusOK, data)
 }
@@ -290,13 +345,19 @@ func (s *Server) transactionView(c *gin.Context, item domain.Transaction) (gin.H
 	if item.DeletedAt != nil {
 		deletion = gin.H{"deletedAt": item.DeletedAt, "deletedBy": item.DeletedBy, "reason": item.DeleteReason}
 	}
-	return gin.H{
-		"id": item.ID, "revision": item.Revision, "occurredAt": item.OccurredAt,
+	view := gin.H{
+		"id": item.ID, "revision": item.Revision, "occurredAt": item.OccurredAt.UTC(),
 		"items": lines, "subtotal": item.Subtotal, "total": item.Total,
-		"originActor": item.OriginActor, "updatedBy": item.UpdatedBy, "terminal": terminal,
+		"paymentMethod": item.PaymentMethod, "paymentStatus": item.PaymentStatus,
+		"paymentConfirmedRevision": item.PaymentConfirmedRevision,
+		"originActor":              item.OriginActor, "updatedBy": item.UpdatedBy, "terminal": terminal,
 		"print":    gin.H{"state": item.PrintState, "attemptCount": len(attempts), "lastAttemptAt": lastAttempt},
 		"deletion": deletion, "createdAt": item.ServerReceivedAt, "updatedAt": item.UpdatedAt,
-	}, nil
+	}
+	if item.QrisPayloadHash != nil {
+		view["qrisPayloadHash"] = *item.QrisPayloadHash
+	}
+	return view, nil
 }
 
 func (s *Server) printAttemptView(c *gin.Context, attempt domain.PrintAttempt) (gin.H, error) {
@@ -407,13 +468,15 @@ func (s *Server) exportTransactions(c *gin.Context) {
 	var request struct {
 		Format  string `json:"format"`
 		Filters struct {
-			Search         string     `json:"search"`
-			From           *time.Time `json:"from"`
-			To             *time.Time `json:"to"`
-			PackageID      *uuid.UUID `json:"packageId"`
-			CreatorID      *uuid.UUID `json:"creatorId"`
-			TerminalID     *uuid.UUID `json:"terminalId"`
-			IncludeDeleted bool       `json:"includeDeleted"`
+			Search         string                `json:"search"`
+			From           *time.Time            `json:"from"`
+			To             *time.Time            `json:"to"`
+			PackageID      *uuid.UUID            `json:"packageId"`
+			CreatorID      *uuid.UUID            `json:"creatorId"`
+			TerminalID     *uuid.UUID            `json:"terminalId"`
+			PaymentMethod  *domain.PaymentMethod `json:"paymentMethod"`
+			PaymentStatus  *domain.PaymentStatus `json:"paymentStatus"`
+			IncludeDeleted bool                  `json:"includeDeleted"`
 		} `json:"filters"`
 	}
 	if err := decodeJSON(c, &request); err != nil {
@@ -424,6 +487,7 @@ func (s *Server) exportTransactions(c *gin.Context) {
 		Search: request.Filters.Search, From: request.Filters.From, To: request.Filters.To,
 		PackageID: request.Filters.PackageID, CreatorID: request.Filters.CreatorID,
 		TerminalID: request.Filters.TerminalID, IncludeDeleted: request.Filters.IncludeDeleted,
+		PaymentMethod: request.Filters.PaymentMethod, PaymentStatus: request.Filters.PaymentStatus,
 	})
 	if err != nil {
 		writeError(c, err)

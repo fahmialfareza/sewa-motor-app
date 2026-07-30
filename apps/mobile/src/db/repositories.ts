@@ -3,8 +3,12 @@ import type { SQLiteDatabase } from "expo-sqlite";
 
 import type {
   DashboardStats,
+  PaymentMethod,
+  PaymentStatus,
   PrintState,
+  QrisPayloadHash,
   RentalPackage,
+  SelectablePaymentMethod,
   Session,
   SyncConflict,
   SyncState,
@@ -14,16 +18,30 @@ import type {
 } from "@/domain/types";
 import {
   canCorrectTransaction,
+  canManageTransactionPayment,
   CORRECTION_FORBIDDEN_MESSAGE,
+  PAYMENT_FORBIDDEN_MESSAGE,
 } from "@/domain/permissions";
+import {
+  normalizeQrisPayloadHash,
+  validateQrisAmount,
+  validateQrisPayloadBinding,
+} from "@/domain/qris";
 import {
   getOrCreateTerminalIdentity,
   signCanonicalPayload,
 } from "@/security/terminal-identity";
-import { reportingRange, type ReportingPeriod } from "@/utils/time";
+import { canonicalize } from "@/utils/canonical-json";
+import {
+  normalizeUtcTimestamp,
+  reportingRange,
+  type ReportingPeriod,
+} from "@/utils/time";
 
 import { getDatabase } from "./client";
 import { createUlid } from "./ids";
+
+const PAYMENT_CONFLICT_ERROR_PREFIX = "PAYMENT_STATE_CONFLICT: ";
 
 interface TransactionRow {
   id: string;
@@ -37,6 +55,10 @@ interface TransactionRow {
   terminal_id: string;
   sync_state: SyncState;
   print_state: PrintState;
+  payment_method: PaymentMethod;
+  payment_status: PaymentStatus;
+  payment_confirmed_revision: number | null;
+  qris_payload_hash: string | null;
   deleted_at: string | null;
 }
 
@@ -92,6 +114,8 @@ export interface StoredOutboxOperation {
 export interface RejectedOutboxOperation {
   operationId: string;
   aggregateId: string;
+  aggregate: string;
+  action: string;
   message: string;
 }
 
@@ -147,6 +171,8 @@ async function upsertPackageWithDatabase(
 
 export async function createTransaction(
   lines: TransactionDraftLine[],
+  paymentMethod: SelectablePaymentMethod,
+  qrisPayloadHash: QrisPayloadHash | null,
   session: Session,
 ): Promise<Transaction> {
   const selected = lines.filter((line) => line.quantity > 0);
@@ -156,6 +182,13 @@ export async function createTransaction(
   if (selected.some((line) => line.quantity < 1 || line.quantity > 999)) {
     throw new Error("Jumlah paket harus antara 1 dan 999.");
   }
+  if (paymentMethod !== "cash" && paymentMethod !== "qris") {
+    throw new Error("Pilih metode pembayaran tunai atau QRIS.");
+  }
+  const boundQrisPayloadHash = validateQrisPayloadBinding(
+    paymentMethod,
+    qrisPayloadHash,
+  );
 
   const occurredAt = new Date().toISOString();
   const id = createUlid();
@@ -175,6 +208,7 @@ export async function createTransaction(
     lineTotal: line.quantity * line.package.unitPrice,
   }));
   const total = items.reduce((sum, item) => sum + item.lineTotal, 0);
+  if (paymentMethod === "qris") validateQrisAmount(total);
   const transaction: Transaction = {
     id,
     revision: 1,
@@ -187,6 +221,10 @@ export async function createTransaction(
     terminalId: terminal.serverTerminalId,
     syncState: "pending",
     printState: "pending",
+    paymentMethod,
+    paymentStatus: "pending",
+    paymentConfirmedRevision: null,
+    qrisPayloadHash: boundQrisPayloadHash,
     deletedAt: null,
     items,
   };
@@ -203,6 +241,10 @@ export async function createTransaction(
     occurredAt,
     payload: {
       id: transaction.id,
+      paymentMethod: transaction.paymentMethod,
+      ...(transaction.qrisPayloadHash
+        ? { qrisPayloadHash: transaction.qrisPayloadHash }
+        : {}),
       items: toMutationItems(transaction.items),
     },
   };
@@ -233,17 +275,39 @@ export async function createTransaction(
 export async function correctTransaction(
   transactionId: string,
   quantities: Record<string, number>,
+  paymentMethod: SelectablePaymentMethod,
+  qrisPayloadHash: QrisPayloadHash | null,
   reason: string,
   session: Session,
 ): Promise<Transaction> {
   const before = await getTransaction(transactionId);
   if (!before) throw new Error("Transaksi tidak ditemukan.");
+  if (before.deletedAt) {
+    throw new Error("Transaksi yang diarsipkan tidak dapat dikoreksi.");
+  }
+  if (before.syncState === "conflict") {
+    throw new Error(
+      "Selesaikan konflik revisi sebelum mengoreksi transaksi ini.",
+    );
+  }
+  if (await hasTerminalTransactionBlock(transactionId)) {
+    throw new Error(
+      "Operasi transaksi ini ditolak server. Pulihkan data dari Pusat Sinkron sebelum membuat koreksi baru.",
+    );
+  }
   if (!canCorrectTransaction(session, before)) {
     throw new Error(CORRECTION_FORBIDDEN_MESSAGE);
   }
   if (reason.trim().length < 5) {
     throw new Error("Alasan koreksi minimal 5 karakter.");
   }
+  if (paymentMethod !== "cash" && paymentMethod !== "qris") {
+    throw new Error("Pilih metode pembayaran tunai atau QRIS.");
+  }
+  const boundQrisPayloadHash = validateQrisPayloadBinding(
+    paymentMethod,
+    qrisPayloadHash,
+  );
 
   const items = before.items
     .map((item) => {
@@ -267,6 +331,7 @@ export async function correctTransaction(
   }
   const occurredAt = new Date().toISOString();
   const total = items.reduce((sum, item) => sum + item.lineTotal, 0);
+  if (paymentMethod === "qris") validateQrisAmount(total);
   const corrected: Transaction = {
     ...before,
     revision: before.revision + 1,
@@ -279,6 +344,10 @@ export async function correctTransaction(
       before.printState === "success" || before.printState === "needs-reprint"
         ? "needs-reprint"
         : before.printState,
+    paymentMethod,
+    paymentStatus: "pending",
+    paymentConfirmedRevision: null,
+    qrisPayloadHash: boundQrisPayloadHash,
     items,
   };
 
@@ -295,6 +364,10 @@ export async function correctTransaction(
     payload: {
       id: corrected.id,
       reason: reason.trim(),
+      paymentMethod: corrected.paymentMethod,
+      ...(corrected.qrisPayloadHash
+        ? { qrisPayloadHash: corrected.qrisPayloadHash }
+        : {}),
       items: toMutationItems(corrected.items),
     },
   };
@@ -305,7 +378,9 @@ export async function correctTransaction(
     await sqlite.runAsync(
       `UPDATE transactions SET
          revision = ?, subtotal = ?, total = ?, updated_actor_name = ?,
-         terminal_id = ?, sync_state = 'pending', print_state = ?
+         terminal_id = ?, sync_state = 'pending', print_state = ?,
+         payment_method = ?, payment_status = 'pending',
+         payment_confirmed_revision = NULL, qris_payload_hash = ?
        WHERE id = ?`,
       corrected.revision,
       corrected.subtotal,
@@ -313,6 +388,8 @@ export async function correctTransaction(
       corrected.updatedActorName,
       corrected.terminalId,
       corrected.printState,
+      corrected.paymentMethod,
+      corrected.qrisPayloadHash,
       corrected.id,
     );
     await insertItems(sqlite, corrected);
@@ -332,6 +409,105 @@ export async function correctTransaction(
     await insertOutbox(sqlite, operation, signature, corrected.id);
   });
   return corrected;
+}
+
+export async function setPaymentStatus(
+  transactionId: string,
+  status: Exclude<PaymentStatus, "pending">,
+  session: Session,
+): Promise<Transaction> {
+  const before = await getTransaction(transactionId);
+  if (!before) throw new Error("Transaksi tidak ditemukan.");
+  if (before.deletedAt) {
+    throw new Error("Pembayaran transaksi yang diarsipkan tidak dapat diubah.");
+  }
+  if (before.syncState === "conflict") {
+    throw new Error(
+      "Selesaikan konflik revisi sebelum mengubah status pembayaran.",
+    );
+  }
+  if (await hasTerminalTransactionBlock(transactionId)) {
+    throw new Error(
+      "Operasi transaksi ini ditolak server. Pulihkan data dari Pusat Sinkron sebelum mengubah pembayaran.",
+    );
+  }
+  if (!canManageTransactionPayment(session, before)) {
+    throw new Error(PAYMENT_FORBIDDEN_MESSAGE);
+  }
+  if (status !== "success" && status !== "failed") {
+    throw new Error("Status pembayaran tidak valid.");
+  }
+  if (
+    before.paymentStatus === "success" &&
+    before.paymentConfirmedRevision === before.revision
+  ) {
+    if (status === "success") return before;
+    throw new Error(
+      "Pembayaran berhasil untuk revisi ini sudah final. Buat koreksi transaksi jika nilainya berubah.",
+    );
+  }
+  if (before.paymentStatus === status && status === "failed") {
+    return before;
+  }
+
+  const terminal = await getOrCreateTerminalIdentity();
+  if (!terminal.serverTerminalId) {
+    throw new Error("Terminal belum terdaftar.");
+  }
+  const occurredAt = new Date().toISOString();
+  const updated: Transaction = {
+    ...before,
+    updatedActorName: session.user.fullName,
+    terminalId: terminal.serverTerminalId,
+    syncState: "pending",
+    paymentStatus: status,
+    paymentConfirmedRevision: status === "success" ? before.revision : null,
+  };
+  const operation = {
+    operationId: Crypto.randomUUID(),
+    aggregate: "transaction",
+    aggregateId: before.id,
+    action: "set_payment_status",
+    baseRevision: before.revision,
+    originSessionId: session.sessionId,
+    originActorId: session.user.id,
+    terminalId: terminal.serverTerminalId,
+    occurredAt,
+    payload: {
+      id: before.id,
+      status,
+    },
+  };
+  const signature = await signCanonicalPayload(operation);
+  const { sqlite } = await getDatabase();
+
+  await sqlite.withTransactionAsync(async () => {
+    await sqlite.runAsync(
+      `UPDATE transactions SET
+         updated_actor_name = ?, terminal_id = ?, sync_state = 'pending',
+         payment_status = ?, payment_confirmed_revision = ?
+       WHERE id = ?`,
+      updated.updatedActorName,
+      updated.terminalId,
+      updated.paymentStatus,
+      updated.paymentConfirmedRevision,
+      updated.id,
+    );
+    await sqlite.runAsync(
+      `INSERT INTO audit_events(
+        id, kind, aggregate_id, actor_id, session_id, terminal_id, payload_json, occurred_at
+      ) VALUES (?, 'payment.status_changed', ?, ?, ?, ?, ?, ?)`,
+      `AUD-${createUlid()}`,
+      updated.id,
+      session.user.id,
+      session.sessionId,
+      terminal.serverTerminalId,
+      JSON.stringify({ before, after: updated }),
+      occurredAt,
+    );
+    await insertOutbox(sqlite, operation, signature, updated.id);
+  });
+  return updated;
 }
 
 export async function getTransaction(id: string): Promise<Transaction | null> {
@@ -444,7 +620,10 @@ export async function getDashboardStats(
   }>(
     `SELECT COALESCE(SUM(total), 0) AS gross, COUNT(*) AS transaction_count
      FROM transactions
-     WHERE deleted_at IS NULL AND occurred_at >= ? AND occurred_at < ?`,
+     WHERE deleted_at IS NULL
+       AND payment_status = 'success'
+       AND payment_confirmed_revision = revision
+       AND occurred_at >= ? AND occurred_at < ?`,
     range.from,
     range.to,
   );
@@ -457,15 +636,14 @@ export async function getDashboardStats(
             i.accent
      FROM transaction_items i
      JOIN transactions t ON t.id = i.transaction_id AND t.revision = i.revision
-     WHERE t.deleted_at IS NULL AND t.occurred_at >= ? AND t.occurred_at < ?
+     WHERE t.deleted_at IS NULL
+       AND t.payment_status = 'success'
+       AND t.payment_confirmed_revision = t.revision
+       AND t.occurred_at >= ? AND t.occurred_at < ?
      GROUP BY i.package_id, i.name, i.accent
      ORDER BY quantity DESC`,
     range.from,
     range.to,
-  );
-  const pending = await sqlite.getFirstAsync<{ count: number }>(
-    `SELECT COUNT(*) AS count FROM transactions
-     WHERE sync_state IN ('pending', 'error', 'conflict')`,
   );
   const bucketSeconds = period === "daily" ? 60 * 60 : 24 * 60 * 60;
   const bucketCount =
@@ -484,9 +662,12 @@ export async function getDashboardStats(
          (strftime('%s', occurred_at) - strftime('%s', ?)) / ?
          AS INTEGER
        ) AS bucket,
-       SUM(total) AS amount
+     SUM(total) AS amount
      FROM transactions
-     WHERE deleted_at IS NULL AND occurred_at >= ? AND occurred_at < ?
+     WHERE deleted_at IS NULL
+       AND payment_status = 'success'
+       AND payment_confirmed_revision = revision
+       AND occurred_at >= ? AND occurred_at < ?
      GROUP BY bucket
      ORDER BY bucket`,
     range.from,
@@ -506,27 +687,55 @@ export async function getDashboardStats(
     transactionCount: total?.transaction_count ?? 0,
     quantities,
     buckets,
-    pendingCount: pending?.count ?? 0,
   };
 }
 
 export async function beginPrintAttempt(input: {
   transactionId: string;
+  transactionRevision: number;
   adapter: string;
   isCopy: boolean;
   session: Session;
 }): Promise<string> {
   const transaction = await getTransaction(input.transactionId);
   if (!transaction) throw new Error("Transaksi tidak ditemukan.");
+  if (transaction.deletedAt) {
+    throw new Error("Transaksi yang diarsipkan tidak dapat dicetak.");
+  }
+  if (transaction.syncState === "conflict") {
+    throw new Error(
+      "Selesaikan konflik revisi sebelum mencetak transaksi ini.",
+    );
+  }
+  if (await hasTerminalTransactionBlock(input.transactionId)) {
+    throw new Error(
+      "Operasi transaksi ini ditolak server dan belum dipulihkan. Pencetakan dikunci.",
+    );
+  }
+  if (transaction.revision !== input.transactionRevision) {
+    throw new Error(
+      "Transaksi berubah sebelum pencetakan dimulai. Muat ulang detail transaksi.",
+    );
+  }
+  if (
+    transaction.paymentStatus !== "success" ||
+    transaction.paymentConfirmedRevision !== transaction.revision
+  ) {
+    throw new Error(
+      "Pembayaran harus berhasil untuk revisi transaksi saat ini sebelum struk dapat dicetak.",
+    );
+  }
   const attemptId = Crypto.randomUUID();
   const now = new Date().toISOString();
   const { sqlite } = await getDatabase();
   await sqlite.runAsync(
     `INSERT INTO print_attempts(
-      id, transaction_id, adapter, is_copy, requested_at, completed_at, result, error
-    ) VALUES (?, ?, ?, ?, ?, NULL, 'pending', NULL)`,
+      id, transaction_id, transaction_revision, adapter, is_copy,
+      requested_at, completed_at, result, error
+    ) VALUES (?, ?, ?, ?, ?, ?, NULL, 'pending', NULL)`,
     attemptId,
     input.transactionId,
+    input.transactionRevision,
     input.adapter,
     input.isCopy ? 1 : 0,
     now,
@@ -544,17 +753,27 @@ export async function completePrintAttempt(input: {
   const terminal = await getOrCreateTerminalIdentity();
   if (!terminal.serverTerminalId) throw new Error("Terminal belum terdaftar.");
   const now = new Date().toISOString();
-  const transaction = await getTransaction(input.transactionId);
-  if (!transaction) throw new Error("Transaksi tidak ditemukan.");
   const { sqlite } = await getDatabase();
   const attempt = await sqlite.getFirstAsync<{
+    transaction_id: string;
     adapter: string;
     is_copy: number;
+    transaction_revision: number | null;
   }>(
-    "SELECT adapter, is_copy FROM print_attempts WHERE id = ?",
+    `SELECT transaction_id, adapter, is_copy, transaction_revision
+     FROM print_attempts WHERE id = ?`,
     input.attemptId,
   );
   if (!attempt) throw new Error("Upaya cetak tidak ditemukan.");
+  if (attempt.transaction_id !== input.transactionId) {
+    throw new Error("Upaya cetak tidak sesuai dengan transaksi.");
+  }
+  if (
+    !Number.isInteger(attempt.transaction_revision) ||
+    (attempt.transaction_revision ?? 0) < 1
+  ) {
+    throw new Error("Revisi transaksi pada upaya cetak tidak valid.");
+  }
   const operation = {
     operationId: Crypto.randomUUID(),
     aggregate: "print_attempt",
@@ -567,8 +786,8 @@ export async function completePrintAttempt(input: {
     occurredAt: now,
     payload: {
       id: input.attemptId,
-      transactionId: input.transactionId,
-      transactionRevision: transaction.revision,
+      transactionId: attempt.transaction_id,
+      transactionRevision: attempt.transaction_revision,
       status: input.result,
       isCopy: attempt.is_copy === 1,
       printerKind: attempt.adapter,
@@ -590,23 +809,26 @@ export async function completePrintAttempt(input: {
       input.attemptId,
     );
     await sqlite.runAsync(
-      "UPDATE transactions SET print_state = ? WHERE id = ?",
+      `UPDATE transactions
+       SET print_state = ?
+       WHERE id = ? AND revision = ?`,
       input.result,
-      input.transactionId,
+      attempt.transaction_id,
+      attempt.transaction_revision,
     );
     await sqlite.runAsync(
       `INSERT INTO audit_events(
         id, kind, aggregate_id, actor_id, session_id, terminal_id, payload_json, occurred_at
       ) VALUES (?, 'print.completed', ?, ?, ?, ?, ?, ?)`,
       `AUD-${createUlid()}`,
-      input.transactionId,
+      attempt.transaction_id,
       input.session.user.id,
       input.session.sessionId,
       terminal.serverTerminalId,
       JSON.stringify(operation.payload),
       now,
     );
-    await insertOutbox(sqlite, operation, signature, input.attemptId);
+    await insertOutbox(sqlite, operation, signature, attempt.transaction_id);
   });
 }
 
@@ -644,11 +866,33 @@ export async function getOutboxOperations(
     signature: string;
     attempts: number;
   }>(
-    `SELECT operation_id, aggregate_id, operation_json, signature, attempts
-     FROM outbox_operations
-     WHERE state IN ('pending', 'error')
-       AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-     ORDER BY occurred_at ASC LIMIT ?`,
+    `SELECT
+       candidate.operation_id,
+       candidate.aggregate_id,
+       candidate.operation_json,
+       candidate.signature,
+       candidate.attempts
+     FROM outbox_operations candidate
+     WHERE candidate.state IN ('pending', 'error')
+       AND (
+         candidate.next_attempt_at IS NULL
+         OR candidate.next_attempt_at <= ?
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM outbox_operations predecessor
+         WHERE predecessor.dependency_key = candidate.dependency_key
+           AND (
+             predecessor.state IN ('pending', 'error', 'conflict', 'rejected')
+             OR (
+               predecessor.state = 'discarded'
+               AND predecessor.last_error IS NOT NULL
+             )
+           )
+           AND predecessor.rowid < candidate.rowid
+       )
+     ORDER BY candidate.rowid ASC
+     LIMIT ?`,
     new Date().toISOString(),
     limit,
   );
@@ -668,18 +912,56 @@ export async function markOutboxResult(
     | { kind: "success" }
     | { kind: "error"; message: string }
     | { kind: "rejected"; message: string }
+    | {
+        kind: "payment-conflict";
+        message: string;
+        paymentStatus: PaymentStatus;
+        paymentConfirmedRevision: number | null;
+        authoritative: Transaction;
+      }
     | { kind: "conflict"; local: Transaction; server: Transaction },
 ): Promise<void> {
   const { sqlite } = await getDatabase();
   await sqlite.withTransactionAsync(async () => {
+    const operation = await sqlite.getFirstAsync<{
+      dependency_key: string | null;
+      aggregate: string;
+      action: string;
+      operation_json: string;
+    }>(
+      `SELECT dependency_key, aggregate, action, operation_json
+       FROM outbox_operations WHERE operation_id = ?`,
+      operationId,
+    );
+    const dependencyKey = operation?.dependency_key ?? aggregateId;
+    const preserveRejectedCreateEvidence =
+      result.kind === "rejected" &&
+      operation?.aggregate === "transaction" &&
+      (await shouldPreserveRejectedCreateEvidence(
+        sqlite,
+        dependencyKey,
+        operationId,
+        operation.action,
+      ));
     if (result.kind === "success") {
       await sqlite.runAsync(
         "UPDATE outbox_operations SET state = 'synced', last_error = NULL WHERE operation_id = ?",
         operationId,
       );
       await sqlite.runAsync(
-        "UPDATE transactions SET sync_state = 'synced' WHERE id = ?",
-        aggregateId,
+        `UPDATE transactions
+         SET sync_state = CASE
+           WHEN EXISTS (
+             SELECT 1
+             FROM outbox_operations
+             WHERE dependency_key = ?
+               AND state IN ('pending', 'error', 'conflict', 'rejected')
+           ) THEN 'pending'
+           ELSE 'synced'
+         END
+         WHERE id = ?`,
+        dependencyKey,
+        dependencyKey,
       );
       return;
     }
@@ -695,22 +977,83 @@ export async function markOutboxResult(
       );
       await sqlite.runAsync(
         "UPDATE transactions SET sync_state = 'error' WHERE id = ?",
-        aggregateId,
+        dependencyKey,
       );
       return;
     }
-    if (result.kind === "rejected") {
+    if (result.kind === "rejected" || result.kind === "payment-conflict") {
+      const rejectionMessage =
+        result.kind === "payment-conflict"
+          ? `${PAYMENT_CONFLICT_ERROR_PREFIX}${result.message}`
+          : result.message;
       await sqlite.runAsync(
         `UPDATE outbox_operations SET
            state = 'rejected', attempts = attempts + 1,
            last_error = ?, next_attempt_at = NULL
          WHERE operation_id = ?`,
-        result.message,
+        rejectionMessage,
+        operationId,
+      );
+      if (result.kind === "payment-conflict") {
+        const authoritative: Transaction = {
+          ...result.authoritative,
+          syncState: "error",
+          paymentStatus: result.paymentStatus,
+          paymentConfirmedRevision: result.paymentConfirmedRevision,
+        };
+        await replaceTransaction(sqlite, authoritative);
+        const signedOperation = parseOutboxOperation(operation?.operation_json);
+        await sqlite.runAsync(
+          `INSERT INTO audit_events(
+             id, kind, aggregate_id, actor_id, session_id, terminal_id,
+             payload_json, occurred_at
+           ) VALUES (
+             ?, 'sync.payment_conflict_authoritative', ?, ?, ?, ?, ?, ?
+           )`,
+          `AUD-${createUlid()}`,
+          dependencyKey,
+          signedOperation.originActorId,
+          signedOperation.originSessionId,
+          signedOperation.terminalId,
+          JSON.stringify({
+            operationId,
+            authoritative,
+          }),
+          new Date().toISOString(),
+        );
+      } else if (
+        operation?.aggregate === "transaction" &&
+        (operation.action === "create" ||
+          operation.action === "correct" ||
+          operation.action === "set_payment_status")
+      ) {
+        if (!preserveRejectedCreateEvidence) {
+          await sqlite.runAsync(
+            `UPDATE transactions
+             SET payment_status = 'pending',
+                 payment_confirmed_revision = NULL,
+                 sync_state = 'error'
+             WHERE id = ?`,
+            dependencyKey,
+          );
+        }
+      }
+      await sqlite.runAsync(
+        `UPDATE outbox_operations
+         SET state = 'rejected', attempts = attempts + 1,
+             last_error = ?, next_attempt_at = NULL
+         WHERE dependency_key = ?
+           AND rowid > (
+             SELECT rowid FROM outbox_operations WHERE operation_id = ?
+           )
+           AND state IN ('pending', 'error')`,
+        `Operasi lanjutan dibatalkan karena operasi sebelumnya ditolak: ${result.message}`,
+        dependencyKey,
         operationId,
       );
       await sqlite.runAsync(
         "UPDATE transactions SET sync_state = 'error' WHERE id = ?",
-        aggregateId,
+        dependencyKey,
       );
       return;
     }
@@ -719,15 +1062,32 @@ export async function markOutboxResult(
       operationId,
     );
     await sqlite.runAsync(
-      "UPDATE transactions SET sync_state = 'conflict' WHERE id = ?",
-      aggregateId,
+      `UPDATE outbox_operations
+       SET state = 'rejected', attempts = attempts + 1,
+           last_error = ?, next_attempt_at = NULL
+       WHERE dependency_key = ?
+         AND rowid > (
+           SELECT rowid FROM outbox_operations WHERE operation_id = ?
+         )
+         AND state IN ('pending', 'error')`,
+      "Operasi lanjutan dibatalkan karena koreksi sebelumnya berkonflik.",
+      dependencyKey,
+      operationId,
+    );
+    await sqlite.runAsync(
+      `UPDATE transactions
+       SET sync_state = 'conflict',
+           payment_status = 'pending',
+           payment_confirmed_revision = NULL
+       WHERE id = ?`,
+      dependencyKey,
     );
     await sqlite.runAsync(
       `INSERT INTO sync_conflicts(
         id, transaction_id, local_json, server_json, created_at
       ) VALUES (?, ?, ?, ?, ?)`,
       `CONFLICT-${createUlid()}`,
-      aggregateId,
+      dependencyKey,
       JSON.stringify(result.local),
       JSON.stringify(result.server),
       new Date().toISOString(),
@@ -750,17 +1110,41 @@ export async function listRejectedOutboxOperations(): Promise<
   const rows = await sqlite.getAllAsync<{
     operation_id: string;
     aggregate_id: string;
+    aggregate: string;
+    action: string;
     last_error: string | null;
   }>(
-    `SELECT operation_id, aggregate_id, last_error
-     FROM outbox_operations
-     WHERE state = 'rejected'
-     ORDER BY occurred_at DESC`,
+    `SELECT
+       candidate.operation_id,
+       candidate.aggregate_id,
+       candidate.aggregate,
+       candidate.action,
+       candidate.last_error
+     FROM outbox_operations candidate
+     WHERE candidate.state = 'rejected'
+       AND NOT EXISTS (
+         SELECT 1
+         FROM outbox_operations unresolved
+         WHERE unresolved.dependency_key = candidate.dependency_key
+           AND unresolved.state = 'conflict'
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM outbox_operations predecessor
+         WHERE predecessor.dependency_key = candidate.dependency_key
+           AND predecessor.state = 'rejected'
+           AND predecessor.rowid < candidate.rowid
+       )
+     ORDER BY candidate.rowid ASC`,
   );
   return rows.map((row) => ({
     operationId: row.operation_id,
     aggregateId: row.aggregate_id,
-    message: row.last_error ?? "Operasi ditolak server.",
+    aggregate: row.aggregate,
+    action: row.action,
+    message: stripPaymentConflictPrefix(
+      row.last_error ?? "Operasi ditolak server.",
+    ),
   }));
 }
 
@@ -768,12 +1152,236 @@ export async function discardRejectedOutboxOperation(
   operationId: string,
 ): Promise<void> {
   const { sqlite } = await getDatabase();
-  await sqlite.runAsync(
-    `UPDATE outbox_operations
-     SET state = 'discarded'
-     WHERE operation_id = ? AND state = 'rejected'`,
-    operationId,
+  type RecoveryOperation = {
+    operation_id: string;
+    aggregate: string;
+    action: string;
+    dependency_key: string | null;
+    base_revision: number | null;
+    occurred_at: string;
+    last_error: string | null;
+    queue_order: number;
+    has_conflict: number;
+  };
+  await sqlite.withTransactionAsync(async () => {
+    const selected = await sqlite.getFirstAsync<RecoveryOperation>(
+      `SELECT
+         candidate.aggregate,
+         candidate.action,
+         candidate.operation_id,
+         candidate.dependency_key,
+         candidate.base_revision,
+         candidate.occurred_at,
+         candidate.last_error,
+         candidate.rowid AS queue_order,
+         EXISTS(
+           SELECT 1
+           FROM outbox_operations unresolved
+           WHERE unresolved.dependency_key = candidate.dependency_key
+             AND unresolved.state = 'conflict'
+         ) AS has_conflict
+       FROM outbox_operations candidate
+       WHERE candidate.operation_id = ?
+         AND candidate.state = 'rejected'`,
+      operationId,
+    );
+    if (!selected) return;
+    if (selected.has_conflict === 1) {
+      throw new Error(
+        "Selesaikan konflik revisi sebelum memulihkan operasi turunannya.",
+      );
+    }
+
+    const transactionId = selected.dependency_key;
+    if (selected.aggregate === "transaction" && transactionId) {
+      const rows = await sqlite.getAllAsync<RecoveryOperation>(
+        `SELECT
+           aggregate,
+           action,
+           operation_id,
+           dependency_key,
+           base_revision,
+           occurred_at,
+           last_error,
+           rowid AS queue_order,
+           0 AS has_conflict
+         FROM outbox_operations
+         WHERE dependency_key = ?
+           AND aggregate = 'transaction'
+           AND state = 'rejected'
+           AND last_error IS NOT NULL
+         ORDER BY rowid ASC`,
+        transactionId,
+      );
+      const operations = rows.filter(
+        (operation) =>
+          operation.aggregate === "transaction" &&
+          operation.dependency_key === transactionId,
+      );
+      if (operations.length === 0) operations.push(selected);
+
+      if (operations.some((operation) => operation.action === "create")) {
+        if (await hasProtectedTransactionEvidence(sqlite, transactionId)) {
+          throw new Error(
+            "Transaksi sudah memiliki bukti pembayaran berhasil atau pencetakan dan tidak boleh diarsipkan otomatis. Rekonsiliasi dengan server diperlukan.",
+          );
+        }
+        await sqlite.runAsync(
+          `UPDATE transactions
+           SET deleted_at = COALESCE(deleted_at, ?),
+               payment_status = 'pending',
+               payment_confirmed_revision = NULL,
+               sync_state = 'error'
+           WHERE id = ?`,
+          new Date().toISOString(),
+          transactionId,
+        );
+      } else {
+        let recovered = false;
+        let restoredRevision: number | null = null;
+        const authoritativePaymentConflict = operations.find((operation) =>
+          operation.last_error?.startsWith(PAYMENT_CONFLICT_ERROR_PREFIX),
+        );
+        if (authoritativePaymentConflict) {
+          const audit = await sqlite.getFirstAsync<{
+            payload_json: string;
+          }>(
+            `SELECT payload_json
+             FROM audit_events
+             WHERE aggregate_id = ?
+               AND kind = 'sync.payment_conflict_authoritative'
+               AND json_extract(payload_json, '$.operationId') = ?
+             ORDER BY rowid DESC
+             LIMIT 1`,
+            transactionId,
+            authoritativePaymentConflict.operation_id,
+          );
+          const authoritative = {
+            ...parseAuthoritativePaymentConflict(audit?.payload_json),
+            syncState: "synced" as const,
+          };
+          const firstDiscardedRevision = firstCorrectionRevision(operations);
+          if (firstDiscardedRevision !== null) {
+            await deleteTransactionArtifactsFromRevision(
+              sqlite,
+              transactionId,
+              firstDiscardedRevision,
+            );
+          }
+          await replaceTransaction(sqlite, authoritative);
+          restoredRevision = authoritative.revision;
+          recovered = true;
+        } else {
+          for (const operation of [...operations].reverse()) {
+            if (operation.action === "correct") {
+              if (operation.base_revision === null) {
+                throw new Error("Revisi dasar koreksi tidak tersedia.");
+              }
+              const revision = await sqlite.getFirstAsync<{
+                before_json: string | null;
+              }>(
+                `SELECT before_json
+                 FROM transaction_revisions
+                 WHERE transaction_id = ? AND revision = ?`,
+                transactionId,
+                operation.base_revision + 1,
+              );
+              if (!revision?.before_json) {
+                throw new Error("Snapshot sebelum koreksi tidak tersedia.");
+              }
+              const before = {
+                ...parseStoredTransaction(revision.before_json),
+                syncState: "synced" as const,
+              };
+              await replaceTransaction(sqlite, before);
+              restoredRevision = before.revision;
+              recovered = true;
+            } else if (operation.action === "set_payment_status") {
+              const audit = await sqlite.getFirstAsync<{
+                payload_json: string;
+              }>(
+                `SELECT payload_json
+                 FROM audit_events
+                 WHERE aggregate_id = ?
+                   AND kind = 'payment.status_changed'
+                   AND occurred_at = ?
+                 ORDER BY rowid DESC
+                 LIMIT 1`,
+                transactionId,
+                operation.occurred_at,
+              );
+              const before = {
+                ...parsePaymentAuditBefore(audit?.payload_json),
+                syncState: "synced" as const,
+              };
+              await replaceTransaction(sqlite, before);
+              restoredRevision = before.revision;
+              recovered = true;
+            }
+          }
+        }
+        if (!recovered) {
+          throw new Error("Snapshot pemulihan transaksi tidak tersedia.");
+        }
+        if (restoredRevision !== null) {
+          await sqlite.runAsync(
+            `DELETE FROM transaction_items
+             WHERE transaction_id = ? AND revision > ?`,
+            transactionId,
+            restoredRevision,
+          );
+          await sqlite.runAsync(
+            `DELETE FROM transaction_revisions
+             WHERE transaction_id = ? AND revision > ?`,
+            transactionId,
+            restoredRevision,
+          );
+        }
+      }
+
+      await sqlite.runAsync(
+        `UPDATE outbox_operations
+         SET state = 'resolved', last_error = NULL, next_attempt_at = NULL
+         WHERE dependency_key = ?
+           AND state IN ('rejected', 'discarded')`,
+        transactionId,
+      );
+      return;
+    }
+
+    await sqlite.runAsync(
+      `UPDATE outbox_operations
+       SET state = 'discarded', last_error = NULL, next_attempt_at = NULL
+       WHERE operation_id = ?`,
+      operationId,
+    );
+    if (selected.dependency_key) {
+      await recomputeTransactionSyncState(sqlite, selected.dependency_key);
+    }
+  });
+}
+
+export async function hasTerminalTransactionBlock(
+  transactionId: string,
+): Promise<boolean> {
+  const { sqlite } = await getDatabase();
+  const row = await sqlite.getFirstAsync<{ blocked: number }>(
+    `SELECT EXISTS(
+       SELECT 1
+         FROM outbox_operations
+       WHERE dependency_key = ?
+         AND aggregate = 'transaction'
+         AND (
+           state = 'conflict'
+           OR (
+             state IN ('rejected', 'discarded')
+             AND last_error IS NOT NULL
+           )
+         )
+     ) AS blocked`,
+    transactionId,
   );
+  return row?.blocked === 1;
 }
 
 export async function listConflicts(): Promise<SyncConflict[]> {
@@ -791,8 +1399,8 @@ export async function listConflicts(): Promise<SyncConflict[]> {
   return rows.map((row) => ({
     id: row.id,
     transactionId: row.transaction_id,
-    localSnapshot: JSON.parse(row.local_json) as Transaction,
-    serverSnapshot: JSON.parse(row.server_json) as Transaction,
+    localSnapshot: parseStoredTransaction(row.local_json),
+    serverSnapshot: parseStoredTransaction(row.server_json),
     createdAt: row.created_at,
   }));
 }
@@ -812,22 +1420,38 @@ export async function resolveConflict(
   resolution: "server" | "retry-local",
 ): Promise<void> {
   const { sqlite } = await getDatabase();
+  const source = await sqlite.getFirstAsync<{
+    operation_id: string;
+    operation_json: string;
+  }>(
+    `SELECT operation_id, operation_json
+     FROM outbox_operations
+     WHERE dependency_key = ?
+       AND aggregate = 'transaction'
+       AND state = 'conflict'
+     ORDER BY rowid ASC
+     LIMIT 1`,
+    conflict.transactionId,
+  );
+  if (!source) throw new Error("Operasi konflik tidak ditemukan.");
+
   let replacement:
     | {
         operation: Record<string, unknown> & { operationId: string };
         signature: string;
       }
     | undefined;
+  let originalOperation:
+    ReturnType<typeof parseCorrectionOutboxOperation> | undefined;
   if (resolution === "retry-local") {
-    const row = await sqlite.getFirstAsync<{ operation_json: string }>(
-      `SELECT operation_json FROM outbox_operations
-       WHERE aggregate_id = ? AND state = 'conflict'
-       ORDER BY occurred_at DESC LIMIT 1`,
-      conflict.transactionId,
-    );
-    if (!row) throw new Error("Operasi konflik tidak ditemukan.");
+    if (conflict.serverSnapshot.deletedAt) {
+      throw new Error(
+        "Versi server sudah dihapus dan tidak dapat ditimpa dengan versi lokal.",
+      );
+    }
+    originalOperation = parseCorrectionOutboxOperation(source.operation_json);
     const operation = {
-      ...(JSON.parse(row.operation_json) as Record<string, unknown>),
+      ...originalOperation.raw,
       operationId: Crypto.randomUUID(),
       baseRevision: conflict.serverSnapshot.revision,
       occurredAt: new Date().toISOString(),
@@ -840,36 +1464,112 @@ export async function resolveConflict(
     };
   }
   await sqlite.withTransactionAsync(async () => {
+    const activeOperation = await sqlite.getFirstAsync<{
+      operation_json: string;
+    }>(
+      `SELECT operation_json
+       FROM outbox_operations
+       WHERE operation_id = ? AND state = 'conflict'`,
+      source.operation_id,
+    );
+    const activeConflict = await sqlite.getFirstAsync<{
+      id: string;
+      local_json: string;
+      server_json: string;
+    }>(
+      `SELECT id, local_json, server_json
+       FROM sync_conflicts
+       WHERE id = ? AND transaction_id = ? AND resolved_at IS NULL`,
+      conflict.id,
+      conflict.transactionId,
+    );
+    if (
+      !activeOperation ||
+      activeOperation.operation_json !== source.operation_json ||
+      !activeConflict ||
+      !storedTransactionMatches(
+        activeConflict.local_json,
+        conflict.localSnapshot,
+      ) ||
+      !storedTransactionMatches(
+        activeConflict.server_json,
+        conflict.serverSnapshot,
+      )
+    ) {
+      throw new Error(
+        "Konflik berubah saat diproses. Muat ulang Pusat Sinkron.",
+      );
+    }
+
+    await deleteTransactionArtifactsFromRevision(
+      sqlite,
+      conflict.transactionId,
+      conflict.localSnapshot.revision,
+    );
+
     if (resolution === "server") {
       await replaceTransaction(sqlite, {
         ...conflict.serverSnapshot,
         syncState: "synced",
       });
-      await sqlite.runAsync(
-        `UPDATE outbox_operations SET state = 'discarded'
-         WHERE aggregate_id = ? AND state = 'conflict'`,
-        conflict.transactionId,
-      );
     } else {
-      await sqlite.runAsync(
-        `UPDATE outbox_operations SET state = 'discarded'
-         WHERE aggregate_id = ? AND state = 'conflict'`,
-        conflict.transactionId,
-      );
       if (!replacement) throw new Error("Operasi pengganti tidak tersedia.");
+      if (!originalOperation) {
+        throw new Error("Operasi koreksi lokal tidak tersedia.");
+      }
+      const serverSnapshot: Transaction = {
+        ...conflict.serverSnapshot,
+        syncState: "synced",
+      };
+      const rebased: Transaction = {
+        ...conflict.localSnapshot,
+        revision: conflict.serverSnapshot.revision + 1,
+        syncState: "pending",
+        paymentStatus: "pending",
+        paymentConfirmedRevision: null,
+      };
+      await replaceTransaction(sqlite, rebased);
+      await sqlite.runAsync(
+        `INSERT INTO transaction_revisions(
+           transaction_id, revision, reason, before_json, after_json,
+           origin_actor_id, submitting_actor_id, submitting_actor_name,
+           terminal_id, client_occurred_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        rebased.id,
+        rebased.revision,
+        originalOperation.reason,
+        JSON.stringify(serverSnapshot),
+        JSON.stringify(rebased),
+        rebased.originActorId,
+        originalOperation.originActorId,
+        rebased.updatedActorName,
+        originalOperation.terminalId,
+        String(replacement.operation.occurredAt),
+      );
       await insertOutbox(
         sqlite,
         replacement.operation,
         replacement.signature,
         conflict.transactionId,
       );
-      await sqlite.runAsync(
-        "UPDATE transactions SET sync_state = 'pending' WHERE id = ?",
-        conflict.transactionId,
-      );
     }
     await sqlite.runAsync(
-      "UPDATE sync_conflicts SET resolved_at = ?, resolution = ? WHERE id = ?",
+      `UPDATE outbox_operations
+       SET state = 'resolved', last_error = NULL, next_attempt_at = NULL
+       WHERE operation_id = ? AND state = 'conflict'`,
+      source.operation_id,
+    );
+    await sqlite.runAsync(
+      `UPDATE outbox_operations
+       SET state = 'resolved', last_error = NULL, next_attempt_at = NULL
+       WHERE dependency_key = ?
+         AND state = 'rejected'`,
+      conflict.transactionId,
+    );
+    await sqlite.runAsync(
+      `UPDATE sync_conflicts
+       SET resolved_at = ?, resolution = ?
+       WHERE id = ? AND resolved_at IS NULL`,
       new Date().toISOString(),
       resolution,
       conflict.id,
@@ -933,17 +1633,73 @@ export async function applyRemoteChanges(
               : value.deletedAt,
         });
       } else if (change.aggregate === "transaction") {
+        const unresolvedConflict = await sqlite.getFirstAsync<{
+          server_json: string;
+        }>(
+          `SELECT server_json
+           FROM sync_conflicts
+           WHERE transaction_id = ? AND resolved_at IS NULL
+           ORDER BY created_at DESC
+           LIMIT 1`,
+          change.aggregateId,
+        );
+        if (unresolvedConflict) {
+          const latestServerSnapshot: Transaction = change.payload
+            ? {
+                ...(change.payload as Transaction),
+                syncState: "conflict",
+              }
+            : {
+                ...parseStoredTransaction(unresolvedConflict.server_json),
+                syncState: "conflict",
+                deletedAt: change.changedAt,
+              };
+          await sqlite.runAsync(
+            `UPDATE sync_conflicts
+             SET server_json = ?
+             WHERE transaction_id = ? AND resolved_at IS NULL`,
+            JSON.stringify(latestServerSnapshot),
+            change.aggregateId,
+          );
+        }
+        const rejectedCorrection = await sqlite.getFirstAsync<{
+          first_revision: number | null;
+        }>(
+          `SELECT MIN(base_revision + 1) AS first_revision
+           FROM outbox_operations
+           WHERE dependency_key = ?
+             AND aggregate = 'transaction'
+             AND action = 'correct'
+             AND state IN ('rejected', 'discarded')
+             AND last_error IS NOT NULL`,
+          change.aggregateId,
+        );
+        if (rejectedCorrection?.first_revision != null) {
+          await deleteTransactionArtifactsFromRevision(
+            sqlite,
+            change.aggregateId,
+            rejectedCorrection.first_revision,
+          );
+        }
         if (!change.payload) {
           await sqlite.runAsync(
             `UPDATE transactions
              SET deleted_at = COALESCE(deleted_at, ?), sync_state = 'synced'
              WHERE id = ?`,
-            new Date().toISOString(),
+            change.changedAt,
             change.aggregateId,
           );
         } else {
           await replaceTransaction(sqlite, change.payload as Transaction);
         }
+        await sqlite.runAsync(
+          `UPDATE outbox_operations
+           SET state = 'resolved', last_error = NULL, next_attempt_at = NULL
+           WHERE dependency_key = ?
+             AND state IN ('rejected', 'discarded')`,
+          change.aggregateId,
+        );
+        await recomputeTransactionSyncState(sqlite, change.aggregateId);
       } else {
         await sqlite.runAsync(
           `INSERT INTO synced_entities(
@@ -1011,8 +1767,9 @@ async function insertTransaction(
     `INSERT INTO transactions(
       id, revision, occurred_at, subtotal, total, origin_actor_id,
       origin_actor_name, updated_actor_name, terminal_id, sync_state,
-      print_state, deleted_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      print_state, payment_method, payment_status,
+      payment_confirmed_revision, qris_payload_hash, deleted_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     transaction.id,
     transaction.revision,
     transaction.occurredAt,
@@ -1024,6 +1781,10 @@ async function insertTransaction(
     transaction.terminalId,
     transaction.syncState,
     transaction.printState,
+    transaction.paymentMethod,
+    transaction.paymentStatus,
+    transaction.paymentConfirmedRevision,
+    transaction.qrisPayloadHash,
     transaction.deletedAt,
   );
   await insertItems(database, transaction);
@@ -1084,20 +1845,21 @@ async function insertOutbox(
   database: SQLiteDatabase,
   operation: Record<string, unknown> & { operationId: string },
   signature: string,
-  aggregateId: string,
+  dependencyKey: string,
 ): Promise<void> {
   await database.runAsync(
     `INSERT INTO outbox_operations(
       operation_id, aggregate, aggregate_id, action, base_revision,
-      operation_json, signature, state, attempts, occurred_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)`,
+      operation_json, signature, dependency_key, state, attempts, occurred_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?)`,
     operation.operationId,
     String(operation.aggregate),
-    aggregateId,
+    String(operation.aggregateId),
     String(operation.action),
     typeof operation.baseRevision === "number" ? operation.baseRevision : null,
     JSON.stringify(operation),
     signature,
+    dependencyKey,
     String(operation.occurredAt),
   );
 }
@@ -1127,6 +1889,13 @@ async function hydrateTransaction(
     terminalId: row.terminal_id,
     syncState: row.sync_state,
     printState: row.print_state,
+    paymentMethod: row.payment_method,
+    paymentStatus: row.payment_status,
+    paymentConfirmedRevision: row.payment_confirmed_revision,
+    qrisPayloadHash:
+      row.payment_method === "qris"
+        ? normalizeQrisPayloadHash(row.qris_payload_hash)
+        : null,
     deletedAt: row.deleted_at,
     items: items.map(mapItem),
   };
@@ -1136,12 +1905,14 @@ async function replaceTransaction(
   database: SQLiteDatabase,
   transaction: Transaction,
 ): Promise<void> {
+  const occurredAt = normalizeUtcTimestamp(transaction.occurredAt);
   await database.runAsync(
     `INSERT INTO transactions(
       id, revision, occurred_at, subtotal, total, origin_actor_id,
       origin_actor_name, updated_actor_name, terminal_id, sync_state,
-      print_state, deleted_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      print_state, payment_method, payment_status,
+      payment_confirmed_revision, qris_payload_hash, deleted_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       revision = excluded.revision, occurred_at = excluded.occurred_at,
       subtotal = excluded.subtotal, total = excluded.total,
@@ -1149,10 +1920,15 @@ async function replaceTransaction(
       origin_actor_name = excluded.origin_actor_name,
       updated_actor_name = excluded.updated_actor_name,
       terminal_id = excluded.terminal_id, sync_state = excluded.sync_state,
-      print_state = excluded.print_state, deleted_at = excluded.deleted_at`,
+      print_state = excluded.print_state,
+      payment_method = excluded.payment_method,
+      payment_status = excluded.payment_status,
+      payment_confirmed_revision = excluded.payment_confirmed_revision,
+      qris_payload_hash = excluded.qris_payload_hash,
+      deleted_at = excluded.deleted_at`,
     transaction.id,
     transaction.revision,
-    transaction.occurredAt,
+    occurredAt,
     transaction.subtotal,
     transaction.total,
     transaction.originActorId,
@@ -1161,6 +1937,10 @@ async function replaceTransaction(
     transaction.terminalId,
     transaction.syncState,
     transaction.printState,
+    transaction.paymentMethod,
+    transaction.paymentStatus,
+    transaction.paymentConfirmedRevision,
+    transaction.qrisPayloadHash,
     transaction.deletedAt,
   );
   await database.runAsync(
@@ -1199,10 +1979,274 @@ function mapItem(row: TransactionItemRow): TransactionItem {
   };
 }
 
+async function hasProtectedTransactionEvidence(
+  database: SQLiteDatabase,
+  transactionId: string,
+): Promise<boolean> {
+  const evidence = await database.getFirstAsync<{
+    payment_status: PaymentStatus;
+    has_print_attempt: number;
+    has_success_audit: number;
+  }>(
+    `SELECT
+       payment_status,
+       EXISTS (
+         SELECT 1
+         FROM print_attempts
+         WHERE print_attempts.transaction_id = transactions.id
+       ) AS has_print_attempt,
+       EXISTS (
+         SELECT 1
+         FROM audit_events
+         WHERE audit_events.aggregate_id = transactions.id
+           AND audit_events.kind = 'payment.status_changed'
+           AND json_extract(audit_events.payload_json, '$.after.paymentStatus') = 'success'
+           AND json_extract(audit_events.payload_json, '$.after.paymentConfirmedRevision')
+               = json_extract(audit_events.payload_json, '$.after.revision')
+       ) AS has_success_audit
+     FROM transactions
+     WHERE id = ?`,
+    transactionId,
+  );
+  return (
+    evidence?.payment_status === "success" ||
+    evidence?.has_print_attempt === 1 ||
+    evidence?.has_success_audit === 1
+  );
+}
+
+async function shouldPreserveRejectedCreateEvidence(
+  database: SQLiteDatabase,
+  transactionId: string,
+  operationId: string,
+  action: string,
+): Promise<boolean> {
+  if (action === "create") {
+    return hasProtectedTransactionEvidence(database, transactionId);
+  }
+  const predecessor = await database.getFirstAsync<{
+    has_rejected_create: number;
+  }>(
+    `SELECT EXISTS (
+       SELECT 1
+       FROM outbox_operations rejected_create
+       JOIN outbox_operations current_operation
+         ON current_operation.operation_id = ?
+       WHERE rejected_create.dependency_key = ?
+         AND rejected_create.aggregate = 'transaction'
+         AND rejected_create.action = 'create'
+         AND rejected_create.state = 'rejected'
+         AND rejected_create.rowid < current_operation.rowid
+     ) AS has_rejected_create`,
+    operationId,
+    transactionId,
+  );
+  return (
+    predecessor?.has_rejected_create === 1 &&
+    (await hasProtectedTransactionEvidence(database, transactionId))
+  );
+}
+
 function toMutationItems(items: TransactionItem[]) {
   return items.map((item) => ({
     packageId: item.packageId,
     packageRevision: item.packageRevision,
     quantity: item.quantity,
   }));
+}
+
+async function recomputeTransactionSyncState(
+  database: SQLiteDatabase,
+  transactionId: string,
+): Promise<void> {
+  await database.runAsync(
+    `UPDATE transactions
+     SET sync_state = CASE
+       WHEN EXISTS (
+         SELECT 1 FROM outbox_operations
+         WHERE dependency_key = ? AND state = 'conflict'
+       ) THEN 'conflict'
+       WHEN EXISTS (
+         SELECT 1 FROM outbox_operations
+         WHERE dependency_key = ?
+           AND state IN ('rejected', 'discarded')
+           AND last_error IS NOT NULL
+       ) THEN 'error'
+       WHEN EXISTS (
+         SELECT 1 FROM outbox_operations
+         WHERE dependency_key = ? AND state = 'error'
+       ) THEN 'error'
+       WHEN EXISTS (
+         SELECT 1 FROM outbox_operations
+         WHERE dependency_key = ? AND state = 'pending'
+       ) THEN 'pending'
+       ELSE 'synced'
+     END
+     WHERE id = ?`,
+    transactionId,
+    transactionId,
+    transactionId,
+    transactionId,
+    transactionId,
+  );
+}
+
+async function deleteTransactionArtifactsFromRevision(
+  database: SQLiteDatabase,
+  transactionId: string,
+  firstRevision: number,
+): Promise<void> {
+  await database.runAsync(
+    `DELETE FROM transaction_items
+     WHERE transaction_id = ? AND revision >= ?`,
+    transactionId,
+    firstRevision,
+  );
+  await database.runAsync(
+    `DELETE FROM transaction_revisions
+     WHERE transaction_id = ? AND revision >= ?`,
+    transactionId,
+    firstRevision,
+  );
+}
+
+function firstCorrectionRevision(
+  operations: { action: string; base_revision: number | null }[],
+): number | null {
+  const revisions = operations
+    .filter(
+      (operation): operation is { action: string; base_revision: number } =>
+        operation.action === "correct" &&
+        operation.base_revision !== null &&
+        Number.isInteger(operation.base_revision),
+    )
+    .map((operation) => operation.base_revision + 1);
+  return revisions.length > 0 ? Math.min(...revisions) : null;
+}
+
+function stripPaymentConflictPrefix(message: string): string {
+  return message.startsWith(PAYMENT_CONFLICT_ERROR_PREFIX)
+    ? message.slice(PAYMENT_CONFLICT_ERROR_PREFIX.length)
+    : message;
+}
+
+function parseOutboxOperation(value: string | undefined): {
+  raw: Record<string, unknown>;
+  originActorId: string;
+  originSessionId: string;
+  terminalId: string;
+} {
+  if (!value) throw new Error("Operasi lokal tidak tersedia.");
+  const raw = JSON.parse(value) as Record<string, unknown>;
+  if (
+    typeof raw.originActorId !== "string" ||
+    typeof raw.originSessionId !== "string" ||
+    typeof raw.terminalId !== "string"
+  ) {
+    throw new Error("Identitas operasi lokal tidak valid.");
+  }
+  return {
+    raw,
+    originActorId: raw.originActorId,
+    originSessionId: raw.originSessionId,
+    terminalId: raw.terminalId,
+  };
+}
+
+function parseCorrectionOutboxOperation(
+  value: string,
+): ReturnType<typeof parseOutboxOperation> & { reason: string } {
+  const operation = parseOutboxOperation(value);
+  const payload =
+    operation.raw.payload && typeof operation.raw.payload === "object"
+      ? (operation.raw.payload as Record<string, unknown>)
+      : null;
+  if (
+    operation.raw.action !== "correct" ||
+    !payload ||
+    typeof payload.reason !== "string"
+  ) {
+    throw new Error("Operasi koreksi lokal tidak valid.");
+  }
+  return { ...operation, reason: payload.reason };
+}
+
+function parseStoredTransaction(value: string): Transaction {
+  const transaction = JSON.parse(value) as Transaction & {
+    paymentMethod?: PaymentMethod;
+    paymentStatus?: PaymentStatus;
+    paymentConfirmedRevision?: number | null;
+    qrisPayloadHash?: QrisPayloadHash | null;
+  };
+  const paymentMethod = transaction.paymentMethod ?? "legacy";
+  return {
+    ...transaction,
+    paymentMethod,
+    paymentStatus: transaction.paymentStatus ?? "success",
+    paymentConfirmedRevision:
+      transaction.paymentConfirmedRevision === undefined
+        ? transaction.revision
+        : transaction.paymentConfirmedRevision,
+    qrisPayloadHash:
+      paymentMethod === "qris"
+        ? normalizeQrisPayloadHash(transaction.qrisPayloadHash)
+        : null,
+  };
+}
+
+function storedTransactionMatches(
+  stored: string,
+  expected: Transaction,
+): boolean {
+  try {
+    return (
+      canonicalize(parseStoredTransaction(stored)) === canonicalize(expected)
+    );
+  } catch {
+    return false;
+  }
+}
+
+function parsePaymentAuditBefore(value: string | undefined): Transaction {
+  if (!value) {
+    throw new Error("Riwayat pembayaran sebelum operasi tidak tersedia.");
+  }
+  const payload = JSON.parse(value) as { before?: unknown };
+  if (!payload.before || typeof payload.before !== "object") {
+    throw new Error("Snapshot pembayaran sebelum operasi tidak tersedia.");
+  }
+  const transaction = parseStoredTransaction(JSON.stringify(payload.before));
+  if (
+    typeof transaction.id !== "string" ||
+    !Number.isInteger(transaction.revision) ||
+    transaction.revision < 1 ||
+    !Array.isArray(transaction.items)
+  ) {
+    throw new Error("Snapshot pembayaran sebelum operasi tidak valid.");
+  }
+  return transaction;
+}
+
+function parseAuthoritativePaymentConflict(
+  value: string | undefined,
+): Transaction {
+  if (!value) {
+    throw new Error("Snapshot pembayaran server tidak tersedia.");
+  }
+  const payload = JSON.parse(value) as { authoritative?: unknown };
+  if (!payload.authoritative || typeof payload.authoritative !== "object") {
+    throw new Error("Snapshot pembayaran server tidak valid.");
+  }
+  const transaction = parseStoredTransaction(
+    JSON.stringify(payload.authoritative),
+  );
+  if (
+    typeof transaction.id !== "string" ||
+    !Number.isInteger(transaction.revision) ||
+    transaction.revision < 1 ||
+    !Array.isArray(transaction.items)
+  ) {
+    throw new Error("Snapshot pembayaran server tidak valid.");
+  }
+  return transaction;
 }

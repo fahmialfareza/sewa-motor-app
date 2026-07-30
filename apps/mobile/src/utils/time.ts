@@ -10,6 +10,14 @@ function asUtcFromJakarta(parts: Date): Date {
 
 export type ReportingPeriod = "daily" | "weekly" | "monthly";
 
+export function normalizeUtcTimestamp(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error("Timestamp tidak valid.");
+  }
+  return parsed.toISOString();
+}
+
 export function reportingRange(
   period: ReportingPeriod,
   now = new Date(),

@@ -31,6 +31,34 @@ func (s *Store) recordPrintAttemptTx(ctx context.Context, tx pgx.Tx, input domai
 	if len(input.Metadata) == 0 {
 		input.Metadata = json.RawMessage(`{}`)
 	}
+	var currentRevision int
+	var paymentStatus domain.PaymentStatus
+	var paymentConfirmedRevision *int
+	var deletedAt any
+	if err := tx.QueryRow(ctx, `
+		SELECT current_revision, payment_status, payment_confirmed_revision, deleted_at
+		FROM transactions
+		WHERE id = $1
+		FOR UPDATE`,
+		input.TransactionID,
+	).Scan(
+		&currentRevision,
+		&paymentStatus,
+		&paymentConfirmedRevision,
+		&deletedAt,
+	); err != nil {
+		return domain.PrintAttempt{}, dbError(err, "lock printed transaction")
+	}
+	if err := validatePrintableRevision(
+		input.Revision,
+		currentRevision,
+		paymentStatus,
+		paymentConfirmedRevision,
+		deletedAt != nil,
+	); err != nil {
+		return domain.PrintAttempt{}, err
+	}
+
 	var attempt domain.PrintAttempt
 	err := tx.QueryRow(ctx, `
 		INSERT INTO print_attempts (
@@ -54,28 +82,19 @@ func (s *Store) recordPrintAttemptTx(ctx context.Context, tx pgx.Tx, input domai
 	if err != nil {
 		return domain.PrintAttempt{}, dbError(err, "insert print attempt")
 	}
-	var currentRevision int
-	if err = tx.QueryRow(ctx,
-		`SELECT current_revision FROM transactions WHERE id = $1 FOR UPDATE`,
-		input.TransactionID,
-	).Scan(&currentRevision); err != nil {
-		return domain.PrintAttempt{}, dbError(err, "lock printed transaction")
+	switch input.Status {
+	case "success":
+		_, err = tx.Exec(ctx, `
+			UPDATE transactions
+			SET print_state = 'success', latest_printed_revision = $2, updated_at = now()
+			WHERE id = $1`, input.TransactionID, input.Revision)
+	case "failed", "unknown", "pending":
+		_, err = tx.Exec(ctx, `
+			UPDATE transactions SET print_state = $2, updated_at = now()
+			WHERE id = $1`, input.TransactionID, input.Status)
 	}
-	if currentRevision == input.Revision {
-		switch input.Status {
-		case "success":
-			_, err = tx.Exec(ctx, `
-				UPDATE transactions
-				SET print_state = 'success', latest_printed_revision = $2, updated_at = now()
-				WHERE id = $1`, input.TransactionID, input.Revision)
-		case "failed", "unknown", "pending":
-			_, err = tx.Exec(ctx, `
-				UPDATE transactions SET print_state = $2, updated_at = now()
-				WHERE id = $1`, input.TransactionID, input.Status)
-		}
-		if err != nil {
-			return domain.PrintAttempt{}, dbError(err, "update transaction print state")
-		}
+	if err != nil {
+		return domain.PrintAttempt{}, dbError(err, "update transaction print state")
 	}
 	if err = audit(ctx, tx, "print_attempt.recorded", "transaction", input.TransactionID,
 		input.Identity, nil, attempt, nil, input.OccurredAt); err != nil {
@@ -86,4 +105,43 @@ func (s *Store) recordPrintAttemptTx(ctx context.Context, tx pgx.Tx, input domai
 		return domain.PrintAttempt{}, dbError(err, "sync print attempt")
 	}
 	return attempt, nil
+}
+
+func validatePrintableRevision(
+	requestedRevision int,
+	currentRevision int,
+	paymentStatus domain.PaymentStatus,
+	paymentConfirmedRevision *int,
+	deleted bool,
+) error {
+	if deleted {
+		return domain.NewError(
+			domain.CodeConflict,
+			"Transaksi yang dihapus tidak dapat dicetak",
+		)
+	}
+	if requestedRevision != currentRevision {
+		return &domain.Error{
+			Code:    domain.CodeConflict,
+			Message: "Hanya revisi transaksi terbaru yang dapat dicetak",
+			Details: map[string]any{
+				"requestedRevision": requestedRevision,
+				"currentRevision":   currentRevision,
+			},
+		}
+	}
+	if paymentStatus != domain.PaymentStatusSuccess ||
+		paymentConfirmedRevision == nil ||
+		*paymentConfirmedRevision != currentRevision {
+		return &domain.Error{
+			Code:    domain.CodeConflict,
+			Message: "Transaksi hanya dapat dicetak setelah pembayaran berhasil",
+			Details: map[string]any{
+				"currentRevision":          currentRevision,
+				"paymentStatus":            paymentStatus,
+				"paymentConfirmedRevision": paymentConfirmedRevision,
+			},
+		}
+	}
+	return nil
 }

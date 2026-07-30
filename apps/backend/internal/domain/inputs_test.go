@@ -61,3 +61,33 @@ func TestCanCorrectTransactionUsesOwnerOrSuperadmin(t *testing.T) {
 		t.Fatal("superadmin should be able to correct any transaction")
 	}
 }
+
+func TestPaymentMethodsSeparateSelectableFromLegacy(t *testing.T) {
+	t.Parallel()
+
+	for _, method := range []PaymentMethod{PaymentMethodCash, PaymentMethodQRIS} {
+		if err := ValidateSelectablePaymentMethod(method); err != nil {
+			t.Fatalf("%s should be selectable: %v", method, err)
+		}
+	}
+	if !PaymentMethodLegacy.Valid() {
+		t.Fatal("legacy must remain readable")
+	}
+	if err := ValidateSelectablePaymentMethod(PaymentMethodLegacy); !IsCode(err, CodeValidation) {
+		t.Fatalf("legacy must not be selectable, got %v", err)
+	}
+}
+
+func TestPaymentOutcomeRejectsPending(t *testing.T) {
+	t.Parallel()
+
+	if err := ValidatePaymentOutcome(PaymentStatusSuccess); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidatePaymentOutcome(PaymentStatusFailed); err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidatePaymentOutcome(PaymentStatusPending); !IsCode(err, CodeValidation) {
+		t.Fatalf("pending must be server-owned, got %v", err)
+	}
+}

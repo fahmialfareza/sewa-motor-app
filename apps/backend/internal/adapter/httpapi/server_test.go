@@ -22,6 +22,14 @@ type syncViewRepository struct {
 	port.Repository
 }
 
+type transactionViewRepository struct {
+	port.Repository
+}
+
+func (transactionViewRepository) ListPrintAttempts(context.Context, string) ([]domain.PrintAttempt, error) {
+	return nil, nil
+}
+
 func (syncViewRepository) GetPackage(context.Context, uuid.UUID) (domain.Package, error) {
 	return domain.Package{
 		ID:   uuid.MustParse("00000000-0000-4000-8000-000000000001"),
@@ -53,6 +61,79 @@ func TestSyncPackagePayloadUsesPublicDTO(t *testing.T) {
 	}
 	if _, leaked := view["revision"]; leaked {
 		t.Fatalf("internal revision leaked: %+v", view)
+	}
+}
+
+func TestTransactionViewIncludesPaymentConfirmation(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/transactions/example", nil)
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = request
+	server := &Server{deps: Dependencies{Repo: transactionViewRepository{}}}
+	confirmedRevision := 2
+	qrisPayloadHash := "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	occurredAt := time.Date(
+		2026, 7, 29, 18, 0, 0, 0,
+		time.FixedZone("WIB", 7*60*60),
+	)
+
+	view, err := server.transactionView(c, domain.Transaction{
+		ID: "01ARZ3NDEKTSV4RRFFQ69G5FAV", Revision: 2,
+		OccurredAt:               occurredAt,
+		PaymentMethod:            domain.PaymentMethodQRIS,
+		QrisPayloadHash:          &qrisPayloadHash,
+		PaymentStatus:            domain.PaymentStatusSuccess,
+		PaymentConfirmedRevision: &confirmedRevision,
+		Items:                    []domain.TransactionItem{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view["paymentMethod"] != domain.PaymentMethodQRIS ||
+		view["qrisPayloadHash"] != qrisPayloadHash ||
+		view["paymentStatus"] != domain.PaymentStatusSuccess ||
+		view["paymentConfirmedRevision"] != &confirmedRevision {
+		t.Fatalf("payment fields missing from transaction view: %+v", view)
+	}
+	if got, ok := view["occurredAt"].(time.Time); !ok ||
+		got.Location() != time.UTC ||
+		!got.Equal(occurredAt) {
+		t.Fatalf("occurredAt was not serialized in UTC: %#v", view["occurredAt"])
+	}
+}
+
+func TestRevisionConflictNormalizesLegacyIdempotencySnapshots(t *testing.T) {
+	t.Parallel()
+
+	legacySnapshot := map[string]any{
+		"occurredAt": "2026-01-01T00:00:00Z",
+		"items":      []any{},
+		"subtotal":   0,
+		"total":      0,
+	}
+	normalized := normalizeRevisionConflictDetails(map[string]any{
+		"baseRevision":    2,
+		"currentRevision": 4,
+		"localSnapshot":   legacySnapshot,
+		"serverSnapshot":  legacySnapshot,
+	})
+	details, ok := normalized.(map[string]any)
+	if !ok {
+		t.Fatalf("normalized details have type %T", normalized)
+	}
+	for name, revision := range map[string]float64{
+		"localSnapshot":  3,
+		"serverSnapshot": 4,
+	} {
+		snapshot, ok := details[name].(map[string]any)
+		if !ok {
+			t.Fatalf("%s has type %T", name, details[name])
+		}
+		if snapshot["paymentMethod"] != string(domain.PaymentMethodLegacy) ||
+			snapshot["paymentStatus"] != string(domain.PaymentStatusSuccess) ||
+			snapshot["paymentConfirmedRevision"] != revision {
+			t.Fatalf("%s was not normalized: %+v", name, snapshot)
+		}
 	}
 }
 

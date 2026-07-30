@@ -5,6 +5,7 @@ import { StyleSheet, Text, View } from "react-native";
 import { useAuth } from "@/auth/AuthProvider";
 import { AppScreen } from "@/components/layout/AppScreen";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { PaymentMethodSelector } from "@/components/transactions/PaymentMethodSelector";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Field } from "@/components/ui/Field";
@@ -15,7 +16,17 @@ import {
   canCorrectTransaction,
   CORRECTION_FORBIDDEN_MESSAGE,
 } from "@/domain/permissions";
-import type { Transaction } from "@/domain/types";
+import {
+  createDynamicQris,
+  fingerprintStaticQris,
+  validateStaticQris,
+} from "@/domain/qris";
+import type {
+  QrisPayloadHash,
+  SelectablePaymentMethod,
+  Transaction,
+} from "@/domain/types";
+import { readQrisConfig, type QrisConfig } from "@/security/secure-store";
 import { useSyncRuntime } from "@/sync/SyncProvider";
 import { colors, spacing, textStyles, typography } from "@/theme/tokens";
 import { formatRupiah } from "@/utils/format";
@@ -35,19 +46,37 @@ export default function CorrectTransactionScreen() {
     null,
   );
   const [quantities, setQuantities] = useState<Record<string, number>>({});
+  const [paymentMethod, setPaymentMethod] =
+    useState<SelectablePaymentMethod | null>(null);
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [qrisConfig, setQrisConfig] = useState<QrisConfig | null>(null);
+  const [qrisAvailable, setQrisAvailable] = useState(false);
+  const [qrisConfigChecked, setQrisConfigChecked] = useState(false);
 
   useEffect(() => {
     let active = true;
 
     if (!id) return;
 
-    void getTransaction(id)
-      .then((value) => {
+    const qrisConfigPromise = readQrisConfig().catch(() => null);
+    void Promise.all([getTransaction(id), qrisConfigPromise])
+      .then(([value, config]) => {
         if (!active) return;
 
+        let available = false;
+        if (config) {
+          try {
+            validateStaticQris(config.staticPayload);
+            available = true;
+          } catch {
+            available = false;
+          }
+        }
+        setQrisConfig(config);
+        setQrisAvailable(available);
+        setQrisConfigChecked(true);
         setLoadResult({ id, transaction: value, error: null });
         if (value) {
           setQuantities(
@@ -55,10 +84,14 @@ export default function CorrectTransactionScreen() {
               value.items.map((item) => [item.packageId, item.quantity]),
             ),
           );
+          setPaymentMethod(
+            value.paymentMethod === "legacy" ? null : value.paymentMethod,
+          );
         }
       })
       .catch((reasonValue: unknown) => {
         if (!active) return;
+        setQrisConfigChecked(true);
         setLoadResult({
           id,
           transaction: null,
@@ -103,7 +136,11 @@ export default function CorrectTransactionScreen() {
     );
   }
 
-  const mayCorrect = canCorrectTransaction(session, transaction);
+  const hasUnresolvedConflict = transaction.syncState === "conflict";
+  const mayCorrect =
+    !hasUnresolvedConflict &&
+    transaction.deletedAt === null &&
+    canCorrectTransaction(session, transaction);
 
   if (!mayCorrect) {
     return (
@@ -112,7 +149,13 @@ export default function CorrectTransactionScreen() {
         <StateView
           actionLabel="Kembali"
           icon="shield-lock-outline"
-          message={CORRECTION_FORBIDDEN_MESSAGE}
+          message={
+            hasUnresolvedConflict
+              ? "Selesaikan konflik revisi sebelum mengoreksi transaksi ini."
+              : transaction.deletedAt
+                ? "Transaksi yang diarsipkan tidak dapat dikoreksi."
+                : CORRECTION_FORBIDDEN_MESSAGE
+          }
           onAction={() => router.back()}
           title="Koreksi tidak diizinkan"
         />
@@ -134,7 +177,28 @@ export default function CorrectTransactionScreen() {
     setSaving(true);
     setError(null);
     try {
-      await correctTransaction(transaction.id, quantities, reason, session);
+      if (!paymentMethod) {
+        throw new Error("Pilih metode pembayaran tunai atau QRIS.");
+      }
+      let qrisPayloadHash: QrisPayloadHash | null = null;
+      if (paymentMethod === "qris") {
+        if (!qrisConfig) {
+          throw new Error(
+            "QRIS belum dikonfigurasi. Minta superadmin mengatur QRIS merchant.",
+          );
+        }
+        const staticQris = validateStaticQris(qrisConfig.staticPayload);
+        createDynamicQris(staticQris.payload, total);
+        qrisPayloadHash = await fingerprintStaticQris(staticQris.payload);
+      }
+      await correctTransaction(
+        transaction.id,
+        quantities,
+        paymentMethod,
+        qrisPayloadHash,
+        reason,
+        session,
+      );
       await sync.refresh();
       void sync.syncNow();
       router.replace({
@@ -157,6 +221,10 @@ export default function CorrectTransactionScreen() {
       stickyFooter={
         <Button
           icon="content-save-edit-outline"
+          disabled={
+            !paymentMethod ||
+            (paymentMethod === "qris" && (!qrisConfigChecked || !qrisAvailable))
+          }
           loading={saving}
           onPress={() => void save()}
         >
@@ -173,7 +241,8 @@ export default function CorrectTransactionScreen() {
         <Text style={styles.noticeTitle}>Revisi tidak menghapus riwayat</Text>
         <Text style={styles.muted}>
           Nilai sebelum dan sesudah disimpan permanen. Struk yang sudah dicetak
-          akan ditandai perlu cetak ulang.
+          akan ditandai perlu cetak ulang dan pembayaran harus dikonfirmasi
+          kembali untuk total hasil koreksi.
         </Text>
       </Card>
       {transaction.items.map((item) => (
@@ -193,6 +262,22 @@ export default function CorrectTransactionScreen() {
           />
         </Card>
       ))}
+      <PaymentMethodSelector
+        onChange={setPaymentMethod}
+        qrisDisabled={!qrisConfigChecked || !qrisAvailable}
+        qrisDisabledReason={
+          qrisConfigChecked
+            ? "QRIS belum dikonfigurasi oleh superadmin."
+            : "Memeriksa konfigurasi QRIS…"
+        }
+        value={paymentMethod}
+      />
+      {transaction.paymentMethod === "legacy" && !paymentMethod ? (
+        <Text style={styles.legacyMethod}>
+          Metode transaksi lama tidak tercatat. Pilih Tunai atau QRIS sebelum
+          menyimpan koreksi.
+        </Text>
+      ) : null}
       <Field
         error={
           reason.length > 0 && reason.trim().length < 5
@@ -234,4 +319,5 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   error: { ...textStyles.body, color: colors.error },
+  legacyMethod: { ...textStyles.body, color: colors.warning },
 });

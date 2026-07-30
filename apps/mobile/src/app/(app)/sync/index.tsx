@@ -1,6 +1,6 @@
 import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { Alert, StyleSheet, Text, View } from "react-native";
 
 import { AppScreen } from "@/components/layout/AppScreen";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -26,6 +26,7 @@ export default function SyncCenterScreen() {
   const [conflicts, setConflicts] = useState<SyncConflict[]>([]);
   const [rejected, setRejected] = useState<RejectedOutboxOperation[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const [nextConflicts, nextRejected, metadata] = await Promise.all([
@@ -44,6 +45,37 @@ export default function SyncCenterScreen() {
       void load();
     }, [load]),
   );
+
+  const recoverRejected = (operation: RejectedOutboxOperation) => {
+    const isRejectedCreate =
+      operation.aggregate === "transaction" && operation.action === "create";
+    const title = isRejectedCreate
+      ? "Arsipkan transaksi lokal?"
+      : "Pulihkan kondisi sebelum operasi?";
+    const message = isRejectedCreate
+      ? "Transaksi ini tidak pernah diterima server. Salinan lokal hanya dapat diarsipkan jika belum dibayar dan belum pernah dicetak. Catatan yang sudah dibayar atau dicetak tidak akan diarsipkan dan memerlukan rekonsiliasi dengan server."
+      : "Perubahan optimistis akan dibatalkan ke kondisi aman terakhir, lalu operasi dikeluarkan dari antrean.";
+
+    Alert.alert(title, message, [
+      { text: "Batal", style: "cancel" },
+      {
+        text: isRejectedCreate ? "Arsipkan" : "Pulihkan",
+        style: isRejectedCreate ? "destructive" : "default",
+        onPress: () => {
+          setRecoveryError(null);
+          void discardRejectedOutboxOperation(operation.operationId)
+            .then(load)
+            .catch((reason: unknown) => {
+              setRecoveryError(
+                reason instanceof Error
+                  ? reason.message
+                  : "Operasi lokal tidak dapat dipulihkan.",
+              );
+            });
+        },
+      },
+    ]);
+  };
 
   return (
     <AppScreen>
@@ -82,6 +114,11 @@ export default function SyncCenterScreen() {
           <Text style={styles.detail}>{runtime.lastError}</Text>
         </Card>
       ) : null}
+      {recoveryError ? (
+        <Text accessibilityRole="alert" style={styles.recoveryError}>
+          {recoveryError}
+        </Text>
+      ) : null}
       {rejected.length > 0 ? (
         <>
           <Text style={textStyles.heading}>Operasi ditolak server</Text>
@@ -90,14 +127,10 @@ export default function SyncCenterScreen() {
               <Text style={styles.errorTitle}>{operation.aggregateId}</Text>
               <Text style={styles.detail}>{operation.message}</Text>
               <Button
-                onPress={() =>
-                  void discardRejectedOutboxOperation(
-                    operation.operationId,
-                  ).then(load)
-                }
+                onPress={() => recoverRejected(operation)}
                 variant="danger"
               >
-                Akui dan keluarkan dari antrean
+                Pulihkan dan keluarkan
               </Button>
             </Card>
           ))}
@@ -165,6 +198,7 @@ const styles = StyleSheet.create({
   cursor: { ...textStyles.label, fontSize: 9 },
   errorCard: { gap: spacing.xs, backgroundColor: colors.errorSoft },
   errorTitle: { ...textStyles.heading, color: colors.error },
+  recoveryError: { ...textStyles.body, color: colors.error },
   conflict: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   conflictCopy: { flex: 1 },
   conflictId: { ...textStyles.label, color: colors.primary },

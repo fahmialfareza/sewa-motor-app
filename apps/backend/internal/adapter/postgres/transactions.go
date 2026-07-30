@@ -39,7 +39,33 @@ func (s *Store) CreateTransaction(ctx context.Context, input domain.CreateTransa
 
 func (s *Store) createTransactionTx(ctx context.Context, tx pgx.Tx, input domain.CreateTransactionInput) (domain.Transaction, error) {
 	defer observability.StartSegment(ctx, "Postgres.createTransactionTx")()
-	items, total, err := resolveItems(ctx, tx, input.Items)
+	paymentStatus := input.InitialPaymentStatus
+	if paymentStatus == "" {
+		paymentStatus = domain.PaymentStatusPending
+	}
+	if !input.PaymentMethod.Valid() || !paymentStatus.Valid() {
+		return domain.Transaction{}, domain.Validation("Data pembayaran transaksi tidak valid", nil)
+	}
+	if err := domain.ValidateQrisPayloadBinding(input.PaymentMethod, input.QrisPayloadHash); err != nil {
+		return domain.Transaction{}, err
+	}
+	confirmedRevision := input.InitialPaymentConfirmedRevision
+	switch paymentStatus {
+	case domain.PaymentStatusSuccess:
+		if confirmedRevision == nil || *confirmedRevision != 1 {
+			return domain.Transaction{}, domain.Validation("Revisi konfirmasi pembayaran tidak valid", nil)
+		}
+	case domain.PaymentStatusPending, domain.PaymentStatusFailed:
+		if confirmedRevision != nil {
+			return domain.Transaction{}, domain.Validation("Pembayaran belum berhasil tidak boleh memiliki revisi konfirmasi", nil)
+		}
+	}
+	items, total, err := resolveTransactionItems(
+		ctx,
+		tx,
+		input.PaymentMethod,
+		input.Items,
+	)
 	if err != nil {
 		return domain.Transaction{}, err
 	}
@@ -47,27 +73,36 @@ func (s *Store) createTransactionTx(ctx context.Context, tx pgx.Tx, input domain
 		INSERT INTO transactions (
 			id, current_revision, occurred_at,
 			origin_actor_id, origin_session_id, terminal_id, updated_by,
-			subtotal, total
-		) VALUES ($1,1,$2,$3,$4,$5,$6,$7,$7)`,
+			subtotal, total, payment_method, qris_payload_hash,
+			payment_status, payment_confirmed_revision
+		) VALUES ($1,1,$2,$3,$4,$5,$6,$7,$7,$8,$9,$10,$11)`,
 		input.ID, input.OccurredAt, input.Identity.OriginActorID,
 		input.Identity.OriginSessionID, input.Identity.TerminalID,
-		input.Identity.SubmittedByActorID, total,
+		input.Identity.SubmittedByActorID, total, input.PaymentMethod,
+		input.QrisPayloadHash, paymentStatus, confirmedRevision,
 	)
 	if err != nil {
 		return domain.Transaction{}, dbError(err, "insert transaction")
 	}
-	after := transactionSnapshot(input.OccurredAt, items, total)
-	afterJSON, err := json.Marshal(after)
+	after := transactionSnapshot(
+		input.OccurredAt,
+		input.PaymentMethod,
+		input.QrisPayloadHash,
+		items,
+		total,
+	)
+	createdState := paymentStateSnapshot(after, paymentStatus, confirmedRevision)
+	afterJSON, err := json.Marshal(createdState)
 	if err != nil {
 		return domain.Transaction{}, domain.WrapInternal(err, "marshal transaction snapshot")
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO transaction_revisions (
-			transaction_id, revision, change_type, after_snapshot,
+			transaction_id, revision, change_type, qris_payload_hash, after_snapshot,
 			origin_actor_id, origin_session_id, terminal_id,
 			submitted_by_actor_id, submitted_by_session_id, client_occurred_at
-		) VALUES ($1,1,'create',$2,$3,$4,$5,$6,$7,$8)`,
-		input.ID, afterJSON,
+		) VALUES ($1,1,'create',$2,$3,$4,$5,$6,$7,$8,$9)`,
+		input.ID, input.QrisPayloadHash, afterJSON,
 		input.Identity.OriginActorID, input.Identity.OriginSessionID, input.Identity.TerminalID,
 		input.Identity.SubmittedByActorID, input.Identity.SubmittedBySessionID, input.OccurredAt,
 	)
@@ -77,11 +112,11 @@ func (s *Store) createTransactionTx(ctx context.Context, tx pgx.Tx, input domain
 	if err = insertItems(ctx, tx, input.ID, 1, items); err != nil {
 		return domain.Transaction{}, err
 	}
-	if err = audit(ctx, tx, "transaction.created", "transaction", input.ID, input.Identity, nil, after, nil, input.OccurredAt); err != nil {
+	if err = audit(ctx, tx, "transaction.created", "transaction", input.ID, input.Identity, nil, createdState, nil, input.OccurredAt); err != nil {
 		return domain.Transaction{}, dbError(err, "audit transaction create")
 	}
 	revision := 1
-	if err = addChange(ctx, tx, "transaction", input.ID, "created", &revision, after, false); err != nil {
+	if err = addChange(ctx, tx, "transaction", input.ID, "created", &revision, createdState, false); err != nil {
 		return domain.Transaction{}, dbError(err, "sync transaction create")
 	}
 	transaction, err := getTransactionWith(ctx, tx, input.ID, true)
@@ -110,16 +145,34 @@ func (s *Store) CorrectTransaction(ctx context.Context, input domain.CorrectTran
 
 func (s *Store) correctTransactionTx(ctx context.Context, tx pgx.Tx, input domain.CorrectTransactionInput) (domain.Transaction, error) {
 	defer observability.StartSegment(ctx, "Postgres.correctTransactionTx")()
+	if input.LegacyPaymentCompatibility {
+		if input.PaymentMethod != domain.PaymentMethodLegacy {
+			return domain.Transaction{}, domain.Validation("Metode pembayaran legacy tidak valid", nil)
+		}
+	} else {
+		if err := domain.ValidateSelectablePaymentMethod(input.PaymentMethod); err != nil {
+			return domain.Transaction{}, err
+		}
+	}
+	if err := domain.ValidateQrisPayloadBinding(input.PaymentMethod, input.QrisPayloadHash); err != nil {
+		return domain.Transaction{}, err
+	}
 	var currentRevision int
 	var transactionOccurredAt time.Time
 	var beforeJSON []byte
 	var latestPrintedRevision *int
+	var currentPaymentMethod domain.PaymentMethod
+	var currentQrisPayloadHash *string
+	var paymentStatus domain.PaymentStatus
+	var paymentConfirmedRevision *int
 	var deletedAt any
 	var ownerID uuid.UUID
 	var correctingActorRole domain.Role
 	err := tx.QueryRow(ctx, `
 		SELECT t.current_revision, t.occurred_at, r.after_snapshot,
-		       t.latest_printed_revision, t.deleted_at,
+		       t.latest_printed_revision, t.payment_method,
+		       t.qris_payload_hash, t.payment_status, t.payment_confirmed_revision,
+		       t.deleted_at,
 		       t.origin_actor_id, correcting_actor.role
 		FROM transactions t
 		JOIN transaction_revisions r
@@ -130,10 +183,22 @@ func (s *Store) correctTransactionTx(ctx context.Context, tx pgx.Tx, input domai
 		input.ID, input.Identity.OriginActorID,
 	).Scan(
 		&currentRevision, &transactionOccurredAt, &beforeJSON, &latestPrintedRevision,
+		&currentPaymentMethod, &currentQrisPayloadHash, &paymentStatus, &paymentConfirmedRevision,
 		&deletedAt, &ownerID, &correctingActorRole,
 	)
 	if err != nil {
 		return domain.Transaction{}, dbError(err, "lock corrected transaction")
+	}
+	beforeJSON = domain.NormalizeTransactionSnapshot(beforeJSON, currentRevision)
+	beforeState := paymentStateSnapshotJSON(
+		beforeJSON,
+		paymentStatus,
+		paymentConfirmedRevision,
+	)
+	applyQrisPayloadHash(beforeState, currentQrisPayloadHash)
+	beforeJSON, err = json.Marshal(beforeState)
+	if err != nil {
+		return domain.Transaction{}, domain.WrapInternal(err, "marshal current transaction snapshot")
 	}
 	if !domain.CanCorrectTransaction(correctingActorRole, input.Identity.OriginActorID, ownerID) {
 		return domain.Transaction{}, domain.NewError(
@@ -144,12 +209,37 @@ func (s *Store) correctTransactionTx(ctx context.Context, tx pgx.Tx, input domai
 	if deletedAt != nil {
 		return domain.Transaction{}, domain.NewError(domain.CodeConflict, "Transaksi yang dihapus tidak dapat dikoreksi")
 	}
-	items, total, err := resolveItems(ctx, tx, input.Items)
+	if input.LegacyPaymentCompatibility && currentPaymentMethod != domain.PaymentMethodLegacy {
+		return domain.Transaction{}, domain.NewError(
+			domain.CodeConflict,
+			"Koreksi lama hanya dapat diterapkan pada transaksi legacy",
+		)
+	}
+	items, total, err := resolveTransactionItems(
+		ctx,
+		tx,
+		input.PaymentMethod,
+		input.Items,
+	)
 	if err != nil {
 		return domain.Transaction{}, err
 	}
 	if currentRevision != input.BaseRevision {
-		local := transactionSnapshot(transactionOccurredAt, items, total)
+		localStatus, localConfirmedRevision, _ := correctedPaymentState(
+			input.LegacyPaymentCompatibility,
+			input.BaseRevision+1,
+		)
+		local := paymentStateSnapshot(
+			transactionSnapshot(
+				transactionOccurredAt,
+				input.PaymentMethod,
+				input.QrisPayloadHash,
+				items,
+				total,
+			),
+			localStatus,
+			localConfirmedRevision,
+		)
 		return domain.Transaction{}, &domain.Error{
 			Code:    domain.CodeRevisionConflict,
 			Message: "Transaksi telah berubah di server",
@@ -162,19 +252,35 @@ func (s *Store) correctTransactionTx(ctx context.Context, tx pgx.Tx, input domai
 		}
 	}
 	nextRevision := currentRevision + 1
-	after := transactionSnapshot(transactionOccurredAt, items, total)
-	afterJSON, err := json.Marshal(after)
+	nextPaymentStatus, nextPaymentConfirmedRevision, paymentReset := correctedPaymentState(
+		input.LegacyPaymentCompatibility,
+		nextRevision,
+	)
+	after := transactionSnapshot(
+		transactionOccurredAt,
+		input.PaymentMethod,
+		input.QrisPayloadHash,
+		items,
+		total,
+	)
+	afterState := paymentStateSnapshot(
+		after,
+		nextPaymentStatus,
+		nextPaymentConfirmedRevision,
+	)
+	afterJSON, err := json.Marshal(afterState)
 	if err != nil {
 		return domain.Transaction{}, domain.WrapInternal(err, "marshal corrected snapshot")
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO transaction_revisions (
 			transaction_id, revision, base_revision, change_type, reason,
-			before_snapshot, after_snapshot,
+			qris_payload_hash, before_snapshot, after_snapshot,
 			origin_actor_id, origin_session_id, terminal_id,
 			submitted_by_actor_id, submitted_by_session_id, client_occurred_at
-		) VALUES ($1,$2,$3,'correction',$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-		input.ID, nextRevision, currentRevision, input.Reason, beforeJSON, afterJSON,
+		) VALUES ($1,$2,$3,'correction',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		input.ID, nextRevision, currentRevision, input.Reason,
+		input.QrisPayloadHash, beforeJSON, afterJSON,
 		input.Identity.OriginActorID, input.Identity.OriginSessionID, input.Identity.TerminalID,
 		input.Identity.SubmittedByActorID, input.Identity.SubmittedBySessionID, input.OccurredAt,
 	)
@@ -191,18 +297,37 @@ func (s *Store) correctTransactionTx(ctx context.Context, tx pgx.Tx, input domai
 	_, err = tx.Exec(ctx, `
 		UPDATE transactions
 		SET current_revision = $2, subtotal = $3, total = $3,
-		    updated_by = $4, updated_at = now(), print_state = $5
+		    updated_by = $4, payment_method = $5,
+		    qris_payload_hash = $6, payment_status = $7,
+		    payment_confirmed_revision = $8,
+		    updated_at = now(), print_state = $9
 		WHERE id = $1`,
-		input.ID, nextRevision, total, input.Identity.SubmittedByActorID, printState,
+		input.ID, nextRevision, total, input.Identity.SubmittedByActorID,
+		input.PaymentMethod, input.QrisPayloadHash, nextPaymentStatus,
+		nextPaymentConfirmedRevision, printState,
 	)
 	if err != nil {
 		return domain.Transaction{}, dbError(err, "advance transaction correction")
 	}
 	if err = audit(ctx, tx, "transaction.corrected", "transaction", input.ID, input.Identity,
-		json.RawMessage(beforeJSON), after, map[string]any{"reason": input.Reason}, input.OccurredAt); err != nil {
+		beforeState,
+		afterState,
+		map[string]any{
+			"reason": input.Reason, "paymentReset": paymentReset,
+			"legacyPaymentCompatibility": input.LegacyPaymentCompatibility,
+		}, input.OccurredAt); err != nil {
 		return domain.Transaction{}, dbError(err, "audit transaction correction")
 	}
-	if err = addChange(ctx, tx, "transaction", input.ID, "updated", &nextRevision, after, false); err != nil {
+	if err = addChange(
+		ctx,
+		tx,
+		"transaction",
+		input.ID,
+		"updated",
+		&nextRevision,
+		afterState,
+		false,
+	); err != nil {
 		return domain.Transaction{}, dbError(err, "sync transaction correction")
 	}
 	transaction, err := getTransactionWith(ctx, tx, input.ID, true)
@@ -254,6 +379,23 @@ func resolveItems(ctx context.Context, query rowQuerier, inputs []domain.ItemInp
 	return items, total, nil
 }
 
+func resolveTransactionItems(
+	ctx context.Context,
+	query rowQuerier,
+	paymentMethod domain.PaymentMethod,
+	inputs []domain.ItemInput,
+) ([]domain.TransactionItem, int64, error) {
+	defer observability.StartSegment(ctx, "Postgres.resolveTransactionItems")()
+	items, total, err := resolveItems(ctx, query, inputs)
+	if err != nil {
+		return nil, 0, err
+	}
+	if err := domain.ValidatePaymentTotal(paymentMethod, total); err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
 func insertItems(ctx context.Context, tx pgx.Tx, transactionID string, revision int, items []domain.TransactionItem) error {
 	defer observability.StartSegment(ctx, "Postgres.insertItems")()
 	for _, item := range items {
@@ -274,7 +416,13 @@ func insertItems(ctx context.Context, tx pgx.Tx, transactionID string, revision 
 	return nil
 }
 
-func transactionSnapshot(occurredAt any, items []domain.TransactionItem, total int64) map[string]any {
+func transactionSnapshot(
+	occurredAt any,
+	paymentMethod domain.PaymentMethod,
+	qrisPayloadHash *string,
+	items []domain.TransactionItem,
+	total int64,
+) map[string]any {
 	apiItems := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		apiItems = append(apiItems, map[string]any{
@@ -283,9 +431,59 @@ func transactionSnapshot(occurredAt any, items []domain.TransactionItem, total i
 			"unitPrice": item.UnitPrice, "quantity": item.Quantity, "lineTotal": item.LineTotal,
 		})
 	}
-	return map[string]any{
-		"occurredAt": occurredAt, "items": apiItems, "subtotal": total, "total": total,
+	snapshot := map[string]any{
+		"occurredAt": occurredAt, "paymentMethod": paymentMethod,
+		"items": apiItems, "subtotal": total, "total": total,
 	}
+	applyQrisPayloadHash(snapshot, qrisPayloadHash)
+	return snapshot
+}
+
+func paymentStateSnapshot(
+	snapshot map[string]any,
+	status domain.PaymentStatus,
+	confirmedRevision *int,
+) map[string]any {
+	result := make(map[string]any, len(snapshot)+2)
+	for key, value := range snapshot {
+		result[key] = value
+	}
+	result["paymentStatus"] = status
+	result["paymentConfirmedRevision"] = confirmedRevision
+	return result
+}
+
+func paymentStateSnapshotJSON(
+	snapshot json.RawMessage,
+	status domain.PaymentStatus,
+	confirmedRevision *int,
+) map[string]any {
+	result := make(map[string]any)
+	if err := json.Unmarshal(snapshot, &result); err != nil {
+		result = map[string]any{"snapshot": snapshot}
+	}
+	result["paymentStatus"] = status
+	result["paymentConfirmedRevision"] = confirmedRevision
+	return result
+}
+
+func applyQrisPayloadHash(snapshot map[string]any, hash *string) {
+	if hash == nil {
+		delete(snapshot, "qrisPayloadHash")
+		return
+	}
+	snapshot["qrisPayloadHash"] = *hash
+}
+
+func correctedPaymentState(
+	legacyCompatibility bool,
+	revision int,
+) (domain.PaymentStatus, *int, bool) {
+	if legacyCompatibility {
+		confirmedRevision := revision
+		return domain.PaymentStatusSuccess, &confirmedRevision, false
+	}
+	return domain.PaymentStatusPending, nil, true
 }
 
 func (s *Store) GetTransaction(ctx context.Context, id string, includeDeleted bool) (domain.Transaction, error) {
@@ -302,7 +500,9 @@ func getTransactionWith(ctx context.Context, query queryer, id string, includeDe
 	var deletedActorRole *domain.Role
 	sql := `
 		SELECT t.id, t.current_revision, t.occurred_at, t.server_received_at,
-		       t.subtotal, t.total, t.print_state, t.latest_printed_revision,
+		       t.subtotal, t.total, t.payment_method, t.payment_status,
+		       t.qris_payload_hash, t.payment_confirmed_revision,
+		       t.print_state, t.latest_printed_revision,
 		       t.terminal_id, t.deleted_at, t.delete_reason, t.updated_at,
 		       origin.id, origin.full_name, origin.username, origin.role,
 		       updater.id, updater.full_name, updater.username, updater.role,
@@ -317,7 +517,9 @@ func getTransactionWith(ctx context.Context, query queryer, id string, includeDe
 	}
 	err := query.QueryRow(ctx, sql, id).Scan(
 		&item.ID, &item.Revision, &item.OccurredAt, &item.ServerReceivedAt,
-		&item.Subtotal, &item.Total, &item.PrintState, &item.LatestPrintedRevision,
+		&item.Subtotal, &item.Total, &item.PaymentMethod, &item.PaymentStatus,
+		&item.QrisPayloadHash, &item.PaymentConfirmedRevision,
+		&item.PrintState, &item.LatestPrintedRevision,
 		&item.TerminalID, &item.DeletedAt, &item.DeleteReason, &item.UpdatedAt,
 		&item.OriginActor.ID, &item.OriginActor.FullName, &item.OriginActor.Username, &item.OriginActor.Role,
 		&item.UpdatedBy.ID, &item.UpdatedBy.FullName, &item.UpdatedBy.Username, &item.UpdatedBy.Role,
@@ -388,6 +590,12 @@ func (s *Store) ListTransactions(ctx context.Context, filter domain.TransactionF
 			SELECT 1 FROM transaction_items fi
 			WHERE fi.transaction_id = t.id AND fi.revision = t.current_revision
 			  AND fi.package_id = `+placeholder+`)`)
+	}
+	if filter.PaymentMethod != nil {
+		conditions = append(conditions, "t.payment_method = "+add(*filter.PaymentMethod))
+	}
+	if filter.PaymentStatus != nil {
+		conditions = append(conditions, "t.payment_status = "+add(*filter.PaymentStatus))
 	}
 	if filter.CursorOccurred != nil && filter.CursorID != "" {
 		at := add(*filter.CursorOccurred)

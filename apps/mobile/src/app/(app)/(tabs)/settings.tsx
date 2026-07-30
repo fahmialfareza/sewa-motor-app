@@ -62,6 +62,14 @@ export default function SettingsScreen() {
           onPress={() => router.push("/settings/printer")}
           title="Pengaturan printer"
         />
+        {session?.user.role === "superadmin" ? (
+          <MenuRow
+            detail="Payload merchant untuk nominal QRIS otomatis"
+            icon="qrcode"
+            onPress={() => router.push("/settings/qris")}
+            title="QRIS dinamis"
+          />
+        ) : null}
         <MenuRow
           detail="Outbox, konflik, dan sinkron manual"
           icon="sync"

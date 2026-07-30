@@ -2,6 +2,8 @@ import type { Session, Transaction } from "./types";
 
 export const CORRECTION_FORBIDDEN_MESSAGE =
   "Admin hanya dapat mengoreksi transaksi miliknya sendiri.";
+export const PAYMENT_FORBIDDEN_MESSAGE =
+  "Admin hanya dapat memperbarui pembayaran transaksi miliknya sendiri.";
 
 export function canCorrectTransaction(
   session: Session | null | undefined,
@@ -14,3 +16,5 @@ export function canCorrectTransaction(
     session.user.id === transaction.originActorId
   );
 }
+
+export const canManageTransactionPayment = canCorrectTransaction;
