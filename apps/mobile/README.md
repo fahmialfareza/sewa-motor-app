@@ -15,6 +15,9 @@ phones and MPOS terminals.
 - Provider components only attach startup, network, foreground, and background
   lifecycle events. Screens consume selector-backed hooks to avoid broad context
   rerenders.
+- `index.js` imports the background-sync task before `expo-router/entry`. Keep
+  that order so Android cold-starts define the TaskManager headless task before
+  native background work begins.
 
 ## Development
 

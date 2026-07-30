@@ -2,7 +2,7 @@
   "name": "@sewa-motor/mobile",
   "version": "0.1.0",
   "private": true,
-  "main": "expo-router/entry",
+  "main": "index.js",
   "scripts": {
     "start": "expo start --dev-client",
     "dev": "expo start --dev-client",

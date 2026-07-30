@@ -15,7 +15,6 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { AuthProvider } from "@/auth/AuthProvider";
 import { initializeDatabase } from "@/db/client";
-import "@/sync/background";
 import { SyncProvider } from "@/sync/SyncProvider";
 import { colors, spacing, textStyles } from "@/theme/tokens";
 
