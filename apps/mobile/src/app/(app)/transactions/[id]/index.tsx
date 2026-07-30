@@ -359,7 +359,26 @@ export default function TransactionDetailScreen() {
         </Card>
       ) : null}
 
-      <Card style={styles.receipt}>
+      {mayManagePayment &&
+      !paymentConfirmed &&
+      transaction.paymentMethod === "qris" &&
+      qrisPresentation ? (
+        <DynamicQrisCard
+          amount={transaction.total}
+          error={qrisPresentation.error}
+          merchantCity={qrisPresentation.merchantCity}
+          merchantName={qrisPresentation.merchantName}
+          {...(qrisPresentation.canConfigure &&
+          session?.user.role === "superadmin"
+            ? {
+                onConfigure: () => router.push("/settings/qris"),
+              }
+            : {})}
+          payload={qrisPresentation.payload}
+        />
+      ) : null}
+
+      <Card style={styles.receipt} testID="transaction-summary-card">
         <View style={styles.metaRow}>
           <View>
             <Text style={textStyles.label}>KASIR ASAL</Text>
@@ -425,25 +444,6 @@ export default function TransactionDetailScreen() {
             : "Struk baru dapat dicetak setelah pembayaran berhasil untuk revisi transaksi saat ini."}
         </Text>
       </Card>
-
-      {mayManagePayment &&
-      !paymentConfirmed &&
-      transaction.paymentMethod === "qris" &&
-      qrisPresentation ? (
-        <DynamicQrisCard
-          amount={transaction.total}
-          error={qrisPresentation.error}
-          merchantCity={qrisPresentation.merchantCity}
-          merchantName={qrisPresentation.merchantName}
-          {...(qrisPresentation.canConfigure &&
-          session?.user.role === "superadmin"
-            ? {
-                onConfigure: () => router.push("/settings/qris"),
-              }
-            : {})}
-          payload={qrisPresentation.payload}
-        />
-      ) : null}
 
       <Card style={styles.audit}>
         <Text style={textStyles.label}>JEJAK PERUBAHAN</Text>

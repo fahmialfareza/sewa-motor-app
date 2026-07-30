@@ -161,7 +161,13 @@ jest.mock("@/components/ui/Card", () => {
   const { View } =
     jest.requireActual<typeof import("react-native")>("react-native");
   return {
-    Card: ({ children }: { children?: ReactNode }) => <View>{children}</View>,
+    Card: ({
+      children,
+      testID,
+    }: {
+      children?: ReactNode;
+      testID?: string;
+    }) => <View testID={testID}>{children}</View>,
   };
 });
 
@@ -261,6 +267,21 @@ describe("Transaction detail dynamic QRIS", () => {
       payload: DYNAMIC_QRIS_70K,
     });
     expect(screen.queryByRole("button", { name: "Cetak struk" })).toBeNull();
+  });
+
+  it("places the QRIS scan card before the transaction summary", async () => {
+    mockGetTransaction.mockResolvedValue(transaction());
+    const screen = render(<TransactionDetailScreen />);
+
+    await screen.findByTestId("dynamic-qris-card");
+    screen.getByTestId("transaction-summary-card");
+
+    const renderedTree = JSON.stringify(screen.toJSON());
+    const qrisPosition = renderedTree.indexOf("dynamic-qris-card");
+    const summaryPosition = renderedTree.indexOf("transaction-summary-card");
+
+    expect(qrisPosition).toBeGreaterThanOrEqual(0);
+    expect(summaryPosition).toBeGreaterThan(qrisPosition);
   });
 
   it("hides QRIS and exposes printing after success for the current revision", async () => {
