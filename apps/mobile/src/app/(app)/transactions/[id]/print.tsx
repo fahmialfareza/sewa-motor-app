@@ -235,7 +235,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: spacing.sm,
   },
-  id: { ...textStyles.label, color: colors.primary },
+  id: { ...textStyles.technical, color: colors.primary },
   line: { flexDirection: "row", justifyContent: "space-between", gap: 8 },
   lineName: { ...textStyles.body, flex: 1 },
   lineValue: { ...textStyles.body, fontFamily: typography.bodySemibold },

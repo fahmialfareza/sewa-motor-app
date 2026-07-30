@@ -42,12 +42,12 @@ export const radius = {
 } as const;
 
 export const typography = {
-  heading: "PlusJakartaSans_700Bold",
-  headingSemibold: "PlusJakartaSans_600SemiBold",
-  price: "PlusJakartaSans_800ExtraBold",
-  body: "PlusJakartaSans_400Regular",
-  bodyMedium: "PlusJakartaSans_500Medium",
-  bodySemibold: "PlusJakartaSans_600SemiBold",
+  heading: "Roboto_700Bold",
+  headingSemibold: "Roboto_600SemiBold",
+  price: "Roboto_800ExtraBold",
+  body: "Roboto_400Regular",
+  bodyMedium: "Roboto_500Medium",
+  bodySemibold: "Roboto_600SemiBold",
   mono: "JetBrainsMono_500Medium",
 } as const;
 
@@ -73,6 +73,13 @@ export const textStyles = {
     color: colors.text,
   } satisfies TextStyle,
   label: {
+    fontFamily: typography.bodyMedium,
+    fontSize: 12,
+    lineHeight: 16,
+    letterSpacing: 0.4,
+    color: colors.textMuted,
+  } satisfies TextStyle,
+  technical: {
     fontFamily: typography.mono,
     fontSize: 12,
     lineHeight: 16,

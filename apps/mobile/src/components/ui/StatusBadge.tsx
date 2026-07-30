@@ -54,7 +54,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
   },
   text: {
-    fontFamily: typography.mono,
+    fontFamily: typography.bodySemibold,
     fontSize: 10,
     letterSpacing: 0.25,
   },

@@ -564,7 +564,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: colors.primary,
   },
-  snapshot: { ...textStyles.label, marginTop: spacing.xs, fontSize: 9 },
+  snapshot: { ...textStyles.technical, marginTop: spacing.xs, fontSize: 9 },
   total: {
     flexDirection: "row",
     alignItems: "center",
@@ -586,7 +586,7 @@ const styles = StyleSheet.create({
   paymentError: { ...textStyles.body, color: colors.error },
   printLocked: { gap: spacing.xs, backgroundColor: colors.container },
   printLockedTitle: { ...textStyles.heading, color: colors.textMuted },
-  terminal: { ...textStyles.label, fontSize: 9 },
+  terminal: { ...textStyles.technical, fontSize: 9 },
   onlineOnly: {
     ...textStyles.body,
     color: colors.textMuted,

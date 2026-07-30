@@ -143,7 +143,7 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   id: {
-    ...textStyles.label,
+    ...textStyles.technical,
     color: colors.textMuted,
     flex: 1,
   },

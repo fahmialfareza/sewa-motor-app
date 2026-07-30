@@ -87,7 +87,7 @@ const styles = StyleSheet.create({
   content: { flex: 1, padding: spacing.md, gap: spacing.sm },
   top: { flexDirection: "row", gap: spacing.sm },
   flex: { flex: 1 },
-  id: textStyles.label,
+  id: textStyles.technical,
   name: {
     fontFamily: typography.headingSemibold,
     fontSize: 16,

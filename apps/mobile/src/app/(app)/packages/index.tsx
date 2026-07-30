@@ -112,7 +112,11 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   description: { ...textStyles.body, color: colors.textMuted, fontSize: 12 },
-  revision: { ...textStyles.label, fontSize: 9, marginTop: spacing.xs },
+  revision: {
+    ...textStyles.technical,
+    fontSize: 9,
+    marginTop: spacing.xs,
+  },
   right: { alignItems: "flex-end" },
   price: {
     fontFamily: typography.heading,

@@ -180,7 +180,7 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: colors.text,
   },
-  deviceId: { ...textStyles.label, marginTop: spacing.xs },
+  deviceId: { ...textStyles.technical, marginTop: spacing.xs },
   current: { gap: spacing.xs, backgroundColor: colors.primarySoft },
   message: { ...textStyles.body, color: colors.secondary },
 });

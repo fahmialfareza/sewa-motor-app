@@ -86,7 +86,7 @@ const styles = StyleSheet.create({
   dotOffline: { backgroundColor: "#FFE1A8" },
   text: {
     color: colors.onPrimary,
-    fontFamily: typography.mono,
+    fontFamily: typography.bodySemibold,
     fontSize: 10,
   },
   detail: {

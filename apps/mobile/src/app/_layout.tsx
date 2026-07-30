@@ -1,11 +1,9 @@
-import {
-  PlusJakartaSans_400Regular,
-  PlusJakartaSans_500Medium,
-  PlusJakartaSans_600SemiBold,
-  PlusJakartaSans_700Bold,
-  PlusJakartaSans_800ExtraBold,
-} from "@expo-google-fonts/plus-jakarta-sans";
-import { JetBrainsMono_500Medium } from "@expo-google-fonts/jetbrains-mono";
+import { JetBrainsMono_500Medium } from "@expo-google-fonts/jetbrains-mono/500Medium";
+import { Roboto_400Regular } from "@expo-google-fonts/roboto/400Regular";
+import { Roboto_500Medium } from "@expo-google-fonts/roboto/500Medium";
+import { Roboto_600SemiBold } from "@expo-google-fonts/roboto/600SemiBold";
+import { Roboto_700Bold } from "@expo-google-fonts/roboto/700Bold";
+import { Roboto_800ExtraBold } from "@expo-google-fonts/roboto/800ExtraBold";
 import { useFonts } from "expo-font";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
@@ -25,11 +23,11 @@ void SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
-    PlusJakartaSans_400Regular,
-    PlusJakartaSans_500Medium,
-    PlusJakartaSans_600SemiBold,
-    PlusJakartaSans_700Bold,
-    PlusJakartaSans_800ExtraBold,
+    Roboto_400Regular,
+    Roboto_500Medium,
+    Roboto_600SemiBold,
+    Roboto_700Bold,
+    Roboto_800ExtraBold,
     JetBrainsMono_500Medium,
   });
   const [databaseReady, setDatabaseReady] = useState(false);
@@ -92,5 +90,5 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   failureMessage: { ...textStyles.body, color: colors.textMuted },
-  code: { ...textStyles.label, color: colors.error },
+  code: { ...textStyles.technical, color: colors.error },
 });
