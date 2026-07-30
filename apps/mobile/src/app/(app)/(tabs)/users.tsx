@@ -1,5 +1,5 @@
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { apiRequest } from "@/api/client";
@@ -19,39 +19,58 @@ import {
   textStyles,
   typography,
 } from "@/theme/tokens";
+import { toUserFacingErrorMessage } from "@/utils/errors";
 import { initials } from "@/utils/format";
 
 export default function UsersScreen() {
   const router = useRouter();
   const { session } = useAuth();
+  const sessionToken = session?.token;
+  const sessionUser = session?.user;
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const requestId = useRef(0);
 
   const load = useCallback(async () => {
-    if (!session || session.token.startsWith("dev-only-")) {
-      setUsers(session ? [session.user] : []);
+    const currentRequestId = ++requestId.current;
+    if (!sessionToken || sessionToken.startsWith("dev-only-")) {
+      setUsers(sessionUser ? [sessionUser] : []);
+      setError(null);
+      setLoading(false);
       return;
     }
+    setLoading(true);
     try {
       const query = search.trim()
         ? `?search=${encodeURIComponent(search.trim())}`
         : "";
       const response = await apiRequest<UserListResponse>(`/users${query}`, {
-        token: session.token,
+        token: sessionToken,
       });
+      if (currentRequestId !== requestId.current) return;
       setUsers(response);
       setError(null);
     } catch (reason) {
+      if (currentRequestId !== requestId.current) return;
       setError(
-        reason instanceof Error ? reason.message : "Pengguna gagal dimuat.",
+        toUserFacingErrorMessage(
+          reason,
+          "Pengguna belum dapat dimuat. Coba lagi.",
+        ),
       );
+    } finally {
+      if (currentRequestId === requestId.current) setLoading(false);
     }
-  }, [search, session]);
+  }, [search, sessionToken, sessionUser]);
 
   useFocusEffect(
     useCallback(() => {
       void load();
+      return () => {
+        requestId.current += 1;
+      };
     }, [load]),
   );
 
@@ -87,7 +106,23 @@ export default function UsersScreen() {
       >
         Tambah pengguna
       </Button>
-      {error ? <Text style={styles.error}>{error}</Text> : null}
+      {error ? (
+        <Card style={styles.errorCard}>
+          <View style={styles.errorCopy}>
+            <Text accessibilityRole="alert" style={styles.errorTitle}>
+              Pengguna belum dapat dimuat
+            </Text>
+            <Text style={styles.errorMessage}>{error}</Text>
+          </View>
+          <Button
+            loading={loading}
+            onPress={() => void load()}
+            variant="secondary"
+          >
+            Coba lagi
+          </Button>
+        </Card>
+      ) : null}
       {users.map((user) => (
         <Pressable
           key={user.id}
@@ -131,7 +166,10 @@ export default function UsersScreen() {
 }
 
 const styles = StyleSheet.create({
-  error: { ...textStyles.body, color: colors.error },
+  errorCard: { gap: spacing.md, backgroundColor: colors.errorSoft },
+  errorCopy: { gap: spacing.xs },
+  errorTitle: { ...textStyles.heading, color: colors.error },
+  errorMessage: { ...textStyles.body, color: colors.textMuted },
   user: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   avatar: {
     width: 48,

@@ -1,6 +1,7 @@
 import type { Session } from "@/domain/types";
 import type { SyncSummary } from "@/sync/engine";
 import { useSyncStore } from "@/sync/sync-store";
+import { SERVER_UNREACHABLE_MESSAGE } from "@/utils/errors";
 
 const mockRunSync = jest.fn<Promise<SyncSummary>, [Session]>();
 const mockCountPendingOutbox = jest.fn<Promise<number>, []>();
@@ -118,5 +119,34 @@ describe("sync store concurrency", () => {
     await expect(useSyncStore.getState().syncNow()).resolves.toBeNull();
 
     expect(mockRunSync).not.toHaveBeenCalled();
+  });
+
+  it("sanitizes legacy native errors restored from sync metadata", async () => {
+    mockGetSyncMetadata.mockResolvedValue({
+      cursor: "CURSOR-1",
+      lastSyncedAt: null,
+      lastError:
+        "fetch failed: java.net.ConnectException: Failed to connect to /192.168.18.254:8080",
+    });
+
+    await useSyncStore.getState().refresh();
+
+    expect(useSyncStore.getState().lastError).toBe(SERVER_UNREACHABLE_MESSAGE);
+  });
+
+  it("keeps a failed sync message understandable after refresh", async () => {
+    const nativeError = new Error(
+      "fetch failed: java.net.ConnectException: Failed to connect to /192.168.18.254:8080",
+    );
+    mockRunSync.mockRejectedValue(nativeError);
+    mockGetSyncMetadata.mockResolvedValue({
+      cursor: "CURSOR-1",
+      lastSyncedAt: null,
+      lastError: nativeError.message,
+    });
+
+    await expect(useSyncStore.getState().syncNow()).rejects.toBe(nativeError);
+
+    expect(useSyncStore.getState().lastError).toBe(SERVER_UNREACHABLE_MESSAGE);
   });
 });

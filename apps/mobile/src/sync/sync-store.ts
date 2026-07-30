@@ -3,6 +3,7 @@ import { create } from "zustand";
 import { useAuthStore } from "@/auth/auth-store";
 import { countPendingOutbox, getSyncMetadata } from "@/db/repositories";
 import { readSession, readTerminalIdentity } from "@/security/secure-store";
+import { toUserFacingErrorMessage } from "@/utils/errors";
 
 import { runSync, type SyncSummary } from "./engine";
 
@@ -38,7 +39,12 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
     set({
       pendingCount,
       lastSyncedAt: metadata.lastSyncedAt,
-      lastError: metadata.lastError,
+      lastError: metadata.lastError
+        ? toUserFacingErrorMessage(
+            metadata.lastError,
+            "Sinkronisasi belum berhasil. Coba lagi.",
+          )
+        : null,
     });
   },
 
@@ -65,8 +71,10 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
       })
       .catch((error: unknown) => {
         set({
-          lastError:
-            error instanceof Error ? error.message : "Sinkronisasi gagal.",
+          lastError: toUserFacingErrorMessage(
+            error,
+            "Sinkronisasi belum berhasil. Coba lagi.",
+          ),
         });
         throw error;
       })

@@ -17,16 +17,24 @@ import {
 import type { SyncConflict } from "@/domain/types";
 import { useSyncRuntime } from "@/sync/SyncProvider";
 import { colors, spacing, textStyles, typography } from "@/theme/tokens";
+import { toUserFacingErrorMessage } from "@/utils/errors";
 import { displayTransactionId, formatJakartaDateTime } from "@/utils/format";
 
 export default function SyncCenterScreen() {
   const router = useRouter();
   const runtime = useSyncRuntime();
   const refreshRuntime = runtime.refresh;
+  const requestSync = runtime.syncNow;
   const [conflicts, setConflicts] = useState<SyncConflict[]>([]);
   const [rejected, setRejected] = useState<RejectedOutboxOperation[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  const lastErrorMessage = runtime.lastError
+    ? toUserFacingErrorMessage(
+        runtime.lastError,
+        "Sinkronisasi belum berhasil. Coba lagi.",
+      )
+    : null;
 
   const load = useCallback(async () => {
     const [nextConflicts, nextRejected, metadata] = await Promise.all([
@@ -42,9 +50,35 @@ export default function SyncCenterScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      void load();
+      void load().catch((reason: unknown) => {
+        setRecoveryError(
+          toUserFacingErrorMessage(
+            reason,
+            "Status sinkronisasi belum dapat dimuat. Coba lagi.",
+          ),
+        );
+      });
     }, [load]),
   );
+
+  const syncNow = useCallback(async () => {
+    try {
+      await requestSync();
+    } catch {
+      // The sync store exposes the translated error in runtime.lastError.
+    }
+    try {
+      await load();
+      setRecoveryError(null);
+    } catch (reason) {
+      setRecoveryError(
+        toUserFacingErrorMessage(
+          reason,
+          "Status sinkronisasi belum dapat dimuat. Coba lagi.",
+        ),
+      );
+    }
+  }, [load, requestSync]);
 
   const recoverRejected = (operation: RejectedOutboxOperation) => {
     const isRejectedCreate =
@@ -103,15 +137,21 @@ export default function SyncCenterScreen() {
           disabled={!runtime.online}
           icon="sync"
           loading={runtime.syncing}
-          onPress={() => void runtime.syncNow().then(() => load())}
+          onPress={() => void syncNow()}
         >
           Sinkron sekarang
         </Button>
       </Card>
-      {runtime.lastError ? (
+      {lastErrorMessage ? (
         <Card style={styles.errorCard}>
-          <Text style={styles.errorTitle}>Sinkron terakhir gagal</Text>
-          <Text style={styles.detail}>{runtime.lastError}</Text>
+          <Text accessibilityRole="alert" style={styles.errorTitle}>
+            Sinkronisasi belum berhasil
+          </Text>
+          <Text style={styles.detail}>{lastErrorMessage}</Text>
+          <Text style={styles.errorHint}>
+            Data lokal tetap tersimpan dan sinkronisasi otomatis akan mencoba
+            lagi.
+          </Text>
         </Card>
       ) : null}
       {recoveryError ? (
@@ -198,6 +238,7 @@ const styles = StyleSheet.create({
   cursor: { ...textStyles.technical, fontSize: 9 },
   errorCard: { gap: spacing.xs, backgroundColor: colors.errorSoft },
   errorTitle: { ...textStyles.heading, color: colors.error },
+  errorHint: { ...textStyles.body, color: colors.textMuted, fontSize: 12 },
   recoveryError: { ...textStyles.body, color: colors.error },
   conflict: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   conflictCopy: { flex: 1 },

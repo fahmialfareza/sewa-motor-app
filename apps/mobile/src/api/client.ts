@@ -1,5 +1,10 @@
 import Constants from "expo-constants";
 
+import {
+  INVALID_SERVER_RESPONSE_MESSAGE,
+  SERVER_UNREACHABLE_MESSAGE,
+} from "@/utils/errors";
+
 import type { ApiEnvelope, ApiErrorEnvelope } from "./contracts";
 
 export class ApiError extends Error {
@@ -7,6 +12,7 @@ export class ApiError extends Error {
   readonly code: string;
   readonly details: unknown;
   readonly requestId?: string | undefined;
+  readonly diagnosticCause?: unknown;
 
   constructor(input: {
     status: number;
@@ -14,6 +20,7 @@ export class ApiError extends Error {
     message: string;
     details?: unknown;
     requestId?: string;
+    diagnosticCause?: unknown;
   }) {
     super(input.message);
     this.name = "ApiError";
@@ -21,6 +28,12 @@ export class ApiError extends Error {
     this.code = input.code;
     this.details = input.details;
     this.requestId = input.requestId;
+    if (input.diagnosticCause !== undefined) {
+      Object.defineProperty(this, "diagnosticCause", {
+        configurable: true,
+        value: input.diagnosticCause,
+      });
+    }
   }
 }
 
@@ -66,18 +79,25 @@ export async function apiRequest<T>(
     throw new ApiError({
       status: 0,
       code: "NETWORK_UNAVAILABLE",
-      message:
-        error instanceof Error
-          ? error.message
-          : "Tidak dapat terhubung ke server.",
+      message: SERVER_UNREACHABLE_MESSAGE,
+      diagnosticCause: error,
     });
   }
 
   const contentType = response.headers.get("content-type");
-  const payload =
-    contentType?.includes("application/json") === true
-      ? ((await response.json()) as ApiEnvelope<T> | ApiErrorEnvelope)
-      : null;
+  let payload: ApiEnvelope<T> | ApiErrorEnvelope | null = null;
+  if (contentType?.includes("application/json") === true) {
+    try {
+      payload = (await response.json()) as ApiEnvelope<T> | ApiErrorEnvelope;
+    } catch (error) {
+      throw new ApiError({
+        status: response.status,
+        code: "INVALID_RESPONSE",
+        message: INVALID_SERVER_RESPONSE_MESSAGE,
+        diagnosticCause: error,
+      });
+    }
+  }
 
   if (!response.ok) {
     const error =
@@ -102,7 +122,7 @@ export async function apiRequest<T>(
     throw new ApiError({
       status: response.status,
       code: "INVALID_RESPONSE",
-      message: "Respons server tidak sesuai kontrak.",
+      message: INVALID_SERVER_RESPONSE_MESSAGE,
     });
   }
   return payload.data;

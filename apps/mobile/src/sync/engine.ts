@@ -25,6 +25,7 @@ import {
   markTerminalEnrolled,
   markTerminalRevoked,
 } from "@/security/terminal-identity";
+import { toUserFacingErrorMessage } from "@/utils/errors";
 
 let activeSync: { sessionId: string; promise: Promise<SyncSummary> } | null =
   null;
@@ -286,8 +287,10 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
       completedAt: new Date().toISOString(),
     };
   } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "Sinkronisasi gagal.";
+    const message = toUserFacingErrorMessage(
+      error,
+      "Sinkronisasi belum berhasil. Coba lagi.",
+    );
     await setSyncError(message);
     throw error;
   }
