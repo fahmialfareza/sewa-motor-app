@@ -3,8 +3,12 @@ import type { ReactNode } from "react";
 
 import HomeScreen from "@/app/(app)/(tabs)/home";
 import type { DashboardStats } from "@/domain/types";
+import type { ReportingRange } from "@/utils/time";
 
-const mockGetDashboardStats = jest.fn<Promise<DashboardStats>, [string]>();
+const mockGetDashboardStats = jest.fn<
+  Promise<DashboardStats>,
+  [ReportingRange]
+>();
 const mockListTransactions = jest.fn();
 const mockRouterPush = jest.fn();
 const mockSyncRuntime = {
@@ -33,8 +37,64 @@ jest.mock("@/sync/SyncProvider", () => ({
   useSyncRuntime: () => mockSyncRuntime,
 }));
 
+jest.mock("@/components/reporting/DateMonthFilter", () => {
+  const { Pressable, Text, View } =
+    jest.requireActual<typeof import("react-native")>("react-native");
+  return {
+    DateMonthFilter: ({
+      date,
+      mode,
+      month,
+      onDateChange,
+      onModeChange,
+      onMonthChange,
+    }: {
+      date: string;
+      mode: "date" | "month";
+      month: string;
+      onDateChange: (date: string) => void;
+      onModeChange: (mode: "date" | "month") => void;
+      onMonthChange: (month: string) => void;
+    }) => (
+      <View>
+        <Pressable
+          accessibilityLabel="Gunakan filter tanggal"
+          accessibilityRole="button"
+          onPress={() => onModeChange("date")}
+        >
+          <Text>Tanggal</Text>
+        </Pressable>
+        <Pressable
+          accessibilityLabel="Gunakan filter bulan"
+          accessibilityRole="button"
+          onPress={() => onModeChange("month")}
+        >
+          <Text>Bulan</Text>
+        </Pressable>
+        {mode === "date" ? (
+          <Pressable
+            accessibilityLabel="Pilih tanggal pengujian"
+            accessibilityRole="button"
+            onPress={() => onDateChange("2026-07-15")}
+          >
+            <Text>{date}</Text>
+          </Pressable>
+        ) : (
+          <Pressable
+            accessibilityLabel="Pilih bulan pengujian"
+            accessibilityRole="button"
+            onPress={() => onMonthChange("2026-06")}
+          >
+            <Text>{month}</Text>
+          </Pressable>
+        )}
+      </View>
+    ),
+  };
+});
+
 jest.mock("@/db/repositories", () => ({
-  getDashboardStats: (period: string) => mockGetDashboardStats(period),
+  getDashboardStats: (range: ReportingRange) => mockGetDashboardStats(range),
   listTransactions: (...args: unknown[]) => mockListTransactions(...args),
 }));
 
@@ -103,9 +163,55 @@ const populatedStats: DashboardStats = {
 describe("Home dashboard refresh", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockGetDashboardStats.mockReset();
+    mockListTransactions.mockReset();
     mockSyncRuntime.lastSyncedAt = null;
     mockSyncRuntime.pendingCount = 0;
     mockListTransactions.mockResolvedValue([]);
+  });
+
+  it("shows the Dasbor title and loads an explicitly selected date or month", async () => {
+    mockGetDashboardStats.mockResolvedValue(emptyStats);
+    const screen = render(<HomeScreen />);
+
+    await waitFor(() => {
+      expect(mockGetDashboardStats).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.getByText("Dasbor")).toBeTruthy();
+    expect(screen.queryByText("Dasbor Toko")).toBeNull();
+    expect(screen.queryByText("Mingguan")).toBeNull();
+
+    fireEvent.press(
+      screen.getByRole("button", { name: "Pilih tanggal pengujian" }),
+    );
+
+    await waitFor(() => {
+      expect(mockGetDashboardStats).toHaveBeenLastCalledWith({
+        mode: "date",
+        from: "2026-07-14T17:00:00.000Z",
+        to: "2026-07-15T17:00:00.000Z",
+      });
+    });
+
+    fireEvent.press(
+      screen.getByRole("button", { name: "Gunakan filter bulan" }),
+    );
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Pilih bulan pengujian" }),
+      ).toBeTruthy();
+    });
+    fireEvent.press(
+      screen.getByRole("button", { name: "Pilih bulan pengujian" }),
+    );
+
+    await waitFor(() => {
+      expect(mockGetDashboardStats).toHaveBeenLastCalledWith({
+        mode: "month",
+        from: "2026-05-31T17:00:00.000Z",
+        to: "2026-06-30T17:00:00.000Z",
+      });
+    });
   });
 
   it("reloads while focused after sync and uses the live outbox count", async () => {

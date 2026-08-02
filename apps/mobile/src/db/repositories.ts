@@ -32,11 +32,7 @@ import {
   signCanonicalPayload,
 } from "@/security/terminal-identity";
 import { canonicalize } from "@/utils/canonical-json";
-import {
-  normalizeUtcTimestamp,
-  reportingRange,
-  type ReportingPeriod,
-} from "@/utils/time";
+import { normalizeUtcTimestamp, type ReportingRange } from "@/utils/time";
 
 import { getDatabase } from "./client";
 import { createUlid } from "./ids";
@@ -610,10 +606,9 @@ export async function listHistoryCreatorOptions(): Promise<
 }
 
 export async function getDashboardStats(
-  period: ReportingPeriod,
+  range: ReportingRange,
 ): Promise<DashboardStats> {
   const { sqlite } = await getDatabase();
-  const range = reportingRange(period);
   const total = await sqlite.getFirstAsync<{
     gross: number | null;
     transaction_count: number;
@@ -645,9 +640,9 @@ export async function getDashboardStats(
     range.from,
     range.to,
   );
-  const bucketSeconds = period === "daily" ? 60 * 60 : 24 * 60 * 60;
+  const bucketSeconds = range.mode === "date" ? 60 * 60 : 24 * 60 * 60;
   const bucketCount =
-    period === "daily"
+    range.mode === "date"
       ? 24
       : Math.round(
           (new Date(range.to).getTime() - new Date(range.from).getTime()) /

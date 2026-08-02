@@ -5,6 +5,7 @@ import { Pressable, StyleSheet, Text, View } from "react-native";
 import { useAuth } from "@/auth/AuthProvider";
 import { AppScreen } from "@/components/layout/AppScreen";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { DateMonthFilter } from "@/components/reporting/DateMonthFilter";
 import { TransactionRow } from "@/components/transactions/TransactionRow";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -19,26 +20,27 @@ import {
   typography,
 } from "@/theme/tokens";
 import { formatRupiah, initials } from "@/utils/format";
-import type { ReportingPeriod } from "@/utils/time";
+import {
+  currentJakartaDate,
+  currentJakartaMonth,
+  reportingRange,
+  type ReportingMode,
+} from "@/utils/time";
 
 const emptyStats: DashboardStats = {
   gross: 0,
   transactionCount: 0,
   quantities: [],
-  buckets: [0, 0, 0, 0, 0, 0, 0],
-};
-
-const labels: Record<ReportingPeriod, string> = {
-  daily: "Harian",
-  weekly: "Mingguan",
-  monthly: "Bulanan",
+  buckets: Array(24).fill(0),
 };
 
 export default function HomeScreen() {
   const router = useRouter();
   const { session } = useAuth();
   const { lastSyncedAt, pendingCount } = useSyncRuntime();
-  const [period, setPeriod] = useState<ReportingPeriod>("daily");
+  const [mode, setMode] = useState<ReportingMode>("date");
+  const [selectedDate, setSelectedDate] = useState(currentJakartaDate);
+  const [selectedMonth, setSelectedMonth] = useState(currentJakartaMonth);
   const [stats, setStats] = useState(emptyStats);
   const [recent, setRecent] = useState<Transaction[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -48,9 +50,15 @@ export default function HomeScreen() {
 
   const load = useCallback(async () => {
     const currentRequestId = ++requestId.current;
+    const range =
+      mode === "date"
+        ? reportingRange("date", selectedDate)
+        : reportingRange("month", selectedMonth);
+    setLoaded(false);
+    setLoadError(null);
     try {
       const [nextStats, nextRecent] = await Promise.all([
-        getDashboardStats(period),
+        getDashboardStats(range),
         listTransactions({ limit: 5 }),
       ]);
       if (currentRequestId !== requestId.current) return;
@@ -66,7 +74,7 @@ export default function HomeScreen() {
           : "Ringkasan dasbor tidak dapat dimuat.",
       );
     }
-  }, [period]);
+  }, [mode, selectedDate, selectedMonth]);
 
   useFocusEffect(
     useCallback(() => {
@@ -89,7 +97,7 @@ export default function HomeScreen() {
     <AppScreen>
       <PageHeader
         subtitle="Ringkasan transaksi dari perangkat ini"
-        title="Dasbor Toko"
+        title="Dasbor"
         right={
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>
@@ -98,24 +106,14 @@ export default function HomeScreen() {
           </View>
         }
       />
-      <View style={styles.periods}>
-        {(Object.keys(labels) as ReportingPeriod[]).map((value) => (
-          <Pressable
-            key={value}
-            onPress={() => setPeriod(value)}
-            style={[styles.period, period === value && styles.periodSelected]}
-          >
-            <Text
-              style={[
-                styles.periodText,
-                period === value && styles.periodTextSelected,
-              ]}
-            >
-              {labels[value]}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
+      <DateMonthFilter
+        date={selectedDate}
+        mode={mode}
+        month={selectedMonth}
+        onDateChange={setSelectedDate}
+        onModeChange={setMode}
+        onMonthChange={setSelectedMonth}
+      />
       <Button
         icon="plus-circle-outline"
         onPress={() => router.push("/(app)/(tabs)/sell")}
@@ -263,23 +261,6 @@ const styles = StyleSheet.create({
     fontFamily: typography.heading,
     fontSize: 16,
   },
-  periods: { flexDirection: "row", gap: spacing.sm },
-  period: {
-    minHeight: 48,
-    flex: 1,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.outline,
-    backgroundColor: colors.card,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  periodSelected: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  periodText: { ...textStyles.body, fontFamily: typography.bodyMedium },
-  periodTextSelected: { color: colors.onPrimary },
   revenue: { gap: spacing.lg },
   revenueNote: { ...textStyles.body, color: colors.textMuted, fontSize: 12 },
   loadError: {

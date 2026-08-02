@@ -1033,7 +1033,12 @@ describe("payment-aware transaction repository", () => {
         { bucket: 23, amount: 100_000 },
       ]);
 
-    const stats = await getDashboardStats("daily");
+    const requestedRange = {
+      mode: "date" as const,
+      from: "2026-07-28T17:00:00.000Z",
+      to: "2026-07-29T17:00:00.000Z",
+    };
+    const stats = await getDashboardStats(requestedRange);
 
     const sql = [...mockGetFirstAsync.mock.calls, ...mockGetAllAsync.mock.calls]
       .map(([query]) => String(query))
@@ -1042,6 +1047,25 @@ describe("payment-aware transaction repository", () => {
     expect(
       sql.match(/payment_confirmed_revision = (?:t\.)?revision/g),
     ).toHaveLength(3);
+    expect(mockGetFirstAsync).toHaveBeenCalledWith(
+      expect.any(String),
+      requestedRange.from,
+      requestedRange.to,
+    );
+    expect(mockGetAllAsync).toHaveBeenNthCalledWith(
+      1,
+      expect.any(String),
+      requestedRange.from,
+      requestedRange.to,
+    );
+    expect(mockGetAllAsync).toHaveBeenNthCalledWith(
+      2,
+      expect.any(String),
+      requestedRange.from,
+      60 * 60,
+      requestedRange.from,
+      requestedRange.to,
+    );
     expect(stats).toMatchObject({
       gross: 170_000,
       transactionCount: 2,

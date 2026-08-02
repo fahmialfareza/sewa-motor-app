@@ -1,10 +1,11 @@
 import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 
 import { HistoryTransactionCard } from "@/components/history/HistoryTransactionCard";
 import { AppScreen } from "@/components/layout/AppScreen";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { DateMonthFilter } from "@/components/reporting/DateMonthFilter";
 import { Button } from "@/components/ui/Button";
 import { Field } from "@/components/ui/Field";
 import { Icon } from "@/components/ui/Icon";
@@ -25,7 +26,12 @@ import {
   textStyles,
   typography,
 } from "@/theme/tokens";
-import { reportingRange, type ReportingPeriod } from "@/utils/time";
+import {
+  currentJakartaDate,
+  currentJakartaMonth,
+  reportingRange,
+  type ReportingMode,
+} from "@/utils/time";
 
 const pageSize = 20;
 
@@ -37,21 +43,13 @@ const syncFilters: { label: string; value?: SyncState }[] = [
   { label: "Error", value: "error" },
 ];
 
-const periodFilters: {
-  label: string;
-  value: "all" | ReportingPeriod;
-}[] = [
-  { label: "Semua tanggal", value: "all" },
-  { label: "Hari ini", value: "daily" },
-  { label: "Minggu ini", value: "weekly" },
-  { label: "Bulan ini", value: "monthly" },
-];
-
 export default function HistoryScreen() {
   const router = useRouter();
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
-  const [period, setPeriod] = useState<"all" | ReportingPeriod>("all");
+  const [mode, setMode] = useState<ReportingMode>("date");
+  const [selectedDate, setSelectedDate] = useState(currentJakartaDate);
+  const [selectedMonth, setSelectedMonth] = useState(currentJakartaMonth);
   const [packageId, setPackageId] = useState<string | undefined>();
   const [creatorId, setCreatorId] = useState<string | undefined>();
   const [syncState, setSyncState] = useState<SyncState | undefined>();
@@ -67,8 +65,9 @@ export default function HistoryScreen() {
   const [filtersExpanded, setFiltersExpanded] = useState(false);
   const cursor = useRef<{ occurredAt: string; id: string } | null>(null);
   const requestId = useRef(0);
+  const today = currentJakartaDate();
   const activeFilterCount =
-    Number(period !== "all") +
+    Number(mode !== "date" || selectedDate !== today) +
     Number(packageId !== undefined) +
     Number(creatorId !== undefined) +
     Number(syncState !== undefined);
@@ -86,14 +85,23 @@ export default function HistoryScreen() {
     async (append: boolean) => {
       const currentRequestId = ++requestId.current;
       setLoading(true);
+      if (!append) {
+        cursor.current = null;
+        setHasMore(false);
+        setTransactions([]);
+      }
       try {
-        const range = period === "all" ? null : reportingRange(period);
+        const range =
+          mode === "date"
+            ? reportingRange("date", selectedDate)
+            : reportingRange("month", selectedMonth);
         const currentCursor = append ? cursor.current : null;
         const filter: HistoryFilter = {
           limit: pageSize + 1,
           ...(search ? { search } : {}),
           ...(syncState ? { syncState } : {}),
-          ...(range ? { from: range.from, to: range.to } : {}),
+          from: range.from,
+          to: range.to,
           ...(packageId ? { packageId } : {}),
           ...(creatorId ? { creatorId } : {}),
           ...(currentCursor
@@ -118,7 +126,15 @@ export default function HistoryScreen() {
         }
       }
     },
-    [creatorId, packageId, period, search, syncState],
+    [
+      creatorId,
+      mode,
+      packageId,
+      search,
+      selectedDate,
+      selectedMonth,
+      syncState,
+    ],
   );
 
   useFocusEffect(
@@ -143,7 +159,10 @@ export default function HistoryScreen() {
   };
 
   const resetFilters = () => {
-    setPeriod("all");
+    const now = new Date();
+    setMode("date");
+    setSelectedDate(currentJakartaDate(now));
+    setSelectedMonth(currentJakartaMonth(now));
     setPackageId(undefined);
     setCreatorId(undefined);
     setSyncState(undefined);
@@ -165,22 +184,14 @@ export default function HistoryScreen() {
         value={searchInput}
       />
 
-      <ScrollView
-        accessibilityLabel="Filter periode transaksi"
-        contentContainerStyle={styles.periodFilters}
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        style={styles.periodScroll}
-      >
-        {periodFilters.map((filter) => (
-          <FilterChip
-            key={filter.value}
-            label={filter.label}
-            onPress={() => setPeriod(filter.value)}
-            selected={period === filter.value}
-          />
-        ))}
-      </ScrollView>
+      <DateMonthFilter
+        date={selectedDate}
+        mode={mode}
+        month={selectedMonth}
+        onDateChange={setSelectedDate}
+        onModeChange={setMode}
+        onMonthChange={setSelectedMonth}
+      />
 
       <View style={styles.resultToolbar}>
         <View style={styles.resultSummary}>
@@ -379,13 +390,6 @@ function FilterChip({
 }
 
 const styles = StyleSheet.create({
-  periodScroll: {
-    marginHorizontal: -spacing.md,
-  },
-  periodFilters: {
-    paddingHorizontal: spacing.md,
-    gap: spacing.sm,
-  },
   resultToolbar: {
     flexDirection: "row",
     alignItems: "center",
