@@ -80,6 +80,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     ],
     "expo-background-task",
     "expo-sharing",
+    "expo-font",
   ],
   experiments: {
     typedRoutes: false,
