@@ -30,6 +30,7 @@ func (reportingExporter) XLSX(
 	[]domain.ExportRow,
 	*time.Time,
 	*time.Time,
+	domain.DataMode,
 ) ([]byte, error) {
 	return []byte("xlsx"), nil
 }
@@ -38,6 +39,7 @@ func (reportingExporter) PDF(
 	[]domain.ExportRow,
 	*time.Time,
 	*time.Time,
+	domain.DataMode,
 ) ([]byte, error) {
 	return []byte("pdf"), nil
 }

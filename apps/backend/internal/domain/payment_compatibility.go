@@ -20,6 +20,11 @@ func NormalizeTransactionSnapshot(snapshot json.RawMessage, revision int) json.R
 
 	methodText, _ := value["paymentMethod"].(string)
 	method := PaymentMethod(methodText)
+	if _, ok := jsonNumberAsPositiveInt64(value["paymentAmount"]); !ok {
+		if total, totalOK := jsonNumberAsPositiveInt64(value["total"]); totalOK {
+			value["paymentAmount"] = total
+		}
+	}
 	if !method.Valid() || method == PaymentMethodLegacy {
 		value["paymentMethod"] = PaymentMethodLegacy
 		value["paymentStatus"] = PaymentStatusSuccess
@@ -59,6 +64,9 @@ func NormalizeLegacyTransactionResult(transaction Transaction) Transaction {
 		confirmedRevision := transaction.Revision
 		transaction.PaymentConfirmedRevision = &confirmedRevision
 		transaction.QrisPayloadHash = nil
+		if transaction.PaymentAmount <= 0 {
+			transaction.PaymentAmount = transaction.Total
+		}
 		return transaction
 	}
 	if transaction.PaymentMethod != PaymentMethodQRIS {
@@ -67,6 +75,9 @@ func NormalizeLegacyTransactionResult(transaction Transaction) Transaction {
 	if !transaction.PaymentStatus.Valid() {
 		transaction.PaymentStatus = PaymentStatusPending
 		transaction.PaymentConfirmedRevision = nil
+	}
+	if transaction.PaymentAmount <= 0 {
+		transaction.PaymentAmount = transaction.Total
 	}
 	return transaction
 }
@@ -77,6 +88,14 @@ func jsonNumberAsPositiveInt(value any) (int, bool) {
 		return 0, false
 	}
 	return int(number), true
+}
+
+func jsonNumberAsPositiveInt64(value any) (int64, bool) {
+	number, ok := value.(float64)
+	if !ok || number <= 0 || number != float64(int64(number)) {
+		return 0, false
+	}
+	return int64(number), true
 }
 
 func marshalNormalizedSnapshot(

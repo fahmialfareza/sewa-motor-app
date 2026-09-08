@@ -12,15 +12,22 @@ import (
 )
 
 const currentTransactionItems = `-- name: CurrentTransactionItems :many
-SELECT i.transaction_id, i.revision, i.line_number, i.package_id, i.package_revision, i.package_code, i.package_name, i.package_description, i.unit_price, i.quantity, i.line_total
+SELECT i.transaction_id, i.revision, i.line_number, i.data_space_id, i.package_id, i.package_revision, i.package_code, i.package_name, i.package_description, i.unit_price, i.quantity, i.line_total
 FROM transaction_items i
-JOIN transactions t ON t.id = i.transaction_id AND t.current_revision = i.revision
-WHERE i.transaction_id = $1
+JOIN transactions t
+  ON t.id = i.transaction_id AND t.current_revision = i.revision
+ AND t.data_space_id = i.data_space_id
+WHERE i.transaction_id = $1 AND i.data_space_id = $2
 ORDER BY i.line_number
 `
 
-func (q *Queries) CurrentTransactionItems(ctx context.Context, transactionID string) ([]TransactionItem, error) {
-	rows, err := q.db.Query(ctx, currentTransactionItems, transactionID)
+type CurrentTransactionItemsParams struct {
+	TransactionID string      `json:"transaction_id"`
+	DataSpaceID   pgtype.UUID `json:"data_space_id"`
+}
+
+func (q *Queries) CurrentTransactionItems(ctx context.Context, arg CurrentTransactionItemsParams) ([]TransactionItem, error) {
+	rows, err := q.db.Query(ctx, currentTransactionItems, arg.TransactionID, arg.DataSpaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -32,6 +39,7 @@ func (q *Queries) CurrentTransactionItems(ctx context.Context, transactionID str
 			&i.TransactionID,
 			&i.Revision,
 			&i.LineNumber,
+			&i.DataSpaceID,
 			&i.PackageID,
 			&i.PackageRevision,
 			&i.PackageCode,
@@ -52,11 +60,15 @@ func (q *Queries) CurrentTransactionItems(ctx context.Context, transactionID str
 }
 
 const getLiveSessionPrincipal = `-- name: GetLiveSessionPrincipal :one
-SELECT s.id AS session_id, u.id AS user_id, u.role, u.must_change_password, s.terminal_id
+SELECT s.id AS session_id, u.id AS user_id, u.role, u.must_change_password,
+       s.terminal_id, ds.id AS data_space_id, ds.mode,
+       CASE WHEN ds.mode = 'sandbox' THEN ds.generation ELSE 0::bigint END AS sandbox_generation
 FROM sessions s
 JOIN users u ON u.id = s.user_id
+JOIN data_spaces ds ON ds.id = s.data_space_id
 WHERE s.token_hash = $1
   AND s.revoked_at IS NULL
+  AND ds.status = 'active'
   AND u.is_active
   AND u.deleted_at IS NULL
 `
@@ -67,6 +79,9 @@ type GetLiveSessionPrincipalRow struct {
 	Role               string      `json:"role"`
 	MustChangePassword bool        `json:"must_change_password"`
 	TerminalID         pgtype.UUID `json:"terminal_id"`
+	DataSpaceID        pgtype.UUID `json:"data_space_id"`
+	Mode               string      `json:"mode"`
+	SandboxGeneration  int64       `json:"sandbox_generation"`
 }
 
 func (q *Queries) GetLiveSessionPrincipal(ctx context.Context, tokenHash []byte) (GetLiveSessionPrincipalRow, error) {
@@ -78,32 +93,49 @@ func (q *Queries) GetLiveSessionPrincipal(ctx context.Context, tokenHash []byte)
 		&i.Role,
 		&i.MustChangePassword,
 		&i.TerminalID,
+		&i.DataSpaceID,
+		&i.Mode,
+		&i.SandboxGeneration,
 	)
 	return i, err
 }
 
 const pullSyncChanges = `-- name: PullSyncChanges :many
-SELECT cursor, aggregate, aggregate_id, action, revision, payload, tombstone, created_at
+SELECT cursor, aggregate, aggregate_id, action, revision, payload, tombstone,
+       created_at, data_space_id
 FROM sync_changes
-WHERE cursor > $1
+WHERE data_space_id = $1 AND cursor > $2
 ORDER BY cursor
-LIMIT $2
+LIMIT $3
 `
 
 type PullSyncChangesParams struct {
-	Cursor int64 `json:"cursor"`
-	Limit  int32 `json:"limit"`
+	DataSpaceID pgtype.UUID `json:"data_space_id"`
+	Cursor      int64       `json:"cursor"`
+	Limit       int32       `json:"limit"`
 }
 
-func (q *Queries) PullSyncChanges(ctx context.Context, arg PullSyncChangesParams) ([]SyncChange, error) {
-	rows, err := q.db.Query(ctx, pullSyncChanges, arg.Cursor, arg.Limit)
+type PullSyncChangesRow struct {
+	Cursor      int64              `json:"cursor"`
+	Aggregate   string             `json:"aggregate"`
+	AggregateID string             `json:"aggregate_id"`
+	Action      string             `json:"action"`
+	Revision    pgtype.Int4        `json:"revision"`
+	Payload     []byte             `json:"payload"`
+	Tombstone   bool               `json:"tombstone"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	DataSpaceID pgtype.UUID        `json:"data_space_id"`
+}
+
+func (q *Queries) PullSyncChanges(ctx context.Context, arg PullSyncChangesParams) ([]PullSyncChangesRow, error) {
+	rows, err := q.db.Query(ctx, pullSyncChanges, arg.DataSpaceID, arg.Cursor, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []SyncChange{}
+	items := []PullSyncChangesRow{}
 	for rows.Next() {
-		var i SyncChange
+		var i PullSyncChangesRow
 		if err := rows.Scan(
 			&i.Cursor,
 			&i.Aggregate,
@@ -113,6 +145,7 @@ func (q *Queries) PullSyncChanges(ctx context.Context, arg PullSyncChangesParams
 			&i.Payload,
 			&i.Tombstone,
 			&i.CreatedAt,
+			&i.DataSpaceID,
 		); err != nil {
 			return nil, err
 		}

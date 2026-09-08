@@ -19,13 +19,14 @@ export default function EditUserScreen() {
   const { session } = useAuth();
   const sessionToken = session?.token;
   const sessionUser = session?.user;
+  const dataMode = session?.dataMode;
   const [user, setUser] = useState<UserSummary | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const requestId = useRef(0);
 
   const load = useCallback(async () => {
-    if (!sessionToken || !id) return;
+    if (!sessionToken || !id || dataMode === "sandbox") return;
     const currentRequestId = ++requestId.current;
     setLoading(true);
     setLoadError(null);
@@ -50,7 +51,7 @@ export default function EditUserScreen() {
     } finally {
       if (currentRequestId === requestId.current) setLoading(false);
     }
-  }, [id, sessionToken, sessionUser]);
+  }, [dataMode, id, sessionToken, sessionUser]);
 
   useFocusEffect(
     useCallback(() => {
@@ -77,6 +78,19 @@ export default function EditUserScreen() {
     }
     router.back();
   };
+
+  if (dataMode === "sandbox") {
+    return (
+      <AppScreen>
+        <PageHeader back title="Edit Pengguna" />
+        <StateView
+          icon="shield-lock-outline"
+          message="Pengguna hanya dapat dikelola dari Mode Produksi."
+          title="Tidak tersedia di Mode Uji"
+        />
+      </AppScreen>
+    );
+  }
 
   return (
     <AppScreen>

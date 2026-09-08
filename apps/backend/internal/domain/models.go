@@ -16,6 +16,42 @@ const (
 
 func (r Role) Valid() bool { return r == RoleAdmin || r == RoleSuperadmin }
 
+// DataMode identifies the independently synchronized business data plane used
+// by a session. Authentication identities and terminals remain global.
+type DataMode string
+
+const (
+	DataModeProduction DataMode = "production"
+	DataModeSandbox    DataMode = "sandbox"
+
+	LiveDataSpaceIDString = "00000000-0000-4000-8000-000000000100"
+)
+
+func (mode DataMode) Valid() bool {
+	return mode == DataModeProduction || mode == DataModeSandbox
+}
+
+type DataSpaceStatus string
+
+const (
+	DataSpaceStatusActive  DataSpaceStatus = "active"
+	DataSpaceStatusRetired DataSpaceStatus = "retired"
+	DataSpaceStatusPurged  DataSpaceStatus = "purged"
+)
+
+type DataSpace struct {
+	ID          uuid.UUID       `json:"id"`
+	Mode        DataMode        `json:"mode"`
+	Generation  int64           `json:"generation"`
+	Status      DataSpaceStatus `json:"status"`
+	ActivatedAt time.Time       `json:"activatedAt"`
+	RetiredAt   *time.Time      `json:"retiredAt"`
+	PurgeAfter  *time.Time      `json:"purgeAfter"`
+	PurgedAt    *time.Time      `json:"purgedAt"`
+}
+
+func LiveDataSpaceID() uuid.UUID { return uuid.MustParse(LiveDataSpaceIDString) }
+
 type PaymentMethod string
 
 const (
@@ -58,9 +94,23 @@ type Principal struct {
 	Username           string     `json:"username"`
 	Role               Role       `json:"role"`
 	MustChangePassword bool       `json:"mustChangePassword"`
+	DataSpaceID        uuid.UUID  `json:"dataSpaceId"`
+	DataMode           DataMode   `json:"dataMode"`
+	SandboxGeneration  int64      `json:"sandboxGeneration"`
 }
 
 func (p Principal) IsSuperadmin() bool { return p.Role == RoleSuperadmin }
+
+func (p Principal) EffectiveDataSpaceID() uuid.UUID {
+	return EffectiveDataSpaceID(p.DataSpaceID)
+}
+
+func (p Principal) EffectiveDataMode() DataMode {
+	if !p.DataMode.Valid() {
+		return DataModeProduction
+	}
+	return p.DataMode
+}
 
 func CanCorrectTransaction(role Role, actorID, ownerID uuid.UUID) bool {
 	return role == RoleSuperadmin || actorID == ownerID
@@ -93,6 +143,9 @@ type Package struct {
 	CreatedAt       time.Time  `json:"createdAt"`
 	UpdatedAt       time.Time  `json:"updatedAt"`
 	DeletedAt       *time.Time `json:"deletedAt,omitempty"`
+	DataSpaceID     uuid.UUID  `json:"dataSpaceId"`
+	SourcePackageID *uuid.UUID `json:"sourcePackageId,omitempty"`
+	SourceRevision  *int       `json:"sourceRevision,omitempty"`
 }
 
 type PackageSnapshot struct {
@@ -131,6 +184,7 @@ type Transaction struct {
 	ServerReceivedAt         time.Time         `json:"serverReceivedAt"`
 	Subtotal                 int64             `json:"subtotal"`
 	Total                    int64             `json:"total"`
+	PaymentAmount            int64             `json:"paymentAmount"`
 	PaymentMethod            PaymentMethod     `json:"paymentMethod"`
 	QrisPayloadHash          *string           `json:"qrisPayloadHash,omitempty"`
 	PaymentStatus            PaymentStatus     `json:"paymentStatus"`
@@ -145,6 +199,7 @@ type Transaction struct {
 	DeletedBy                *ActorSummary     `json:"deletedBy,omitempty"`
 	DeleteReason             *string           `json:"deleteReason,omitempty"`
 	UpdatedAt                time.Time         `json:"updatedAt"`
+	DataSpaceID              uuid.UUID         `json:"dataSpaceId"`
 }
 
 type TransactionRevision struct {
@@ -162,6 +217,8 @@ type TransactionRevision struct {
 	ClientOccurredAt time.Time         `json:"clientOccurredAt"`
 	ServerReceivedAt time.Time         `json:"serverReceivedAt"`
 	Items            []TransactionItem `json:"items"`
+	PaymentAmount    int64             `json:"paymentAmount"`
+	DataSpaceID      uuid.UUID         `json:"dataSpaceId"`
 }
 
 type PrintAttempt struct {
@@ -179,12 +236,14 @@ type PrintAttempt struct {
 	Metadata            json.RawMessage `json:"metadata"`
 	ClientOccurredAt    time.Time       `json:"clientOccurredAt"`
 	ServerReceivedAt    time.Time       `json:"serverReceivedAt"`
+	DataSpaceID         uuid.UUID       `json:"dataSpaceId"`
 }
 
 type Dashboard struct {
 	From               time.Time         `json:"from"`
 	To                 time.Time         `json:"to"`
 	GrossRevenue       int64             `json:"grossRevenue"`
+	ActualQrisAmount   int64             `json:"actualQrisAmount"`
 	TransactionCount   int64             `json:"transactionCount"`
 	PackageQuantities  []PackageQuantity `json:"packageQuantities"`
 	Trend              []TrendBucket     `json:"trend"`
@@ -227,6 +286,7 @@ type SyncChange struct {
 	Payload     json.RawMessage `json:"payload"`
 	Tombstone   bool            `json:"tombstone"`
 	CreatedAt   time.Time       `json:"createdAt"`
+	DataSpaceID uuid.UUID       `json:"dataSpaceId"`
 }
 
 type StoredOperationResult struct {
@@ -246,10 +306,32 @@ type ExportRow struct {
 	Quantity         int
 	LineTotal        int64
 	TransactionTotal int64
+	PaymentAmount    int64
 	CreatorName      string
 	CreatorUsername  string
 	PaymentMethod    PaymentMethod
 	QrisPayloadHash  *string
 	PaymentStatus    PaymentStatus
 	PrintState       string
+}
+
+type SandboxResetResult struct {
+	Previous            DataSpace `json:"previous"`
+	Current             DataSpace `json:"current"`
+	ClonedPackageCount  int       `json:"clonedPackageCount"`
+	RevokedSessionCount int64     `json:"revokedSessionCount"`
+}
+
+type SandboxCleanupResult struct {
+	PurgedGenerationCount int   `json:"purgedGenerationCount"`
+	PurgedRowCount        int64 `json:"purgedRowCount"`
+}
+
+type SandboxStatus struct {
+	Enabled       bool       `json:"enabled"`
+	DataMode      DataMode   `json:"dataMode"`
+	DataSpaceID   *uuid.UUID `json:"dataSpaceId"`
+	Generation    *int64     `json:"generation"`
+	RetentionDays int        `json:"retentionDays"`
+	QrisAmount    int64      `json:"qrisAmount"`
 }

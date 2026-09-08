@@ -13,6 +13,7 @@ const transaction: Transaction = {
   occurredAt: "2026-07-24T03:04:05.000Z",
   subtotal: 150_000,
   total: 150_000,
+  paymentAmount: 150_000,
   originActorId: "actor-1",
   originActorName: "Penyok",
   updatedActorName: "Penyok",
@@ -66,5 +67,20 @@ describe("HistoryTransactionCard", () => {
     fireEvent.press(card);
 
     expect(onPress).toHaveBeenCalledTimes(1);
+  });
+
+  it("marks Sandbox transaction IDs as test-only", () => {
+    const screen = render(
+      <HistoryTransactionCard
+        dataMode="sandbox"
+        onPress={jest.fn()}
+        transaction={transaction}
+      />,
+    );
+
+    expect(screen.getByText(/^TEST-TRX-/)).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /Buka transaksi TEST-TRX-/i }),
+    ).toBeTruthy();
   });
 });

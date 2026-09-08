@@ -34,12 +34,15 @@ export function mapApiPackage(value: ApiPackage): RentalPackage {
 }
 
 export function mapApiTransaction(value: ApiTransaction): Transaction {
+  const paymentAmount = (value as ApiTransaction & { paymentAmount?: number })
+    .paymentAmount;
   return {
     id: value.id,
     revision: value.revision,
     occurredAt: normalizeUtcTimestamp(value.occurredAt),
     subtotal: value.subtotal,
     total: value.total,
+    paymentAmount: paymentAmount ?? value.total,
     originActorId: value.originActor.id,
     originActorName: value.originActor.fullName,
     updatedActorName: value.updatedBy.fullName,
@@ -66,12 +69,16 @@ export function mergeSnapshot(
   snapshot: ApiTransactionSnapshot,
   revision: number,
 ): Transaction {
+  const paymentAmount = (
+    snapshot as ApiTransactionSnapshot & { paymentAmount?: number }
+  ).paymentAmount;
   return {
     ...base,
     revision,
     occurredAt: normalizeUtcTimestamp(snapshot.occurredAt),
     subtotal: snapshot.subtotal,
     total: snapshot.total,
+    paymentAmount: paymentAmount ?? snapshot.total,
     paymentMethod: snapshot.paymentMethod,
     paymentStatus: snapshot.paymentStatus,
     paymentConfirmedRevision: snapshot.paymentConfirmedRevision,

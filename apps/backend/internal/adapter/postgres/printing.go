@@ -28,6 +28,10 @@ func (s *Store) RecordPrintAttempt(ctx context.Context, input domain.PrintAttemp
 
 func (s *Store) recordPrintAttemptTx(ctx context.Context, tx pgx.Tx, input domain.PrintAttemptInput) (domain.PrintAttempt, error) {
 	defer observability.StartSegment(ctx, "Postgres.recordPrintAttemptTx")()
+	dataSpaceID := input.Identity.EffectiveDataSpaceID()
+	if _, err := lockActiveDataSpace(ctx, tx, dataSpaceID); err != nil {
+		return domain.PrintAttempt{}, err
+	}
 	if len(input.Metadata) == 0 {
 		input.Metadata = json.RawMessage(`{}`)
 	}
@@ -38,9 +42,9 @@ func (s *Store) recordPrintAttemptTx(ctx context.Context, tx pgx.Tx, input domai
 	if err := tx.QueryRow(ctx, `
 		SELECT current_revision, payment_status, payment_confirmed_revision, deleted_at
 		FROM transactions
-		WHERE id = $1
+		WHERE id = $1 AND data_space_id = $2
 		FOR UPDATE`,
-		input.TransactionID,
+		input.TransactionID, dataSpaceID,
 	).Scan(
 		&currentRevision,
 		&paymentStatus,
@@ -62,14 +66,14 @@ func (s *Store) recordPrintAttemptTx(ctx context.Context, tx pgx.Tx, input domai
 	var attempt domain.PrintAttempt
 	err := tx.QueryRow(ctx, `
 		INSERT INTO print_attempts (
-			id, transaction_id, transaction_revision, terminal_id, actor_id, session_id,
+			id, data_space_id, transaction_id, transaction_revision, terminal_id, actor_id, session_id,
 			status, is_copy, printer_kind, printer_identifier, error_code, error_message,
 			metadata, client_occurred_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		RETURNING id, transaction_id, transaction_revision, terminal_id, status, is_copy,
 		          actor_id, printer_kind, printer_identifier, error_code, error_message, metadata,
-		          client_occurred_at, server_received_at`,
-		input.ID, input.TransactionID, input.Revision, input.Identity.TerminalID,
+		          client_occurred_at, server_received_at, data_space_id`,
+		input.ID, dataSpaceID, input.TransactionID, input.Revision, input.Identity.TerminalID,
 		input.Identity.OriginActorID, input.Identity.OriginSessionID,
 		input.Status, input.IsCopy, input.PrinterKind, input.PrinterIdentifier,
 		input.ErrorCode, input.ErrorMessage, input.Metadata, input.OccurredAt,
@@ -77,7 +81,7 @@ func (s *Store) recordPrintAttemptTx(ctx context.Context, tx pgx.Tx, input domai
 		&attempt.ID, &attempt.TransactionID, &attempt.TransactionRevision, &attempt.TerminalID,
 		&attempt.Status, &attempt.IsCopy, &attempt.ActorID, &attempt.PrinterKind, &attempt.PrinterIdentifier,
 		&attempt.ErrorCode, &attempt.ErrorMessage, &attempt.Metadata,
-		&attempt.ClientOccurredAt, &attempt.ServerReceivedAt,
+		&attempt.ClientOccurredAt, &attempt.ServerReceivedAt, &attempt.DataSpaceID,
 	)
 	if err != nil {
 		return domain.PrintAttempt{}, dbError(err, "insert print attempt")
@@ -87,11 +91,11 @@ func (s *Store) recordPrintAttemptTx(ctx context.Context, tx pgx.Tx, input domai
 		_, err = tx.Exec(ctx, `
 			UPDATE transactions
 			SET print_state = 'success', latest_printed_revision = $2, updated_at = now()
-			WHERE id = $1`, input.TransactionID, input.Revision)
+			WHERE id = $1 AND data_space_id = $3`, input.TransactionID, input.Revision, dataSpaceID)
 	case "failed", "unknown", "pending":
 		_, err = tx.Exec(ctx, `
 			UPDATE transactions SET print_state = $2, updated_at = now()
-			WHERE id = $1`, input.TransactionID, input.Status)
+			WHERE id = $1 AND data_space_id = $3`, input.TransactionID, input.Status, dataSpaceID)
 	}
 	if err != nil {
 		return domain.PrintAttempt{}, dbError(err, "update transaction print state")
@@ -100,7 +104,7 @@ func (s *Store) recordPrintAttemptTx(ctx context.Context, tx pgx.Tx, input domai
 		input.Identity, nil, attempt, nil, input.OccurredAt); err != nil {
 		return domain.PrintAttempt{}, dbError(err, "audit print attempt")
 	}
-	if err = addChange(ctx, tx, "print_attempt", attempt.ID.String(), "created",
+	if err = addChange(ctx, tx, dataSpaceID, "print_attempt", attempt.ID.String(), "created",
 		&input.Revision, attempt, false); err != nil {
 		return domain.PrintAttempt{}, dbError(err, "sync print attempt")
 	}

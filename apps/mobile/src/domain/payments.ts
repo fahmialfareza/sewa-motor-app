@@ -1,4 +1,21 @@
-import type { PaymentMethod, PaymentStatus, Transaction } from "./types";
+import type {
+  DataMode,
+  PaymentMethod,
+  PaymentStatus,
+  Transaction,
+} from "./types";
+
+export const SANDBOX_QRIS_PAYMENT_AMOUNT = 1_000;
+
+export function resolvePaymentAmount(
+  dataMode: DataMode,
+  method: PaymentMethod,
+  total: number,
+): number {
+  return dataMode === "sandbox" && method === "qris"
+    ? SANDBOX_QRIS_PAYMENT_AMOUNT
+    : total;
+}
 
 export const paymentMethodLabel: Record<PaymentMethod, string> = {
   cash: "Tunai",

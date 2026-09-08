@@ -197,7 +197,7 @@ export default function TransactionDetailScreen() {
     try {
       const dynamic = createDynamicQris(
         qrisConfig.staticPayload,
-        transaction.total,
+        transaction.paymentAmount,
       );
       return {
         payload: dynamic.payload,
@@ -309,7 +309,10 @@ export default function TransactionDetailScreen() {
       <PageHeader
         back
         subtitle={formatJakartaDateTime(transaction.occurredAt)}
-        title={displayTransactionId(transaction.id)}
+        title={displayTransactionId(
+          transaction.id,
+          session?.dataMode ?? "production",
+        )}
       />
       <View style={styles.badges}>
         <StatusBadge kind={transaction.syncState} />
@@ -364,17 +367,20 @@ export default function TransactionDetailScreen() {
       transaction.paymentMethod === "qris" &&
       qrisPresentation ? (
         <DynamicQrisCard
-          amount={transaction.total}
+          amount={transaction.paymentAmount}
           error={qrisPresentation.error}
           merchantCity={qrisPresentation.merchantCity}
           merchantName={qrisPresentation.merchantName}
           {...(qrisPresentation.canConfigure &&
-          session?.user.role === "superadmin"
+          session?.user.role === "superadmin" &&
+          session.dataMode === "production"
             ? {
                 onConfigure: () => router.push("/settings/qris"),
               }
             : {})}
           payload={qrisPresentation.payload}
+          orderTotal={transaction.total}
+          sandbox={session?.dataMode === "sandbox"}
         />
       ) : null}
 
@@ -443,6 +449,13 @@ export default function TransactionDetailScreen() {
               } untuk revisi #${transaction.revision}.`
             : "Struk baru dapat dicetak setelah pembayaran berhasil untuk revisi transaksi saat ini."}
         </Text>
+        {session?.dataMode === "sandbox" &&
+        transaction.paymentMethod === "qris" ? (
+          <Text style={styles.sandboxPaymentAmount}>
+            QRIS nyata: {formatRupiah(transaction.paymentAmount)} • Total
+            simulasi: {formatRupiah(transaction.total)}
+          </Text>
+        ) : null}
       </Card>
 
       <Card style={styles.audit}>
@@ -592,5 +605,10 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     textAlign: "center",
     fontSize: 12,
+  },
+  sandboxPaymentAmount: {
+    ...textStyles.body,
+    color: colors.warning,
+    fontFamily: typography.bodySemibold,
   },
 });

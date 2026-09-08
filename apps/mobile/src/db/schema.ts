@@ -27,6 +27,7 @@ export const transactions = sqliteTable(
     occurredAt: text("occurred_at").notNull(),
     subtotal: integer("subtotal").notNull(),
     total: integer("total").notNull(),
+    paymentAmount: integer("payment_amount").notNull(),
     originActorId: text("origin_actor_id").notNull(),
     originActorName: text("origin_actor_name").notNull(),
     updatedActorName: text("updated_actor_name").notNull(),

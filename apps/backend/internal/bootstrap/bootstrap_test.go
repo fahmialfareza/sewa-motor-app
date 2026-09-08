@@ -107,8 +107,8 @@ func TestApplyRemainsIdempotentForExistingSampleSuperadmin(t *testing.T) {
 	inserted, err := apply(
 		context.Background(),
 		func(_ context.Context, options pgx.TxOptions) (bootstrapTx, error) {
-			if options.IsoLevel != pgx.Serializable {
-				t.Fatalf("isolation = %q, want serializable", options.IsoLevel)
+			if options.IsoLevel != pgx.ReadCommitted {
+				t.Fatalf("isolation = %q, want read committed", options.IsoLevel)
 			}
 			return tx, nil
 		},
@@ -130,6 +130,51 @@ func TestApplyRemainsIdempotentForExistingSampleSuperadmin(t *testing.T) {
 	}
 	if !tx.committed {
 		t.Fatal("ordinary idempotent apply did not commit its read transaction")
+	}
+}
+
+func TestApplyRefreshesActiveSpacesAfterSeparateGenerationLock(t *testing.T) {
+	t.Parallel()
+
+	tx := &recordingSampleResetTx{
+		rows: []pgx.Row{sampleUserRow{err: pgx.ErrNoRows}},
+	}
+	hasher := &recordingPasswordHasher{hash: "encoded-temporary-password"}
+	manifest, err := NewSampleSuperadminManifest(
+		"Penyok",
+		"superadmin",
+		"superadmin123",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inserted, err := apply(
+		context.Background(),
+		func(_ context.Context, options pgx.TxOptions) (bootstrapTx, error) {
+			if options.IsoLevel != pgx.ReadCommitted {
+				t.Fatalf("isolation = %q, want read committed", options.IsoLevel)
+			}
+			return tx, nil
+		},
+		hasher,
+		manifest,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inserted != 1 || !tx.committed {
+		t.Fatalf("inserted = %d, committed = %v", inserted, tx.committed)
+	}
+	if len(tx.execs) != 4 {
+		t.Fatalf("exec count = %d, want insert, audit, generation lock, and sync", len(tx.execs))
+	}
+	if !strings.Contains(tx.execs[2].statement, "pg_advisory_xact_lock_shared") {
+		t.Fatal("Sandbox generation lock was not acquired before sync fanout")
+	}
+	if strings.Contains(tx.execs[3].statement, "pg_advisory_xact_lock_shared") ||
+		!strings.Contains(tx.execs[3].statement, "FROM data_spaces") {
+		t.Fatal("sync fanout did not use a fresh statement snapshot after the generation lock")
 	}
 }
 
@@ -166,8 +211,8 @@ func TestResetSampleSuperadminPasswordIsExplicitAndTransactional(t *testing.T) {
 	err = resetSampleSuperadminPassword(
 		context.Background(),
 		func(_ context.Context, options pgx.TxOptions) (bootstrapTx, error) {
-			if options.IsoLevel != pgx.Serializable {
-				t.Fatalf("isolation = %q, want serializable", options.IsoLevel)
+			if options.IsoLevel != pgx.ReadCommitted {
+				t.Fatalf("isolation = %q, want read committed", options.IsoLevel)
 			}
 			return tx, nil
 		},
@@ -193,8 +238,8 @@ func TestResetSampleSuperadminPasswordIsExplicitAndTransactional(t *testing.T) {
 	if got := tx.queries[1].args[1]; got != "encoded-new-password" {
 		t.Fatalf("password update received %#v", got)
 	}
-	if len(tx.execs) != 3 {
-		t.Fatalf("exec count = %d, want session, audit, and sync writes", len(tx.execs))
+	if len(tx.execs) != 4 {
+		t.Fatalf("exec count = %d, want session, audit, generation lock, and sync writes", len(tx.execs))
 	}
 	if !strings.Contains(tx.execs[0].statement, "revoked_reason = 'password_reset'") {
 		t.Fatal("active sessions were not revoked with password_reset reason")
@@ -202,7 +247,11 @@ func TestResetSampleSuperadminPasswordIsExplicitAndTransactional(t *testing.T) {
 	if !strings.Contains(tx.execs[1].statement, "'user.password_reset'") {
 		t.Fatal("password reset audit event was not appended")
 	}
-	if !strings.Contains(tx.execs[2].statement, "'updated'") {
+	if !strings.Contains(tx.execs[2].statement, "pg_advisory_xact_lock_shared") {
+		t.Fatal("Sandbox generation lock was not acquired before password reset fanout")
+	}
+	if strings.Contains(tx.execs[3].statement, "pg_advisory_xact_lock_shared") ||
+		!strings.Contains(tx.execs[3].statement, "'updated'") {
 		t.Fatal("password reset sync change was not appended")
 	}
 
@@ -221,7 +270,7 @@ func TestResetSampleSuperadminPasswordIsExplicitAndTransactional(t *testing.T) {
 		t.Fatalf("audit metadata = %#v", metadata)
 	}
 	var syncUser domain.User
-	if err := json.Unmarshal(tx.execs[2].args[1].([]byte), &syncUser); err != nil {
+	if err := json.Unmarshal(tx.execs[3].args[1].([]byte), &syncUser); err != nil {
 		t.Fatalf("decode sync payload: %v", err)
 	}
 	if syncUser.ID != userID || !syncUser.MustChangePassword {
@@ -251,7 +300,7 @@ func TestResetSampleSuperadminPasswordRollsBackOnLateFailure(t *testing.T) {
 	after.MustChangePassword = true
 	tx := &recordingSampleResetTx{
 		rows:       []pgx.Row{sampleUserRow{user: before}, sampleUserRow{user: after}},
-		failExecAt: 3,
+		failExecAt: 4,
 	}
 	hasher := &recordingPasswordHasher{hash: "encoded-new-password"}
 	manifest, err := NewSampleSuperadminManifest(
@@ -281,8 +330,8 @@ func TestResetSampleSuperadminPasswordRollsBackOnLateFailure(t *testing.T) {
 	if !tx.rolledBack {
 		t.Fatal("partially completed password reset was not rolled back")
 	}
-	if len(tx.execs) != 3 {
-		t.Fatalf("exec count before rollback = %d, want 3", len(tx.execs))
+	if len(tx.execs) != 4 {
+		t.Fatalf("exec count before rollback = %d, want 4", len(tx.execs))
 	}
 }
 

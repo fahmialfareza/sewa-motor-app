@@ -27,6 +27,7 @@ export default function UsersScreen() {
   const { session } = useAuth();
   const sessionToken = session?.token;
   const sessionUser = session?.user;
+  const dataMode = session?.dataMode;
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [search, setSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -89,7 +90,11 @@ export default function UsersScreen() {
   return (
     <AppScreen>
       <PageHeader
-        subtitle="Akun admin dan superadmin"
+        subtitle={
+          dataMode === "sandbox"
+            ? "Data bersama • hanya dapat dilihat"
+            : "Akun admin dan superadmin"
+        }
         title="Manajemen Pengguna"
       />
       <Field
@@ -100,12 +105,21 @@ export default function UsersScreen() {
         returnKeyType="search"
         value={search}
       />
-      <Button
-        icon="account-plus-outline"
-        onPress={() => router.push("/users/new")}
-      >
-        Tambah pengguna
-      </Button>
+      {dataMode === "production" ? (
+        <Button
+          icon="account-plus-outline"
+          onPress={() => router.push("/users/new")}
+        >
+          Tambah pengguna
+        </Button>
+      ) : (
+        <Card style={styles.readOnlyCard}>
+          <Text style={styles.readOnlyText}>
+            Akun digunakan bersama dengan Produksi. Kembali ke Mode Produksi
+            untuk menambah atau mengubah pengguna.
+          </Text>
+        </Card>
+      )}
       {error ? (
         <Card style={styles.errorCard}>
           <View style={styles.errorCopy}>
@@ -125,6 +139,7 @@ export default function UsersScreen() {
       ) : null}
       {users.map((user) => (
         <Pressable
+          disabled={dataMode === "sandbox"}
           key={user.id}
           onPress={() =>
             router.push({
@@ -170,6 +185,11 @@ const styles = StyleSheet.create({
   errorCopy: { gap: spacing.xs },
   errorTitle: { ...textStyles.heading, color: colors.error },
   errorMessage: { ...textStyles.body, color: colors.textMuted },
+  readOnlyCard: {
+    backgroundColor: colors.warningSoft,
+    borderColor: colors.warning,
+  },
+  readOnlyText: { ...textStyles.body, color: colors.warning },
   user: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
   avatar: {
     width: 48,

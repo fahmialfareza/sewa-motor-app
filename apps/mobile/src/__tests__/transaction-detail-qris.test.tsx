@@ -161,13 +161,9 @@ jest.mock("@/components/ui/Card", () => {
   const { View } =
     jest.requireActual<typeof import("react-native")>("react-native");
   return {
-    Card: ({
-      children,
-      testID,
-    }: {
-      children?: ReactNode;
-      testID?: string;
-    }) => <View testID={testID}>{children}</View>,
+    Card: ({ children, testID }: { children?: ReactNode; testID?: string }) => (
+      <View testID={testID}>{children}</View>
+    ),
   };
 });
 
@@ -197,6 +193,9 @@ function session(role: Session["user"]["role"]): Session {
       mustChangePassword: false,
     },
     establishedAt: "2026-07-30T01:00:00.000Z",
+    dataMode: "production",
+    dataSpaceId: "00000000-0000-4000-8000-000000000100",
+    sandboxGeneration: null,
   };
 }
 
@@ -207,6 +206,7 @@ function transaction(overrides: Partial<Transaction> = {}): Transaction {
     occurredAt: "2026-07-30T01:00:00.000Z",
     subtotal: 70_000,
     total: 70_000,
+    paymentAmount: 70_000,
     originActorId: "USER-1",
     originActorName: "Admin",
     updatedActorName: "Admin",

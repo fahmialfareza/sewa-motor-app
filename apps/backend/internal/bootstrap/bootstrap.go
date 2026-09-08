@@ -108,7 +108,10 @@ func apply(
 	passwords port.PasswordHasher,
 	manifest Manifest,
 ) (int, error) {
-	tx, err := begin(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	// The generation lock below is the ordering boundary with Sandbox reset.
+	// READ COMMITTED is deliberate: after waiting for a reset, later statements
+	// must observe its newly active generation rather than a pre-wait snapshot.
+	tx, err := begin(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return 0, fmt.Errorf("begin bootstrap: %w", err)
 	}
@@ -156,8 +159,16 @@ func apply(
 			return 0, fmt.Errorf("audit bootstrap user %q: %w", user.Username, err)
 		}
 		if _, err = tx.Exec(ctx, `
-			INSERT INTO sync_changes (aggregate, aggregate_id, action, payload)
-			VALUES ('user',$1,'created',$2)`,
+			SELECT pg_advisory_xact_lock_shared(
+				hashtextextended('sewa-motor-sandbox-generation', 0)
+			)`); err != nil {
+			return 0, fmt.Errorf("lock Sandbox generation for bootstrap user %q: %w", user.Username, err)
+		}
+		if _, err = tx.Exec(ctx, `
+			INSERT INTO sync_changes (data_space_id, aggregate, aggregate_id, action, payload)
+			SELECT ds.id, 'user', $1, 'created', $2
+			FROM data_spaces ds
+			WHERE ds.status = 'active'`,
 			id.String(), payload,
 		); err != nil {
 			return 0, fmt.Errorf("sync bootstrap user %q: %w", user.Username, err)
@@ -215,7 +226,9 @@ func resetSampleSuperadminPassword(
 		return fmt.Errorf("sample superadmin reset requires the superadmin role")
 	}
 
-	tx, err := begin(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	// As in Apply, use a fresh statement snapshot after any generation-lock
+	// wait so the shared change targets the replacement Sandbox generation.
+	tx, err := begin(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return fmt.Errorf("begin sample superadmin password reset: %w", err)
 	}
@@ -288,8 +301,16 @@ func resetSampleSuperadminPassword(
 		return fmt.Errorf("audit sample superadmin password reset: %w", err)
 	}
 	if _, err = tx.Exec(ctx, `
-		INSERT INTO sync_changes (aggregate, aggregate_id, action, payload)
-		VALUES ('user',$1,'updated',$2)`,
+		SELECT pg_advisory_xact_lock_shared(
+			hashtextextended('sewa-motor-sandbox-generation', 0)
+		)`); err != nil {
+		return fmt.Errorf("lock Sandbox generation for sample superadmin reset: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `
+		INSERT INTO sync_changes (data_space_id, aggregate, aggregate_id, action, payload)
+		SELECT ds.id, 'user', $1, 'updated', $2
+		FROM data_spaces ds
+		WHERE ds.status = 'active'`,
 		after.ID.String(), afterJSON,
 	); err != nil {
 		return fmt.Errorf("sync sample superadmin password reset: %w", err)

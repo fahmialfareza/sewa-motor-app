@@ -17,7 +17,8 @@ func sampleRows() []domain.ExportRow {
 		OccurredAt:    time.Date(2026, 7, 24, 3, 0, 0, 0, time.UTC),
 		Revision:      1, PackageCode: "STANDARD", PackageName: "Paket Standar",
 		PackageRevision: 1, UnitPrice: 70_000, Quantity: 2, LineTotal: 140_000,
-		TransactionTotal: 140_000, CreatorName: "Admin", CreatorUsername: "admin",
+		TransactionTotal: 140_000, PaymentAmount: 140_000,
+		CreatorName: "Admin", CreatorUsername: "admin",
 		PaymentMethod:   domain.PaymentMethodQRIS,
 		QrisPayloadHash: &hash,
 		PaymentStatus:   domain.PaymentStatusSuccess,
@@ -26,7 +27,7 @@ func sampleRows() []domain.ExportRow {
 }
 
 func TestXLSXIsReadableOpenXMLArchive(t *testing.T) {
-	body, err := (Generator{}).XLSX(sampleRows(), nil, nil)
+	body, err := (Generator{}).XLSX(sampleRows(), nil, nil, domain.DataModeProduction)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +59,7 @@ func TestXLSXIsReadableOpenXMLArchive(t *testing.T) {
 }
 
 func TestPDFHasValidEnvelopeAndTotals(t *testing.T) {
-	body, err := (Generator{}).PDF(sampleRows(), nil, nil)
+	body, err := (Generator{}).PDF(sampleRows(), nil, nil, domain.DataModeProduction)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +86,7 @@ func TestPDFGrossRevenueExcludesPendingAndFailedTransactions(t *testing.T) {
 	failed.TransactionTotal = 500_000
 	rows = append(rows, pending, failed)
 
-	body, err := (Generator{}).PDF(rows, nil, nil)
+	body, err := (Generator{}).PDF(rows, nil, nil, domain.DataModeProduction)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,5 +98,67 @@ func TestPDFGrossRevenueExcludesPendingAndFailedTransactions(t *testing.T) {
 	}
 	if bytes.Contains(body, []byte("Pendapatan bruto: Rp940.000")) {
 		t.Fatal("pending and failed totals leaked into gross revenue")
+	}
+}
+
+func TestSandboxExportsAreWatermarkedAndExposeActualPayment(t *testing.T) {
+	rows := sampleRows()
+	rows[0].PaymentAmount = 1_000
+	secondItem := rows[0]
+	secondItem.PackageCode = "SUNRISE"
+	secondItem.PackageName = "Paket Sunrise"
+	secondItem.UnitPrice = 100_000
+	secondItem.Quantity = 1
+	secondItem.LineTotal = 100_000
+	rows = append(rows, secondItem)
+
+	xlsx, err := (Generator{}).XLSX(rows, nil, nil, domain.DataModeSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive, err := zip.NewReader(bytes.NewReader(xlsx), int64(len(xlsx)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sheet []byte
+	for _, file := range archive.File {
+		if file.Name != "xl/worksheets/sheet1.xml" {
+			continue
+		}
+		reader, openErr := file.Open()
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		sheet, _ = io.ReadAll(reader)
+		_ = reader.Close()
+	}
+	for _, expected := range [][]byte{
+		[]byte("TEST - MODE UJI - BUKAN LAPORAN RESMI"),
+		[]byte("MODE UJI - BUKAN LAPORAN RESMI"),
+		[]byte("TEST-TRX-01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+		[]byte("Nominal Pembayaran Aktual"),
+		[]byte(">1000<"),
+	} {
+		if !bytes.Contains(sheet, expected) {
+			t.Fatalf("sandbox worksheet missing %q", expected)
+		}
+	}
+	if count := bytes.Count(sheet, []byte("<v>1000</v>")); count != 1 {
+		t.Fatalf("actual QRIS payment appears %d times for one transaction; want once", count)
+	}
+
+	pdf, err := (Generator{}).PDF(rows, nil, nil, domain.DataModeSandbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range [][]byte{
+		[]byte("TEST - MODE UJI - BUKAN LAPORAN RESMI"),
+		[]byte("MODE UJI - BUKAN LAPORAN RESMI"),
+		[]byte("TEST-TRX-01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+		[]byte("Pembayaran uji nyata: Rp1.000"),
+	} {
+		if !bytes.Contains(pdf, expected) {
+			t.Fatalf("sandbox PDF missing %q", expected)
+		}
 	}
 }

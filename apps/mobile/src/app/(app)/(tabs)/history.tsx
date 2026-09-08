@@ -2,6 +2,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useRef, useState } from "react";
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
+import { useAuth } from "@/auth/AuthProvider";
 import { HistoryTransactionCard } from "@/components/history/HistoryTransactionCard";
 import { AppScreen } from "@/components/layout/AppScreen";
 import { PageHeader } from "@/components/layout/PageHeader";
@@ -45,6 +46,7 @@ const syncFilters: { label: string; value?: SyncState }[] = [
 
 export default function HistoryScreen() {
   const router = useRouter();
+  const { session } = useAuth();
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [mode, setMode] = useState<ReportingMode>("date");
@@ -323,6 +325,7 @@ export default function HistoryScreen() {
       ) : (
         transactions.map((transaction) => (
           <HistoryTransactionCard
+            dataMode={session?.dataMode ?? "production"}
             key={transaction.id}
             onPress={() =>
               router.push({

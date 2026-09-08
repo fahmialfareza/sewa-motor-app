@@ -5,22 +5,26 @@ import (
 
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/domain"
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/observability"
+	"github.com/google/uuid"
 )
 
-func (s *Store) ListTransactionRevisions(ctx context.Context, id string) ([]domain.TransactionRevision, error) {
+func (s *Store) ListTransactionRevisions(ctx context.Context, dataSpaceID uuid.UUID, id string) ([]domain.TransactionRevision, error) {
 	defer observability.StartSegment(ctx, "Postgres.ListTransactionRevisions")()
-	if _, err := s.GetTransaction(ctx, id, true); err != nil {
+	dataSpaceID = domain.EffectiveDataSpaceID(dataSpaceID)
+	if _, err := s.GetTransaction(ctx, dataSpaceID, id, true); err != nil {
 		return nil, err
 	}
 	rows, err := s.Pool.Query(ctx, `
 		SELECT transaction_id, revision, base_revision, change_type, reason,
 		       qris_payload_hash, before_snapshot, after_snapshot,
 		       origin_actor_id, submitted_by_actor_id,
-		       terminal_id, client_occurred_at, server_received_at
+		       terminal_id, client_occurred_at, server_received_at,
+		       COALESCE(payment_amount, (after_snapshot ->> 'paymentAmount')::bigint,
+		                (after_snapshot ->> 'total')::bigint), data_space_id
 		FROM transaction_revisions
-		WHERE transaction_id = $1 AND revision > 1
+		WHERE transaction_id = $1 AND data_space_id = $2 AND revision > 1
 		ORDER BY revision`,
-		id,
+		id, dataSpaceID,
 	)
 	if err != nil {
 		return nil, dbError(err, "list transaction revisions")
@@ -35,6 +39,7 @@ func (s *Store) ListTransactionRevisions(ctx context.Context, id string) ([]doma
 			&revision.BeforeSnapshot,
 			&revision.AfterSnapshot, &revision.OriginActorID, &revision.SubmittedBy,
 			&revision.TerminalID, &revision.ClientOccurredAt, &revision.ServerReceivedAt,
+			&revision.PaymentAmount, &revision.DataSpaceID,
 		); err != nil {
 			return nil, dbError(err, "scan transaction revision")
 		}
@@ -54,9 +59,9 @@ func (s *Store) ListTransactionRevisions(ctx context.Context, id string) ([]doma
 			SELECT line_number, package_id, package_revision, package_code, package_name,
 			       package_description, unit_price, quantity, line_total
 			FROM transaction_items
-			WHERE transaction_id = $1 AND revision = $2
+			WHERE transaction_id = $1 AND revision = $2 AND data_space_id = $3
 			ORDER BY line_number`,
-			id, revision.Revision,
+			id, revision.Revision, dataSpaceID,
 		)
 		if err != nil {
 			return nil, dbError(err, "list revision items")
@@ -84,19 +89,20 @@ func (s *Store) ListTransactionRevisions(ctx context.Context, id string) ([]doma
 	return result, dbError(rows.Err(), "iterate transaction revisions")
 }
 
-func (s *Store) ListPrintAttempts(ctx context.Context, id string) ([]domain.PrintAttempt, error) {
+func (s *Store) ListPrintAttempts(ctx context.Context, dataSpaceID uuid.UUID, id string) ([]domain.PrintAttempt, error) {
 	defer observability.StartSegment(ctx, "Postgres.ListPrintAttempts")()
-	if _, err := s.GetTransaction(ctx, id, true); err != nil {
+	dataSpaceID = domain.EffectiveDataSpaceID(dataSpaceID)
+	if _, err := s.GetTransaction(ctx, dataSpaceID, id, true); err != nil {
 		return nil, err
 	}
 	rows, err := s.Pool.Query(ctx, `
 		SELECT id, transaction_id, transaction_revision, terminal_id, status, is_copy, actor_id,
 		       printer_kind, printer_identifier, error_code, error_message, metadata,
-		       client_occurred_at, server_received_at
+		       client_occurred_at, server_received_at, data_space_id
 		FROM print_attempts
-		WHERE transaction_id = $1
+		WHERE transaction_id = $1 AND data_space_id = $2
 		ORDER BY server_received_at, id`,
-		id,
+		id, dataSpaceID,
 	)
 	if err != nil {
 		return nil, dbError(err, "list print attempts")
@@ -110,7 +116,7 @@ func (s *Store) ListPrintAttempts(ctx context.Context, id string) ([]domain.Prin
 			&attempt.TerminalID, &attempt.Status, &attempt.IsCopy, &attempt.ActorID,
 			&attempt.PrinterKind, &attempt.PrinterIdentifier, &attempt.ErrorCode,
 			&attempt.ErrorMessage, &attempt.Metadata, &attempt.ClientOccurredAt,
-			&attempt.ServerReceivedAt,
+			&attempt.ServerReceivedAt, &attempt.DataSpaceID,
 		); err != nil {
 			return nil, dbError(err, "scan print attempt")
 		}

@@ -1,6 +1,8 @@
 import {
   isPaymentConfirmedForCurrentRevision,
   paymentMethodLabel,
+  resolvePaymentAmount,
+  SANDBOX_QRIS_PAYMENT_AMOUNT,
 } from "@/domain/payments";
 
 describe("payment domain", () => {
@@ -23,5 +25,13 @@ describe("payment domain", () => {
 
   it("labels legacy methods without pretending they were cash or QRIS", () => {
     expect(paymentMethodLabel.legacy).toBe("Metode lama");
+  });
+
+  it("charges exactly Rp1.000 for Sandbox QRIS without changing other payments", () => {
+    expect(resolvePaymentAmount("sandbox", "qris", 245_000)).toBe(
+      SANDBOX_QRIS_PAYMENT_AMOUNT,
+    );
+    expect(resolvePaymentAmount("sandbox", "cash", 245_000)).toBe(245_000);
+    expect(resolvePaymentAmount("production", "qris", 245_000)).toBe(245_000);
   });
 });

@@ -20,6 +20,9 @@ func (t Terminals) Enroll(ctx context.Context, principal domain.Principal, input
 	if err := RequireReady(principal); err != nil {
 		return domain.Terminal{}, err
 	}
+	if err := RequireProduction(principal); err != nil {
+		return domain.Terminal{}, err
+	}
 	input.InstallationID = strings.TrimSpace(input.InstallationID)
 	input.Name = strings.TrimSpace(input.Name)
 	if len(input.InstallationID) < 8 || len(input.InstallationID) > 200 || input.Name == "" || len(input.Name) > 120 || len(input.PublicKey) != ed25519.PublicKeySize {
@@ -42,6 +45,9 @@ func (t Terminals) Current(ctx context.Context, principal domain.Principal) (dom
 func (t Terminals) Revoke(ctx context.Context, principal domain.Principal, id uuid.UUID) (domain.Terminal, error) {
 	defer observability.StartSegment(ctx, "Usecase.Terminals.Revoke")()
 	if err := RequireSuperadmin(principal); err != nil {
+		return domain.Terminal{}, err
+	}
+	if err := RequireProduction(principal); err != nil {
 		return domain.Terminal{}, err
 	}
 	return t.Repo.RevokeTerminal(ctx, principal, id)

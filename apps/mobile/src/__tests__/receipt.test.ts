@@ -17,6 +17,8 @@ const receipt: ReceiptDocument = {
   ],
   subtotal: 200_000,
   total: 200_000,
+  paymentAmount: 200_000,
+  dataMode: "production",
   isCopy: false,
 };
 
@@ -40,4 +42,34 @@ describe("thermal receipt", () => {
     expect(Array.from(bytes.slice(0, 2))).toEqual([0x1b, 0x40]);
     expect(Array.from(bytes.slice(-4))).toEqual([0x1d, 0x56, 0x41, 0]);
   });
+
+  it("permanently marks Sandbox output and separates simulated and real amounts", () => {
+    const sandboxReceipt = {
+      ...receipt,
+      dataMode: "sandbox" as const,
+      paymentAmount: 1_000,
+    };
+    const output = formatReceipt(sandboxReceipt, 48);
+
+    expect(output).toContain("TEST-TRX-01ARZ3NDEKTSV4RRFFQ69G5FAV");
+    expect(output.match(/MODE UJI/g)).toHaveLength(2);
+    expect(output.match(/BUKAN STRUK RESMI/g)).toHaveLength(2);
+    expect(output).toContain("TOTAL SIMULASI");
+    expect(output).toContain("QRIS NYATA");
+    expect(output).toContain("Rp 1.000");
+
+    const bytes = Array.from(encodeEscPos(sandboxReceipt, 48));
+    const doubleHeightCommand = [0x1d, 0x21, 0x10];
+    expect(countByteSequence(bytes, doubleHeightCommand)).toBe(4);
+  });
 });
+
+function countByteSequence(bytes: number[], sequence: number[]): number {
+  let count = 0;
+  for (let index = 0; index <= bytes.length - sequence.length; index += 1) {
+    if (sequence.every((value, offset) => bytes[index + offset] === value)) {
+      count += 1;
+    }
+  }
+  return count;
+}

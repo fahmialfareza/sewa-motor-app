@@ -1,6 +1,6 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import type { Transaction } from "@/domain/types";
+import type { DataMode, Transaction } from "@/domain/types";
 import {
   colors,
   radius,
@@ -20,9 +20,11 @@ import { PaymentMethodBadge, PaymentStatusBadge } from "../ui/PaymentBadge";
 export function TransactionRow({
   transaction,
   onPress,
+  dataMode = "production",
 }: {
   transaction: Transaction;
   onPress: () => void;
+  dataMode?: DataMode;
 }) {
   const accentToken = transaction.items[0]?.accent ?? "primary";
   const accent =
@@ -42,7 +44,7 @@ export function TransactionRow({
         <View style={styles.top}>
           <View style={styles.flex}>
             <Text style={styles.id}>
-              {compactTransactionId(transaction.id)}
+              {compactTransactionId(transaction.id, dataMode)}
             </Text>
             <Text numberOfLines={1} style={styles.name}>
               {transaction.items.map((item) => item.name).join(" + ")}

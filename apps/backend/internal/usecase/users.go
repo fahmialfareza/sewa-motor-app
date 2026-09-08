@@ -28,6 +28,9 @@ func (u Users) Create(ctx context.Context, principal domain.Principal, input dom
 	if err := RequireSuperadmin(principal); err != nil {
 		return domain.User{}, err
 	}
+	if err := RequireProduction(principal); err != nil {
+		return domain.User{}, err
+	}
 	input.FullName = strings.TrimSpace(input.FullName)
 	input.Username = domain.NormalizeUsername(input.Username)
 	if len(input.FullName) < 1 || len(input.FullName) > 160 || len(input.Username) < 3 || !input.Role.Valid() {
@@ -46,6 +49,9 @@ func (u Users) Create(ctx context.Context, principal domain.Principal, input dom
 func (u Users) Update(ctx context.Context, principal domain.Principal, targetID uuid.UUID, input domain.UpdateUserInput) (domain.User, error) {
 	defer observability.StartSegment(ctx, "Usecase.Users.Update")()
 	if err := RequireSuperadmin(principal); err != nil {
+		return domain.User{}, err
+	}
+	if err := RequireProduction(principal); err != nil {
 		return domain.User{}, err
 	}
 	if targetID == uuid.Nil {
@@ -92,6 +98,9 @@ func (u Users) ResetPassword(ctx context.Context, principal domain.Principal, ta
 	if err := RequireSuperadmin(principal); err != nil {
 		return domain.User{}, err
 	}
+	if err := RequireProduction(principal); err != nil {
+		return domain.User{}, err
+	}
 	if err := domain.ValidatePassword(password); err != nil {
 		return domain.User{}, err
 	}
@@ -105,6 +114,9 @@ func (u Users) ResetPassword(ctx context.Context, principal domain.Principal, ta
 func (u Users) Delete(ctx context.Context, principal domain.Principal, targetID uuid.UUID, reason string) error {
 	defer observability.StartSegment(ctx, "Usecase.Users.Delete")()
 	if err := RequireSuperadmin(principal); err != nil {
+		return err
+	}
+	if err := RequireProduction(principal); err != nil {
 		return err
 	}
 	if targetID == principal.UserID {

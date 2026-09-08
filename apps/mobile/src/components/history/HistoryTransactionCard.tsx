@@ -1,6 +1,11 @@
 import { Pressable, StyleSheet, Text, View } from "react-native";
 
-import type { PrintState, SyncState, Transaction } from "@/domain/types";
+import type {
+  DataMode,
+  PrintState,
+  SyncState,
+  Transaction,
+} from "@/domain/types";
 import { paymentMethodLabel, paymentStatusLabel } from "@/domain/payments";
 import {
   colors,
@@ -38,11 +43,13 @@ const printStateLabel: Record<PrintState, string> = {
 export function HistoryTransactionCard({
   transaction,
   onPress,
+  dataMode = "production",
 }: {
   transaction: Transaction;
   onPress: () => void;
+  dataMode?: DataMode;
 }) {
-  const transactionId = compactTransactionId(transaction.id);
+  const transactionId = compactTransactionId(transaction.id, dataMode);
   const itemQuantity = transaction.items.reduce(
     (sum, item) => sum + item.quantity,
     0,

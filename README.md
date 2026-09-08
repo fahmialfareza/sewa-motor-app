@@ -18,9 +18,9 @@ provider callback is integrated. V1 does not model motorcycle inventory,
 customers, rental schedules, tax, shifts, photos, targets, or cancellations.
 
 - Paket Standar: Rp70.000, canonical ID
-  `00000000-0000-0000-0000-000000000001`
+  `00000000-0000-4000-8000-000000000001`
 - Paket Sunrise: Rp100.000, canonical ID
-  `00000000-0000-0000-0000-000000000002`
+  `00000000-0000-4000-8000-000000000002`
 - Transaction persistence/API IDs are uppercase 26-character ULIDs. The UI and
   receipt add `TRX-`; that prefix is never stored.
 - Money is whole rupiah and reporting uses `Asia/Jakarta`; weeks begin Monday.
@@ -53,6 +53,12 @@ transactions retain exact control over serializable writes, advisory locks,
 revisions, audit events, and sync idempotency. The mobile app uses Zustand for
 live state, encrypted SQLite as its UI read model, SecureStore for secrets, a
 signed FIFO outbox, and cursor-based pull synchronization.
+
+The production deployment can optionally expose a first-class Sandbox Mode.
+Server-owned data spaces and generations keep test transactions out of
+production history, revenue, exports, audit streams, and sync cursors. Sandbox
+is disabled by default; every signed-in staff member can switch modes, while
+only a production-mode superadmin can reset the shared sandbox generation.
 
 ## Prerequisites
 
@@ -136,14 +142,31 @@ Compose is for development and CI. Production requires managed credentials,
 TLS, backups, restore rehearsal, monitoring, and a deliberate GORM migration
 step. Redis loss must only affect cache/rate limiting, never correctness.
 
+Sandbox rollout is fail-closed: apply its schema/backfill-only GORM migration
+with `SANDBOX_ENABLED=false`, deploy the scope-aware backend and compatible
+mobile build, confirm no old backend replicas remain, verify production queries
+and New Relic alerts use `data.mode = 'production'`, and only then enable it.
+Enabling Sandbox performs an advisory-locked, idempotent generation activation
+and package clone before the API starts accepting traffic; activation failure
+stops startup. Cleanup failures never affect production readiness. The Rp1.000
+sandbox QRIS amount is fixed and is generated from the configured real merchant
+payload, so test transfers require manual merchant reconciliation.
+
+Physical PostgreSQL snapshots and PITR necessarily include Sandbox rows because
+both modes share a cluster. For production-only long-lived artifacts, follow the
+scratch-restore, guarded sanitization, verification, and restore-test procedure
+in `apps/backend/README.md`; never sanitize the live database.
+
 The backend Dockerfile exposes separate `migrate`, `bootstrap`, and `api`
 targets. Production should run the migration image as a one-shot pre-deploy
 step, run bootstrap only when explicitly provisioning initial users, and deploy
 the API image without either administrative binary.
 
-The following inputs remain intentionally unset:
+The Android application ID is configured as
+`com.fahmialfareza.sewamotorpos`. The following release inputs remain
+intentionally unset:
 
-- Android application ID and Expo/Play owners
+- Expo/Play owner and account assignments
 - backend hosting/domain and TLS termination
 - initial one-superadmin/seven-admin secret manifest
 - MPOS model/OS, paper widths, Bluetooth capabilities

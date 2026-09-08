@@ -22,7 +22,7 @@ func (p Packages) List(ctx context.Context, principal domain.Principal, includeD
 	if includeDeleted && !principal.IsSuperadmin() {
 		includeDeleted = false
 	}
-	return p.Repo.ListPackages(ctx, includeDeleted)
+	return p.Repo.ListPackages(ctx, principal.EffectiveDataSpaceID(), includeDeleted)
 }
 
 func (p Packages) Get(ctx context.Context, principal domain.Principal, id uuid.UUID) (domain.Package, error) {
@@ -30,7 +30,7 @@ func (p Packages) Get(ctx context.Context, principal domain.Principal, id uuid.U
 	if err := RequireReady(principal); err != nil {
 		return domain.Package{}, err
 	}
-	return p.Repo.GetPackage(ctx, id)
+	return p.Repo.GetPackage(ctx, principal.EffectiveDataSpaceID(), id)
 }
 
 func (p Packages) Create(ctx context.Context, principal domain.Principal, input domain.CreatePackageInput) (domain.Package, error) {

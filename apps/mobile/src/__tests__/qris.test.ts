@@ -9,6 +9,7 @@ import {
   validateQrisPayloadBinding,
   validateStaticQris,
 } from "@/domain/qris";
+import { resolvePaymentAmount } from "@/domain/payments";
 
 jest.mock("expo-crypto", () => ({
   CryptoDigestAlgorithm: { SHA256: "SHA-256" },
@@ -53,6 +54,20 @@ describe("QRIS conversion", () => {
       merchantCity: "DENPASAR",
       amount: "70000",
     });
+  });
+
+  it("encodes the server-enforced Sandbox QRIS amount as exactly Rp1.000", () => {
+    const paymentAmount = resolvePaymentAmount("sandbox", "qris", 245_000);
+    const dynamic = createDynamicQris(STATIC_QRIS, paymentAmount);
+
+    expect(paymentAmount).toBe(1_000);
+    expect(parseQris(dynamic.payload)).toMatchObject({
+      pointOfInitiation: "dynamic",
+      amount: "1000",
+    });
+    expect(dynamic.payload.slice(-4)).toBe(
+      calculateQrisCrc(dynamic.payload.slice(0, -4)),
+    );
   });
 
   it("fingerprints the normalized static payload as lowercase SHA-256 hex", async () => {

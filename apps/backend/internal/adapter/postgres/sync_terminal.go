@@ -3,7 +3,6 @@ package postgres
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/domain"
@@ -88,18 +87,9 @@ func (s *Store) EnrollTerminal(ctx context.Context, principal domain.Principal, 
 	if err = audit(ctx, tx, "terminal.enrolled", "terminal", existingID.String(), identity, nil, terminal, nil, s.Now()); err != nil {
 		return domain.Terminal{}, dbError(err, "audit terminal enrollment")
 	}
-	// Terminals are durable server state and must be included in subsequent pulls.
-	body, marshalErr := json.Marshal(terminal)
-	if marshalErr != nil {
-		return domain.Terminal{}, domain.WrapInternal(marshalErr, "marshal terminal change")
-	}
-	if _, err = tx.Exec(ctx, `
-		INSERT INTO sync_changes (aggregate, aggregate_id, action, payload)
-		VALUES ('terminal',$1,'created',$2)`,
-		existingID.String(), body,
-	); err != nil {
-		// Initial migration's aggregate constraint may predate terminal support;
-		// keep enrollment correct even if a development database has not migrated.
+	// Terminals are shared durable state and must be fanned out to each active
+	// production/Sandbox data plane.
+	if err = addSharedChange(ctx, tx, "terminal", existingID.String(), "created", nil, terminal, false); err != nil {
 		return domain.Terminal{}, dbError(err, "sync terminal enrollment")
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -149,7 +139,7 @@ func (s *Store) RevokeTerminal(ctx context.Context, principal domain.Principal, 
 	if err = audit(ctx, tx, "terminal.revoked", "terminal", id.String(), identity, before, after, nil, s.Now()); err != nil {
 		return domain.Terminal{}, dbError(err, "audit terminal revocation")
 	}
-	if err = addChange(ctx, tx, "terminal", id.String(), "deleted", nil, after, true); err != nil {
+	if err = addSharedChange(ctx, tx, "terminal", id.String(), "deleted", nil, after, true); err != nil {
 		return domain.Terminal{}, dbError(err, "sync terminal revocation")
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -169,30 +159,30 @@ func (s *Store) TerminalPublicKey(ctx context.Context, terminalID uuid.UUID) ([]
 	return publicKey, dbError(err, "get terminal public key")
 }
 
-func (s *Store) OriginSessionMatches(ctx context.Context, sessionID, actorID, terminalID uuid.UUID) (bool, error) {
+func (s *Store) OriginSessionMatches(ctx context.Context, sessionID, actorID, terminalID, dataSpaceID uuid.UUID) (bool, error) {
 	defer observability.StartSegment(ctx, "Postgres.OriginSessionMatches")()
 	var matches bool
 	err := s.Pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1 FROM sessions
-			WHERE id = $1 AND user_id = $2 AND terminal_id = $3
+			WHERE id = $1 AND user_id = $2 AND terminal_id = $3 AND data_space_id = $4
 		)`,
-		sessionID, actorID, terminalID,
+		sessionID, actorID, terminalID, domain.EffectiveDataSpaceID(dataSpaceID),
 	).Scan(&matches)
 	return matches, dbError(err, "validate origin session")
 }
 
-func (s *Store) PullChanges(ctx context.Context, cursor int64, limit int) ([]domain.SyncChange, error) {
+func (s *Store) PullChanges(ctx context.Context, dataSpaceID uuid.UUID, cursor int64, limit int) ([]domain.SyncChange, error) {
 	defer observability.StartSegment(ctx, "Postgres.PullChanges")()
 	rows, err := s.Pool.Query(ctx, `
 		SELECT cursor, aggregate, aggregate_id,
 		       CASE WHEN action = 'deleted' THEN 'delete' ELSE 'upsert' END,
-		       revision, payload, tombstone, created_at
+		       revision, payload, tombstone, created_at, data_space_id
 		FROM sync_changes
-		WHERE cursor > $1
+		WHERE data_space_id = $1 AND cursor > $2
 		ORDER BY cursor
-		LIMIT $2`,
-		cursor, limit,
+		LIMIT $3`,
+		domain.EffectiveDataSpaceID(dataSpaceID), cursor, limit,
 	)
 	if err != nil {
 		return nil, dbError(err, "pull sync changes")
@@ -204,41 +194,13 @@ func (s *Store) PullChanges(ctx context.Context, cursor int64, limit int) ([]dom
 		if err := rows.Scan(
 			&change.Cursor, &change.Aggregate, &change.AggregateID, &change.Action,
 			&change.Revision, &change.Payload, &change.Tombstone, &change.CreatedAt,
+			&change.DataSpaceID,
 		); err != nil {
 			return nil, dbError(err, "scan sync change")
 		}
 		changes = append(changes, change)
 	}
 	return changes, dbError(rows.Err(), "iterate sync changes")
-}
-
-func (s *Store) GetOperationResult(ctx context.Context, terminalID uuid.UUID, operationID string) (*domain.StoredOperationResult, error) {
-	defer observability.StartSegment(ctx, "Postgres.GetOperationResult")()
-	var result domain.StoredOperationResult
-	err := s.Pool.QueryRow(ctx, `
-		SELECT request_hash, response_status, response
-		FROM idempotency_records
-		WHERE terminal_id = $1 AND operation_id = $2`,
-		terminalID, operationID,
-	).Scan(&result.RequestHash, &result.Status, &result.Response)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, dbError(err, "get operation result")
-	}
-	return &result, nil
-}
-
-func (s *Store) StoreOperationResult(ctx context.Context, terminalID uuid.UUID, operationID string, requestHash []byte, status int, response json.RawMessage) error {
-	defer observability.StartSegment(ctx, "Postgres.StoreOperationResult")()
-	_, err := s.Pool.Exec(ctx, `
-		INSERT INTO idempotency_records (
-			terminal_id, operation_id, request_hash, response_status, response
-		) VALUES ($1,$2,$3,$4,$5)`,
-		terminalID, operationID, requestHash, status, response,
-	)
-	return dbError(err, "store operation result")
 }
 
 func terminalByID(ctx context.Context, query rowQuerier, id uuid.UUID) (domain.Terminal, error) {

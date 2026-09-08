@@ -16,6 +16,8 @@ import { Icon } from "../ui/Icon";
 
 interface DynamicQrisCardProps {
   amount: number;
+  orderTotal?: number;
+  sandbox?: boolean;
   merchantName: string | null;
   merchantCity: string | null;
   payload: string | null;
@@ -25,6 +27,8 @@ interface DynamicQrisCardProps {
 
 export function DynamicQrisCard({
   amount,
+  orderTotal,
+  sandbox = false,
   merchantName,
   merchantCity,
   payload,
@@ -59,6 +63,14 @@ export function DynamicQrisCard({
 
   return (
     <Card style={styles.ready}>
+      {sandbox ? (
+        <View accessibilityRole="alert" style={styles.sandboxNotice}>
+          <Text style={styles.sandboxNoticeTitle}>QRIS UJI NYATA</Text>
+          <Text style={styles.sandboxNoticeText}>
+            {formattedAmount} akan masuk ke rekening merchant.
+          </Text>
+        </View>
+      ) : null}
       <View style={styles.header}>
         <View style={styles.readyIcon}>
           <Icon color={colors.primary} name="qrcode-scan" size={24} />
@@ -83,8 +95,15 @@ export function DynamicQrisCard({
         />
       </View>
       <View style={styles.amountBlock}>
-        <Text style={styles.amountLabel}>TOTAL PEMBAYARAN</Text>
+        <Text style={styles.amountLabel}>
+          {sandbox ? "NOMINAL QRIS NYATA" : "TOTAL PEMBAYARAN"}
+        </Text>
         <Text style={styles.amount}>{formattedAmount}</Text>
+        {sandbox && orderTotal !== undefined ? (
+          <Text style={styles.orderTotal}>
+            Total simulasi paket: {formatRupiah(orderTotal)}
+          </Text>
+        ) : null}
       </View>
       <View style={styles.merchant}>
         <Text style={styles.merchantName}>{merchantName}</Text>
@@ -170,4 +189,23 @@ const styles = StyleSheet.create({
     textAlign: "center",
     fontSize: 12,
   },
+  sandboxNotice: {
+    padding: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: colors.warningSoft,
+    borderWidth: 1,
+    borderColor: colors.warning,
+    alignItems: "center",
+  },
+  sandboxNoticeTitle: {
+    ...textStyles.label,
+    color: colors.warning,
+    fontSize: 11,
+  },
+  sandboxNoticeText: {
+    ...textStyles.body,
+    color: colors.warning,
+    textAlign: "center",
+  },
+  orderTotal: { ...textStyles.body, color: colors.textMuted, fontSize: 12 },
 });

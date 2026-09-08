@@ -30,12 +30,23 @@ func (s *Store) ApplySyncMutation(
 	requestHash []byte,
 ) (domain.StoredOperationResult, bool, error) {
 	defer observability.StartSegment(ctx, "Postgres.ApplySyncMutation")()
-	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	// READ COMMITTED is required by the Sandbox generation lock. PostgreSQL
+	// fixes a SERIALIZABLE snapshot before a waiting advisory-lock statement is
+	// evaluated; after reset wins the exclusive lock, that stale snapshot could
+	// still see the retired generation as active. The generation lock and the
+	// per-operation advisory lock provide the serialization needed here, while
+	// row-level locks protect transaction revisions and payment state.
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return domain.StoredOperationResult{}, false, dbError(err, "begin sync operation")
 	}
 	defer tx.Rollback(ctx)
-	lockKey := operation.TerminalID.String() + ":" + operation.OperationID
+	dataSpaceID := submitter.EffectiveDataSpaceID()
+	space, err := lockActiveDataSpace(ctx, tx, dataSpaceID)
+	if err != nil {
+		return domain.StoredOperationResult{}, false, err
+	}
+	lockKey := dataSpaceID.String() + ":" + operation.TerminalID.String() + ":" + operation.OperationID
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, lockKey); err != nil {
 		return domain.StoredOperationResult{}, false, dbError(err, "lock sync operation")
 	}
@@ -44,8 +55,8 @@ func (s *Store) ApplySyncMutation(
 	err = tx.QueryRow(ctx, `
 		SELECT request_hash, response_status, response
 		FROM idempotency_records
-		WHERE terminal_id = $1 AND operation_id = $2`,
-		operation.TerminalID, operation.OperationID,
+		WHERE data_space_id = $1 AND terminal_id = $2 AND operation_id = $3`,
+		dataSpaceID, operation.TerminalID, operation.OperationID,
 	).Scan(&stored.RequestHash, &stored.Status, &stored.Response)
 	if err == nil {
 		if !bytes.Equal(stored.RequestHash, requestHash) {
@@ -76,6 +87,8 @@ func (s *Store) ApplySyncMutation(
 		TerminalID:           &operation.TerminalID,
 		SubmittedByActorID:   submitter.UserID,
 		SubmittedBySessionID: submitter.SessionID,
+		DataSpaceID:          dataSpaceID,
+		DataMode:             space.Mode,
 	}
 	var data any
 	status := http.StatusOK
@@ -251,9 +264,9 @@ func (s *Store) ApplySyncMutation(
 	}
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO idempotency_records (
-			terminal_id, operation_id, request_hash, response_status, response
-		) VALUES ($1,$2,$3,$4,$5)`,
-		operation.TerminalID, operation.OperationID, requestHash, stored.Status, stored.Response,
+			data_space_id, terminal_id, operation_id, request_hash, response_status, response
+		) VALUES ($1,$2,$3,$4,$5,$6)`,
+		dataSpaceID, operation.TerminalID, operation.OperationID, requestHash, stored.Status, stored.Response,
 	); err != nil {
 		return domain.StoredOperationResult{}, false, dbError(err, "persist atomic sync result")
 	}
@@ -395,7 +408,7 @@ func operationErrorStatus(err *domain.Error) int {
 	case domain.CodeNotFound:
 		return http.StatusNotFound
 	case domain.CodeRevisionConflict, domain.CodePaymentStateConflict,
-		domain.CodeConflict, domain.CodeIdempotencyMismatch:
+		domain.CodeConflict, domain.CodeIdempotencyMismatch, domain.CodeSandboxGenerationRetired:
 		return http.StatusConflict
 	case domain.CodeRateLimited:
 		return http.StatusTooManyRequests

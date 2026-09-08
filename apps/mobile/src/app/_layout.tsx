@@ -8,17 +8,45 @@ import { useFonts } from "expo-font";
 import { Stack } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
-import { useEffect, useState } from "react";
-import { StyleSheet, Text, View } from "react-native";
+import { useEffect } from "react";
+import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { AuthProvider } from "@/auth/AuthProvider";
-import { initializeDatabase } from "@/db/client";
+import { useAuthStore } from "@/auth/auth-store";
 import { SyncProvider } from "@/sync/SyncProvider";
 import { colors, spacing, textStyles } from "@/theme/tokens";
 
 void SplashScreen.preventAutoHideAsync();
+
+function AppRoutes() {
+  // Keep the router tree unmounted for the full transition, including the
+  // brief interval before recovery clears the retired session. This prevents
+  // redirects to Login and stale screen reads while SQLite changes scope.
+  const transitioningMode = useAuthStore((state) => state.switchingMode);
+
+  if (transitioningMode) {
+    return (
+      <View accessibilityRole="alert" style={styles.recovery}>
+        <ActivityIndicator color={colors.primary} size="large" />
+        <Text style={textStyles.heading}>Menyiapkan Mode Operasi</Text>
+        <Text style={styles.recoveryMessage}>
+          Mengamankan data lokal dan menyinkronkan ruang data aktif. Jangan
+          tutup aplikasi.
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="index" />
+      <Stack.Screen name="(auth)" />
+      <Stack.Screen name="(app)" />
+    </Stack>
+  );
+}
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({
@@ -29,38 +57,13 @@ export default function RootLayout() {
     Roboto_800ExtraBold,
     JetBrainsMono_500Medium,
   });
-  const [databaseReady, setDatabaseReady] = useState(false);
-  const [databaseError, setDatabaseError] = useState<Error | null>(null);
-
   useEffect(() => {
-    void initializeDatabase()
-      .then(() => setDatabaseReady(true))
-      .catch((error: unknown) =>
-        setDatabaseError(
-          error instanceof Error ? error : new Error("Database gagal dibuka."),
-        ),
-      );
-  }, []);
-
-  useEffect(() => {
-    if ((fontsLoaded || fontError) && (databaseReady || databaseError)) {
+    if (fontsLoaded || fontError) {
       void SplashScreen.hideAsync();
     }
-  }, [databaseError, databaseReady, fontError, fontsLoaded]);
+  }, [fontError, fontsLoaded]);
 
-  if (databaseError) {
-    return (
-      <View style={styles.failure}>
-        <Text style={textStyles.title}>Database tidak dapat dibuka</Text>
-        <Text style={styles.failureMessage}>
-          Kredensial enkripsi lokal tidak cocok atau penyimpanan perangkat
-          bermasalah. Jangan hapus data sebelum menghubungi dukungan.
-        </Text>
-        <Text style={styles.code}>{databaseError.message}</Text>
-      </View>
-    );
-  }
-  if ((!fontsLoaded && !fontError) || !databaseReady) return null;
+  if (!fontsLoaded && !fontError) return null;
 
   return (
     <SafeAreaProvider>
@@ -68,11 +71,7 @@ export default function RootLayout() {
         <AuthProvider>
           <SyncProvider>
             <StatusBar style="light" />
-            <Stack screenOptions={{ headerShown: false }}>
-              <Stack.Screen name="index" />
-              <Stack.Screen name="(auth)" />
-              <Stack.Screen name="(app)" />
-            </Stack>
+            <AppRoutes />
           </SyncProvider>
         </AuthProvider>
       </KeyboardProvider>
@@ -81,13 +80,18 @@ export default function RootLayout() {
 }
 
 const styles = StyleSheet.create({
-  failure: {
+  recovery: {
     flex: 1,
-    padding: spacing.lg,
-    backgroundColor: colors.surface,
+    alignItems: "center",
     justifyContent: "center",
     gap: spacing.md,
+    padding: spacing.xl,
+    backgroundColor: colors.surface,
   },
-  failureMessage: { ...textStyles.body, color: colors.textMuted },
-  code: { ...textStyles.technical, color: colors.error },
+  recoveryMessage: {
+    ...textStyles.body,
+    maxWidth: 360,
+    color: colors.textMuted,
+    textAlign: "center",
+  },
 });

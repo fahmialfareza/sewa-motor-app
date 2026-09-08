@@ -16,19 +16,28 @@ import (
 
 type syncRepository struct {
 	port.Repository
-	publicKey ed25519.PublicKey
-	result    domain.StoredOperationResult
-	replayed  bool
-	applyErr  error
-	matches   bool
+	publicKey   ed25519.PublicKey
+	result      domain.StoredOperationResult
+	replayed    bool
+	applyErr    error
+	matches     bool
+	originSpace uuid.UUID
+	pullSpace   uuid.UUID
+	changes     []domain.SyncChange
 }
 
 func (r *syncRepository) TerminalPublicKey(context.Context, uuid.UUID) ([]byte, error) {
 	return r.publicKey, nil
 }
 
-func (r *syncRepository) OriginSessionMatches(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (bool, error) {
+func (r *syncRepository) OriginSessionMatches(_ context.Context, _, _, _, dataSpaceID uuid.UUID) (bool, error) {
+	r.originSpace = dataSpaceID
 	return r.matches, nil
+}
+
+func (r *syncRepository) PullChanges(_ context.Context, dataSpaceID uuid.UUID, _ int64, _ int) ([]domain.SyncChange, error) {
+	r.pullSpace = dataSpaceID
+	return r.changes, nil
 }
 
 func (r *syncRepository) ApplySyncMutation(context.Context, domain.Principal, domain.SyncMutation, []byte) (domain.StoredOperationResult, bool, error) {
@@ -107,5 +116,37 @@ func TestSyncConflictIsReturnedPerOperation(t *testing.T) {
 	}
 	if len(results) != 1 || !domain.IsCode(results[0].Error, domain.CodeRevisionConflict) {
 		t.Fatalf("expected per-operation conflict: %+v", results)
+	}
+}
+
+func TestSyncUsesImmutableSessionDataSpace(t *testing.T) {
+	t.Parallel()
+
+	dataSpaceID := uuid.New()
+	repo := &syncRepository{changes: []domain.SyncChange{{Cursor: 11}}}
+	service := Sync{Repo: repo}
+	principal := domain.Principal{
+		Role: domain.RoleAdmin, DataMode: domain.DataModeSandbox,
+		DataSpaceID: dataSpaceID, SandboxGeneration: 3,
+	}
+	changes, next, more, err := service.Pull(context.Background(), principal, 7, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repo.pullSpace != dataSpaceID || len(changes) != 1 || next != 11 || more {
+		t.Fatalf("space=%s changes=%+v next=%d more=%v", repo.pullSpace, changes, next, more)
+	}
+
+	mutation, publicKey := signedMutation(t)
+	repo.publicKey = publicKey
+	repo.matches = true
+	repo.result = domain.StoredOperationResult{Status: 201, Response: json.RawMessage(`{}`)}
+	principal.UserID = mutation.OriginActorID
+	principal.TerminalID = &mutation.TerminalID
+	if _, err = service.Push(context.Background(), principal, []domain.SyncMutation{mutation}); err != nil {
+		t.Fatal(err)
+	}
+	if repo.originSpace != dataSpaceID {
+		t.Fatalf("origin session validated in %s, want %s", repo.originSpace, dataSpaceID)
 	}
 }

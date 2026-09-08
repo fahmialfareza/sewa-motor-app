@@ -7,14 +7,47 @@ import { AppScreen } from "@/components/layout/AppScreen";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Field } from "@/components/ui/Field";
+import { StateView } from "@/components/ui/StateView";
 import { colors, spacing, textStyles } from "@/theme/tokens";
 
 export default function TerminalEnrollmentScreen() {
   const router = useRouter();
-  const { enrollTerminal } = useAuth();
+  const { enrollTerminal, session, switchMode, switchingMode } = useAuth();
   const [label, setLabel] = useState("MPOS Utama");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  if (session?.dataMode === "sandbox") {
+    return (
+      <AppScreen>
+        <StateView
+          icon="shield-lock-outline"
+          message="Terminal hanya dapat didaftarkan dari Mode Produksi. Kembali ke Produksi untuk melanjutkan."
+          title="Tidak tersedia di Mode Uji"
+        />
+        <Button
+          loading={switchingMode}
+          onPress={() => {
+            setError(null);
+            void switchMode("production").catch((reason: unknown) =>
+              setError(
+                reason instanceof Error
+                  ? reason.message
+                  : "Mode Produksi belum dapat dibuka.",
+              ),
+            );
+          }}
+        >
+          Kembali ke Mode Produksi
+        </Button>
+        {error ? (
+          <Text accessibilityRole="alert" style={styles.error}>
+            {error}
+          </Text>
+        ) : null}
+      </AppScreen>
+    );
+  }
 
   const submit = async () => {
     if (label.trim().length < 3) {
@@ -67,4 +100,5 @@ const styles = StyleSheet.create({
   screen: { flexGrow: 1, justifyContent: "center" },
   subtitle: { ...textStyles.body, color: colors.textMuted },
   card: { gap: spacing.md },
+  error: { ...textStyles.body, color: colors.error, textAlign: "center" },
 });

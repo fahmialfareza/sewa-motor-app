@@ -3,6 +3,7 @@ import type { SQLiteDatabase } from "expo-sqlite";
 
 import type {
   DashboardStats,
+  DataMode,
   PaymentMethod,
   PaymentStatus,
   PrintState,
@@ -16,6 +17,7 @@ import type {
   TransactionDraftLine,
   TransactionItem,
 } from "@/domain/types";
+import { resolvePaymentAmount } from "@/domain/payments";
 import {
   canCorrectTransaction,
   canManageTransactionPayment,
@@ -27,6 +29,7 @@ import {
   validateQrisAmount,
   validateQrisPayloadBinding,
 } from "@/domain/qris";
+import { beginLocalMutation } from "@/mode/mutation-barrier";
 import {
   getOrCreateTerminalIdentity,
   signCanonicalPayload,
@@ -39,12 +42,28 @@ import { createUlid } from "./ids";
 
 const PAYMENT_CONFLICT_ERROR_PREFIX = "PAYMENT_STATE_CONFLICT: ";
 
+async function withLocalMutation<T>(
+  session: Pick<
+    Session,
+    "dataMode" | "dataSpaceId" | "sandboxGeneration"
+  > | null,
+  mutation: () => Promise<T>,
+): Promise<T> {
+  const release = beginLocalMutation(session ?? undefined);
+  try {
+    return await mutation();
+  } finally {
+    release();
+  }
+}
+
 interface TransactionRow {
   id: string;
   revision: number;
   occurred_at: string;
   subtotal: number;
   total: number;
+  payment_amount: number;
   origin_actor_id: string;
   origin_actor_name: string;
   updated_actor_name: string;
@@ -130,9 +149,11 @@ export async function listPackages(
   return rows.map(mapPackage);
 }
 
-export async function upsertPackage(value: RentalPackage): Promise<void> {
-  const { sqlite } = await getDatabase();
-  await upsertPackageWithDatabase(sqlite, value);
+export function upsertPackage(value: RentalPackage): Promise<void> {
+  return withLocalMutation(null, async () => {
+    const { sqlite } = await getDatabase();
+    await upsertPackageWithDatabase(sqlite, value);
+  });
 }
 
 async function upsertPackageWithDatabase(
@@ -165,7 +186,18 @@ async function upsertPackageWithDatabase(
   );
 }
 
-export async function createTransaction(
+export function createTransaction(
+  lines: TransactionDraftLine[],
+  paymentMethod: SelectablePaymentMethod,
+  qrisPayloadHash: QrisPayloadHash | null,
+  session: Session,
+): Promise<Transaction> {
+  return withLocalMutation(session, () =>
+    createTransactionLocal(lines, paymentMethod, qrisPayloadHash, session),
+  );
+}
+
+async function createTransactionLocal(
   lines: TransactionDraftLine[],
   paymentMethod: SelectablePaymentMethod,
   qrisPayloadHash: QrisPayloadHash | null,
@@ -204,13 +236,19 @@ export async function createTransaction(
     lineTotal: line.quantity * line.package.unitPrice,
   }));
   const total = items.reduce((sum, item) => sum + item.lineTotal, 0);
-  if (paymentMethod === "qris") validateQrisAmount(total);
+  const paymentAmount = resolvePaymentAmount(
+    session.dataMode,
+    paymentMethod,
+    total,
+  );
+  if (paymentMethod === "qris") validateQrisAmount(paymentAmount);
   const transaction: Transaction = {
     id,
     revision: 1,
     occurredAt,
     subtotal: total,
     total,
+    paymentAmount,
     originActorId: session.user.id,
     originActorName: session.user.fullName,
     updatedActorName: session.user.fullName,
@@ -246,7 +284,7 @@ export async function createTransaction(
   };
   const signature = await signCanonicalPayload(operation);
   const auditId = `AUD-${createUlid()}`;
-  const { sqlite } = await getDatabase();
+  const { sqlite } = await getDatabase(session.dataMode);
 
   await sqlite.withTransactionAsync(async () => {
     await insertTransaction(sqlite, transaction);
@@ -268,7 +306,7 @@ export async function createTransaction(
   return transaction;
 }
 
-export async function correctTransaction(
+export function correctTransaction(
   transactionId: string,
   quantities: Record<string, number>,
   paymentMethod: SelectablePaymentMethod,
@@ -276,7 +314,27 @@ export async function correctTransaction(
   reason: string,
   session: Session,
 ): Promise<Transaction> {
-  const before = await getTransaction(transactionId);
+  return withLocalMutation(session, () =>
+    correctTransactionLocal(
+      transactionId,
+      quantities,
+      paymentMethod,
+      qrisPayloadHash,
+      reason,
+      session,
+    ),
+  );
+}
+
+async function correctTransactionLocal(
+  transactionId: string,
+  quantities: Record<string, number>,
+  paymentMethod: SelectablePaymentMethod,
+  qrisPayloadHash: QrisPayloadHash | null,
+  reason: string,
+  session: Session,
+): Promise<Transaction> {
+  const before = await getTransaction(transactionId, session.dataMode);
   if (!before) throw new Error("Transaksi tidak ditemukan.");
   if (before.deletedAt) {
     throw new Error("Transaksi yang diarsipkan tidak dapat dikoreksi.");
@@ -286,7 +344,7 @@ export async function correctTransaction(
       "Selesaikan konflik revisi sebelum mengoreksi transaksi ini.",
     );
   }
-  if (await hasTerminalTransactionBlock(transactionId)) {
+  if (await hasTerminalTransactionBlock(transactionId, session.dataMode)) {
     throw new Error(
       "Operasi transaksi ini ditolak server. Pulihkan data dari Pusat Sinkron sebelum membuat koreksi baru.",
     );
@@ -327,12 +385,18 @@ export async function correctTransaction(
   }
   const occurredAt = new Date().toISOString();
   const total = items.reduce((sum, item) => sum + item.lineTotal, 0);
-  if (paymentMethod === "qris") validateQrisAmount(total);
+  const paymentAmount = resolvePaymentAmount(
+    session.dataMode,
+    paymentMethod,
+    total,
+  );
+  if (paymentMethod === "qris") validateQrisAmount(paymentAmount);
   const corrected: Transaction = {
     ...before,
     revision: before.revision + 1,
     subtotal: total,
     total,
+    paymentAmount,
     updatedActorName: session.user.fullName,
     terminalId: terminal.serverTerminalId,
     syncState: "pending",
@@ -368,12 +432,12 @@ export async function correctTransaction(
     },
   };
   const signature = await signCanonicalPayload(operation);
-  const { sqlite } = await getDatabase();
+  const { sqlite } = await getDatabase(session.dataMode);
 
   await sqlite.withTransactionAsync(async () => {
     await sqlite.runAsync(
       `UPDATE transactions SET
-         revision = ?, subtotal = ?, total = ?, updated_actor_name = ?,
+         revision = ?, subtotal = ?, total = ?, payment_amount = ?, updated_actor_name = ?,
          terminal_id = ?, sync_state = 'pending', print_state = ?,
          payment_method = ?, payment_status = 'pending',
          payment_confirmed_revision = NULL, qris_payload_hash = ?
@@ -381,6 +445,7 @@ export async function correctTransaction(
       corrected.revision,
       corrected.subtotal,
       corrected.total,
+      corrected.paymentAmount,
       corrected.updatedActorName,
       corrected.terminalId,
       corrected.printState,
@@ -407,12 +472,22 @@ export async function correctTransaction(
   return corrected;
 }
 
-export async function setPaymentStatus(
+export function setPaymentStatus(
   transactionId: string,
   status: Exclude<PaymentStatus, "pending">,
   session: Session,
 ): Promise<Transaction> {
-  const before = await getTransaction(transactionId);
+  return withLocalMutation(session, () =>
+    setPaymentStatusLocal(transactionId, status, session),
+  );
+}
+
+async function setPaymentStatusLocal(
+  transactionId: string,
+  status: Exclude<PaymentStatus, "pending">,
+  session: Session,
+): Promise<Transaction> {
+  const before = await getTransaction(transactionId, session.dataMode);
   if (!before) throw new Error("Transaksi tidak ditemukan.");
   if (before.deletedAt) {
     throw new Error("Pembayaran transaksi yang diarsipkan tidak dapat diubah.");
@@ -422,7 +497,7 @@ export async function setPaymentStatus(
       "Selesaikan konflik revisi sebelum mengubah status pembayaran.",
     );
   }
-  if (await hasTerminalTransactionBlock(transactionId)) {
+  if (await hasTerminalTransactionBlock(transactionId, session.dataMode)) {
     throw new Error(
       "Operasi transaksi ini ditolak server. Pulihkan data dari Pusat Sinkron sebelum mengubah pembayaran.",
     );
@@ -475,7 +550,7 @@ export async function setPaymentStatus(
     },
   };
   const signature = await signCanonicalPayload(operation);
-  const { sqlite } = await getDatabase();
+  const { sqlite } = await getDatabase(session.dataMode);
 
   await sqlite.withTransactionAsync(async () => {
     await sqlite.runAsync(
@@ -506,8 +581,11 @@ export async function setPaymentStatus(
   return updated;
 }
 
-export async function getTransaction(id: string): Promise<Transaction | null> {
-  const { sqlite } = await getDatabase();
+export async function getTransaction(
+  id: string,
+  mode?: DataMode,
+): Promise<Transaction | null> {
+  const { sqlite } = await getDatabase(mode);
   const row = await sqlite.getFirstAsync<TransactionRow>(
     "SELECT * FROM transactions WHERE id = ?",
     id,
@@ -525,7 +603,7 @@ export async function listTransactions(
 
   if (filter.search?.trim()) {
     clauses.push("(id LIKE ? OR origin_actor_name LIKE ?)");
-    const normalized = filter.search.trim().replace(/^TRX-/i, "");
+    const normalized = filter.search.trim().replace(/^(?:TEST-)?TRX-/i, "");
     const search = `%${normalized}%`;
     params.push(search, search);
   }
@@ -611,9 +689,13 @@ export async function getDashboardStats(
   const { sqlite } = await getDatabase();
   const total = await sqlite.getFirstAsync<{
     gross: number | null;
+    actual_qris_amount: number | null;
     transaction_count: number;
   }>(
-    `SELECT COALESCE(SUM(total), 0) AS gross, COUNT(*) AS transaction_count
+    `SELECT COALESCE(SUM(total), 0) AS gross,
+            COALESCE(SUM(CASE WHEN payment_method = 'qris' THEN payment_amount ELSE 0 END), 0)
+              AS actual_qris_amount,
+            COUNT(*) AS transaction_count
      FROM transactions
      WHERE deleted_at IS NULL
        AND payment_status = 'success'
@@ -679,20 +761,34 @@ export async function getDashboardStats(
 
   return {
     gross: total?.gross ?? 0,
+    actualQrisAmount: total?.actual_qris_amount ?? 0,
     transactionCount: total?.transaction_count ?? 0,
     quantities,
     buckets,
   };
 }
 
-export async function beginPrintAttempt(input: {
+interface BeginPrintAttemptInput {
   transactionId: string;
   transactionRevision: number;
   adapter: string;
   isCopy: boolean;
   session: Session;
-}): Promise<string> {
-  const transaction = await getTransaction(input.transactionId);
+}
+
+export function beginPrintAttempt(
+  input: BeginPrintAttemptInput,
+): Promise<string> {
+  return withLocalMutation(input.session, () => beginPrintAttemptLocal(input));
+}
+
+async function beginPrintAttemptLocal(
+  input: BeginPrintAttemptInput,
+): Promise<string> {
+  const transaction = await getTransaction(
+    input.transactionId,
+    input.session.dataMode,
+  );
   if (!transaction) throw new Error("Transaksi tidak ditemukan.");
   if (transaction.deletedAt) {
     throw new Error("Transaksi yang diarsipkan tidak dapat dicetak.");
@@ -702,7 +798,12 @@ export async function beginPrintAttempt(input: {
       "Selesaikan konflik revisi sebelum mencetak transaksi ini.",
     );
   }
-  if (await hasTerminalTransactionBlock(input.transactionId)) {
+  if (
+    await hasTerminalTransactionBlock(
+      input.transactionId,
+      input.session.dataMode,
+    )
+  ) {
     throw new Error(
       "Operasi transaksi ini ditolak server dan belum dipulihkan. Pencetakan dikunci.",
     );
@@ -722,7 +823,7 @@ export async function beginPrintAttempt(input: {
   }
   const attemptId = Crypto.randomUUID();
   const now = new Date().toISOString();
-  const { sqlite } = await getDatabase();
+  const { sqlite } = await getDatabase(input.session.dataMode);
   await sqlite.runAsync(
     `INSERT INTO print_attempts(
       id, transaction_id, transaction_revision, adapter, is_copy,
@@ -738,17 +839,29 @@ export async function beginPrintAttempt(input: {
   return attemptId;
 }
 
-export async function completePrintAttempt(input: {
+interface CompletePrintAttemptInput {
   attemptId: string;
   transactionId: string;
   result: Exclude<PrintAttemptResult, "pending">;
   error?: string;
   session: Session;
-}): Promise<void> {
+}
+
+export function completePrintAttempt(
+  input: CompletePrintAttemptInput,
+): Promise<void> {
+  return withLocalMutation(input.session, () =>
+    completePrintAttemptLocal(input),
+  );
+}
+
+async function completePrintAttemptLocal(
+  input: CompletePrintAttemptInput,
+): Promise<void> {
   const terminal = await getOrCreateTerminalIdentity();
   if (!terminal.serverTerminalId) throw new Error("Terminal belum terdaftar.");
   const now = new Date().toISOString();
-  const { sqlite } = await getDatabase();
+  const { sqlite } = await getDatabase(input.session.dataMode);
   const attempt = await sqlite.getFirstAsync<{
     transaction_id: string;
     adapter: string;
@@ -830,7 +943,7 @@ export async function completePrintAttempt(input: {
 export async function recoverInterruptedPrintAttempts(
   session: Session,
 ): Promise<number> {
-  const { sqlite } = await getDatabase();
+  const { sqlite } = await getDatabase(session.dataMode);
   const pending = await sqlite.getAllAsync<{
     id: string;
     transaction_id: string;
@@ -852,8 +965,9 @@ export async function recoverInterruptedPrintAttempts(
 
 export async function getOutboxOperations(
   limit = 25,
+  mode?: DataMode,
 ): Promise<StoredOutboxOperation[]> {
-  const { sqlite } = await getDatabase();
+  const { sqlite } = await getDatabase(mode);
   const rows = await sqlite.getAllAsync<{
     operation_id: string;
     aggregate_id: string;
@@ -915,8 +1029,9 @@ export async function markOutboxResult(
         authoritative: Transaction;
       }
     | { kind: "conflict"; local: Transaction; server: Transaction },
+  mode?: DataMode,
 ): Promise<void> {
-  const { sqlite } = await getDatabase();
+  const { sqlite } = await getDatabase(mode);
   await sqlite.withTransactionAsync(async () => {
     const operation = await sqlite.getFirstAsync<{
       dependency_key: string | null;
@@ -1090,8 +1205,8 @@ export async function markOutboxResult(
   });
 }
 
-export async function countPendingOutbox(): Promise<number> {
-  const { sqlite } = await getDatabase();
+export async function countPendingOutbox(mode?: DataMode): Promise<number> {
+  const { sqlite } = await getDatabase(mode);
   const row = await sqlite.getFirstAsync<{ count: number }>(
     "SELECT COUNT(*) AS count FROM outbox_operations WHERE state IN ('pending', 'error', 'conflict', 'rejected')",
   );
@@ -1143,7 +1258,15 @@ export async function listRejectedOutboxOperations(): Promise<
   }));
 }
 
-export async function discardRejectedOutboxOperation(
+export function discardRejectedOutboxOperation(
+  operationId: string,
+): Promise<void> {
+  return withLocalMutation(null, () =>
+    discardRejectedOutboxOperationLocal(operationId),
+  );
+}
+
+async function discardRejectedOutboxOperationLocal(
   operationId: string,
 ): Promise<void> {
   const { sqlite } = await getDatabase();
@@ -1358,8 +1481,9 @@ export async function discardRejectedOutboxOperation(
 
 export async function hasTerminalTransactionBlock(
   transactionId: string,
+  mode?: DataMode,
 ): Promise<boolean> {
-  const { sqlite } = await getDatabase();
+  const { sqlite } = await getDatabase(mode);
   const row = await sqlite.getFirstAsync<{ blocked: number }>(
     `SELECT EXISTS(
        SELECT 1
@@ -1410,7 +1534,16 @@ export async function getConflictForTransaction(
   );
 }
 
-export async function resolveConflict(
+export function resolveConflict(
+  conflict: SyncConflict,
+  resolution: "server" | "retry-local",
+): Promise<void> {
+  return withLocalMutation(null, () =>
+    resolveConflictLocal(conflict, resolution),
+  );
+}
+
+async function resolveConflictLocal(
   conflict: SyncConflict,
   resolution: "server" | "retry-local",
 ): Promise<void> {
@@ -1572,12 +1705,12 @@ export async function resolveConflict(
   });
 }
 
-export async function getSyncMetadata(): Promise<{
+export async function getSyncMetadata(mode?: DataMode): Promise<{
   cursor: string | null;
   lastSyncedAt: string | null;
   lastError: string | null;
 }> {
-  const { sqlite } = await getDatabase();
+  const { sqlite } = await getDatabase(mode);
   const row = await sqlite.getFirstAsync<{
     cursor: string | null;
     last_synced_at: string | null;
@@ -1604,8 +1737,9 @@ export interface RemoteChange {
 export async function applyRemoteChanges(
   changes: RemoteChange[],
   nextCursor: string,
+  mode?: DataMode,
 ): Promise<void> {
-  const { sqlite } = await getDatabase();
+  const { sqlite } = await getDatabase(mode);
   await sqlite.withTransactionAsync(async () => {
     for (const change of changes) {
       if (change.aggregate === "package") {
@@ -1746,8 +1880,11 @@ export async function applyRemoteChanges(
   });
 }
 
-export async function setSyncError(message: string): Promise<void> {
-  const { sqlite } = await getDatabase();
+export async function setSyncError(
+  message: string,
+  mode?: DataMode,
+): Promise<void> {
+  const { sqlite } = await getDatabase(mode);
   await sqlite.runAsync(
     "UPDATE sync_metadata SET status = 'error', last_error = ? WHERE singleton = 1",
     message,
@@ -1760,16 +1897,17 @@ async function insertTransaction(
 ): Promise<void> {
   await database.runAsync(
     `INSERT INTO transactions(
-      id, revision, occurred_at, subtotal, total, origin_actor_id,
+      id, revision, occurred_at, subtotal, total, payment_amount, origin_actor_id,
       origin_actor_name, updated_actor_name, terminal_id, sync_state,
       print_state, payment_method, payment_status,
       payment_confirmed_revision, qris_payload_hash, deleted_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     transaction.id,
     transaction.revision,
     transaction.occurredAt,
     transaction.subtotal,
     transaction.total,
+    transaction.paymentAmount,
     transaction.originActorId,
     transaction.originActorName,
     transaction.updatedActorName,
@@ -1878,6 +2016,7 @@ async function hydrateTransaction(
     occurredAt: row.occurred_at,
     subtotal: row.subtotal,
     total: row.total,
+    paymentAmount: row.payment_amount,
     originActorId: row.origin_actor_id,
     originActorName: row.origin_actor_name,
     updatedActorName: row.updated_actor_name,
@@ -1903,14 +2042,15 @@ async function replaceTransaction(
   const occurredAt = normalizeUtcTimestamp(transaction.occurredAt);
   await database.runAsync(
     `INSERT INTO transactions(
-      id, revision, occurred_at, subtotal, total, origin_actor_id,
+      id, revision, occurred_at, subtotal, total, payment_amount, origin_actor_id,
       origin_actor_name, updated_actor_name, terminal_id, sync_state,
       print_state, payment_method, payment_status,
       payment_confirmed_revision, qris_payload_hash, deleted_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       revision = excluded.revision, occurred_at = excluded.occurred_at,
       subtotal = excluded.subtotal, total = excluded.total,
+      payment_amount = excluded.payment_amount,
       origin_actor_id = excluded.origin_actor_id,
       origin_actor_name = excluded.origin_actor_name,
       updated_actor_name = excluded.updated_actor_name,
@@ -1926,6 +2066,7 @@ async function replaceTransaction(
     occurredAt,
     transaction.subtotal,
     transaction.total,
+    transaction.paymentAmount,
     transaction.originActorId,
     transaction.originActorName,
     transaction.updatedActorName,
@@ -2168,6 +2309,7 @@ function parseCorrectionOutboxOperation(
 
 function parseStoredTransaction(value: string): Transaction {
   const transaction = JSON.parse(value) as Transaction & {
+    paymentAmount?: number;
     paymentMethod?: PaymentMethod;
     paymentStatus?: PaymentStatus;
     paymentConfirmedRevision?: number | null;
@@ -2176,6 +2318,7 @@ function parseStoredTransaction(value: string): Transaction {
   const paymentMethod = transaction.paymentMethod ?? "legacy";
   return {
     ...transaction,
+    paymentAmount: transaction.paymentAmount ?? transaction.total,
     paymentMethod,
     paymentStatus: transaction.paymentStatus ?? "success",
     paymentConfirmedRevision:

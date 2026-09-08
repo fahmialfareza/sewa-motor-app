@@ -97,6 +97,214 @@ trace/span correlation and forwards records through the Go agent when log
 forwarding is enabled. Do not place session tokens, passwords, terminal private
 keys, database URLs, or license keys in log fields.
 
+Every web transaction starts in the fail-closed Production scope, including
+health checks, login attempts, and authentication failures. A successful
+authenticated request replaces that scope with the session-authorized
+`data.mode`, `data.space_id`, and (for Sandbox) `data.generation`. The Sandbox
+initializer and janitor also report `data.mode = 'sandbox'`. These attributes
+are attached to New Relic transactions, noticed errors, and Logrus records.
+
+Keep business alerts mode-specific. For example, a Production API error
+condition and a separate non-revenue Sandbox error view can start from:
+
+```sql
+SELECT count(*) FROM TransactionError
+WHERE appName = 'sewa-motor-backend-production'
+  AND `data.mode` = 'production'
+```
+
+```sql
+SELECT count(*) FROM TransactionError
+WHERE appName = 'sewa-motor-backend-production'
+  AND `data.mode` = 'sandbox'
+FACET operation
+```
+
+Do not add a mode filter to fleet availability, process restart, telemetry
+loss, or migration alerts: those failures can occur before a request has a data
+scope. A `sandbox.initialize` error is a deployment/startup failure. Monitor
+`sandbox.cleanup` separately and configure loss-of-signal on the following log
+query while the API fleet is expected to be running. Use 36 hours for the
+default 24-hour cleanup interval (and never exceed New Relic's 48-hour
+loss-of-signal maximum):
+
+```sql
+SELECT count(*) FROM Log
+WHERE `data.mode` = 'sandbox'
+  AND message = 'sandbox cleanup completed'
+```
+
+Before enabling Sandbox, verify that web traffic is classified (the following
+must remain zero), Production alerts exclude Sandbox, and the Sandbox error and
+cleanup conditions actually receive a test signal:
+
+```sql
+SELECT count(*) FROM Transaction
+WHERE appName = 'sewa-motor-backend-production'
+  AND transactionType = 'Web'
+  AND `data.mode` IS NULL
+```
+
+## Production-hosted Sandbox Mode
+
+Sandbox Mode is an isolated data space inside the production service, not a
+replacement deployment environment. It is disabled by default:
+
+```sh
+SANDBOX_ENABLED=false
+SANDBOX_RETENTION_DAYS=30
+SANDBOX_QRIS_AMOUNT=1000
+SANDBOX_CLEANUP_INTERVAL=24h
+```
+
+`SANDBOX_QRIS_AMOUNT` is a fixed safety invariant; startup rejects any value
+other than Rp1.000. The client generates the Sandbox QR from the real configured
+merchant payload, warns that the transfer is real, and marks every sandbox
+screen, receipt, and export as test output.
+
+Roll out in this order:
+
+1. Back up PostgreSQL and apply the forward-only GORM migration while
+   `SANDBOX_ENABLED=false`. This migration only adds and backfills the data-space
+   schema; it does not create, clone, or seed a Sandbox generation.
+2. Deploy the scope-aware backend with Sandbox still disabled.
+3. Release the compatible mobile build, then verify production dashboard,
+   history, exports, and sync remain in the production data space.
+4. Confirm that no pre-data-space backend replicas remain. Filter New Relic
+   production alerts by `data.mode = 'production'` and create a separate
+   Sandbox cleanup/error view.
+5. Set `SANDBOX_ENABLED=true` and restart the API. Before accepting traffic,
+   each replica runs an advisory-locked, idempotent activation; the first
+   replica creates the generation and clones the then-current production
+   packages, while the others reuse it. Any activation failure prevents that
+   replica from starting.
+
+`GET /sandbox/status` remains usable while the feature is disabled. It returns
+`enabled: false`; `dataSpaceId` and `generation` are `null` only when Sandbox
+has never been activated. A previously activated generation remains identified
+while entry is disabled, so clients can recognize a rollback without assuming
+that retained data disappeared.
+
+Switching mode is online-only, available to every signed-in staff member, and
+rotates the session into the selected data space. Only a production-mode
+superadmin may reset Sandbox. Reset advances the sandbox generation; the
+retired generation stays append-only until its configured retention boundary
+(30 days by default), after which cleanup removes it without affecting
+production readiness. Set `SANDBOX_ENABLED=false` to stop new sandbox entry
+while preserving production service; retired Sandbox evidence remains subject
+to that retention policy.
+
+### Backup and restore boundary
+
+Sandbox rows share the Production PostgreSQL cluster. Provider snapshots,
+continuous archiving, and PITR are physical recovery mechanisms and therefore
+include both modes; PostgreSQL cannot apply a row predicate to them. Treat those
+recovery copies as mixed-mode data with the same encryption and access controls
+as Production. Application cleanup does not retroactively remove rows from old
+snapshots, so align provider snapshot retention with the approved Sandbox-data
+policy. If policy forbids Sandbox rows in every recovery copy, do not enable a
+production-hosted Sandbox in that cluster.
+
+Use a production-only logical artifact for long-lived or externally transferred
+backups. `pg_dump` has no row-level `WHERE` option, so `--exclude-table-data`
+cannot safely express this boundary. The operator procedure is:
+
+1. Capture one consistent full recovery point and restore it into an isolated,
+   disposable scratch database. Never run the sanitization below against the
+   live database, and never point an API replica at the scratch database.
+2. As the schema owner, retire and remove every Sandbox generation in the
+   scratch copy using the same guarded append-only exception as the janitor:
+
+   ```sql
+   BEGIN;
+
+   UPDATE data_spaces
+   SET status = 'retired',
+       retired_at = COALESCE(retired_at, transaction_timestamp()),
+       purge_after = LEAST(
+           COALESCE(purge_after, transaction_timestamp()),
+           transaction_timestamp()
+       ),
+       purged_at = NULL
+   WHERE mode = 'sandbox';
+
+   DO $sanitize$
+   DECLARE
+       sandbox_ids uuid[];
+       sandbox_id uuid;
+   BEGIN
+       SELECT COALESCE(array_agg(id), ARRAY[]::uuid[])
+       INTO sandbox_ids
+       FROM data_spaces
+       WHERE mode = 'sandbox';
+
+       FOREACH sandbox_id IN ARRAY sandbox_ids LOOP
+           PERFORM set_config(
+               'app.sandbox_purge_data_space_id',
+               sandbox_id::text,
+               true
+           );
+           DELETE FROM idempotency_records WHERE data_space_id = sandbox_id;
+           DELETE FROM sync_changes WHERE data_space_id = sandbox_id;
+           DELETE FROM audit_events WHERE data_space_id = sandbox_id;
+           DELETE FROM print_attempts WHERE data_space_id = sandbox_id;
+           DELETE FROM transaction_items WHERE data_space_id = sandbox_id;
+           DELETE FROM transaction_revisions WHERE data_space_id = sandbox_id;
+           DELETE FROM transactions WHERE data_space_id = sandbox_id;
+           DELETE FROM package_revisions WHERE data_space_id = sandbox_id;
+           DELETE FROM packages WHERE data_space_id = sandbox_id;
+           DELETE FROM sessions WHERE data_space_id = sandbox_id;
+           DELETE FROM data_spaces WHERE id = sandbox_id;
+       END LOOP;
+   END
+   $sanitize$;
+
+   COMMIT;
+   ```
+
+3. Run this verification query in the scratch copy. It must return no rows:
+
+   ```sql
+   WITH unexpected(table_name, row_count) AS (
+       SELECT 'production_data_space',
+              CASE WHEN count(*) = 1 THEN 0 ELSE 1 END
+       FROM data_spaces
+       WHERE id = '00000000-0000-4000-8000-000000000100'::uuid
+         AND mode = 'production'
+         AND generation = 1
+         AND status = 'active'
+       UNION ALL SELECT 'data_spaces', count(*) FROM data_spaces
+       WHERE id <> '00000000-0000-4000-8000-000000000100'::uuid
+          OR mode <> 'production'
+       UNION ALL SELECT 'sessions', count(*) FROM sessions
+       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
+       UNION ALL SELECT 'packages', count(*) FROM packages
+       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
+       UNION ALL SELECT 'package_revisions', count(*) FROM package_revisions
+       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
+       UNION ALL SELECT 'transactions', count(*) FROM transactions
+       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
+       UNION ALL SELECT 'transaction_revisions', count(*) FROM transaction_revisions
+       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
+       UNION ALL SELECT 'transaction_items', count(*) FROM transaction_items
+       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
+       UNION ALL SELECT 'print_attempts', count(*) FROM print_attempts
+       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
+       UNION ALL SELECT 'audit_events', count(*) FROM audit_events
+       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
+       UNION ALL SELECT 'sync_changes', count(*) FROM sync_changes
+       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
+       UNION ALL SELECT 'idempotency_records', count(*) FROM idempotency_records
+       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
+   )
+   SELECT * FROM unexpected WHERE row_count <> 0;
+   ```
+
+4. Create and restore-test the logical `pg_dump` artifact from that verified
+   scratch database, record its checksum and recovery point, then destroy the
+   scratch database. On restore, repeat the query above before exposing the
+   database to an API replica.
+
 ## Bootstrap users
 
 Bootstrap requires an uncommitted JSON secret containing exactly one

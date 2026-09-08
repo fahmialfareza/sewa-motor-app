@@ -1,4 +1,4 @@
-import type { PaymentMethod, Transaction } from "@/domain/types";
+import type { DataMode, PaymentMethod, Transaction } from "@/domain/types";
 
 export interface ReceiptLine {
   name: string;
@@ -16,6 +16,8 @@ export interface ReceiptDocument {
   lines: ReceiptLine[];
   subtotal: number;
   total: number;
+  paymentAmount: number;
+  dataMode: DataMode;
   isCopy: boolean;
 }
 
@@ -48,6 +50,7 @@ export interface ReceiptPrinter {
 export function receiptFromTransaction(
   transaction: Transaction,
   isCopy: boolean,
+  dataMode: DataMode = "production",
 ): ReceiptDocument {
   return {
     transactionId: transaction.id,
@@ -63,6 +66,8 @@ export function receiptFromTransaction(
     })),
     subtotal: transaction.subtotal,
     total: transaction.total,
+    paymentAmount: transaction.paymentAmount,
+    dataMode,
     isCopy,
   };
 }

@@ -23,7 +23,7 @@ func (s *Store) UserForLogin(ctx context.Context, username string) (domain.UserA
 	}, dbError(err, "find login user")
 }
 
-func (s *Store) CreateSession(ctx context.Context, userID uuid.UUID, terminalID *uuid.UUID, tokenHash []byte) (domain.Principal, error) {
+func (s *Store) CreateSession(ctx context.Context, userID uuid.UUID, terminalID *uuid.UUID, tokenHash []byte, dataSpaceID uuid.UUID) (domain.Principal, error) {
 	defer observability.StartSegment(ctx, "Postgres.CreateSession")()
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -45,10 +45,12 @@ func (s *Store) CreateSession(ctx context.Context, userID uuid.UUID, terminalID 
 	}
 	var sessionID uuid.UUID
 	err = tx.QueryRow(ctx, `
-		INSERT INTO sessions (user_id, terminal_id, token_hash)
-		VALUES ($1,$2,$3)
+		INSERT INTO sessions (user_id, terminal_id, token_hash, data_space_id)
+		SELECT $1,$2,$3,ds.id
+		FROM data_spaces ds
+		WHERE ds.id = $4 AND ds.status = 'active'
 		RETURNING id`,
-		userID, terminalID, tokenHash,
+		userID, terminalID, tokenHash, domain.EffectiveDataSpaceID(dataSpaceID),
 	).Scan(&sessionID)
 	if err != nil {
 		return domain.Principal{}, dbError(err, "create session")
@@ -89,17 +91,52 @@ func principalBySessionRow(ctx context.Context, query rowQuerier, sessionID uuid
 	defer observability.StartSegment(ctx, "Postgres.principalBySessionRow")()
 	var principal domain.Principal
 	err := query.QueryRow(ctx, `
-		SELECT u.id, s.id, s.terminal_id, u.full_name, u.username, u.role, u.must_change_password
+		SELECT u.id, s.id, s.terminal_id, u.full_name, u.username, u.role, u.must_change_password,
+		       ds.id, ds.mode,
+		       CASE WHEN ds.mode = 'sandbox' THEN ds.generation ELSE 0 END
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
+		JOIN data_spaces ds ON ds.id = s.data_space_id
 		WHERE s.id = $1 AND s.token_hash = $2
 		  AND s.revoked_at IS NULL
+		  AND ds.status = 'active'
 		  AND u.is_active AND u.deleted_at IS NULL`,
 		sessionID, tokenHash,
 	).Scan(
 		&principal.UserID, &principal.SessionID, &principal.TerminalID,
 		&principal.FullName, &principal.Username, &principal.Role, &principal.MustChangePassword,
+		&principal.DataSpaceID, &principal.DataMode, &principal.SandboxGeneration,
 	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A reset-revoked Sandbox session retains just enough authenticated
+		// identity to rotate once through /auth/switch-mode. Keep this lookup
+		// deliberately narrower than ordinary authentication: arbitrary revoked
+		// sessions must remain indistinguishable from invalid credentials.
+		lookupErr := query.QueryRow(ctx, `
+			SELECT u.id, s.id, s.terminal_id, u.full_name, u.username, u.role,
+			       u.must_change_password, ds.id, ds.mode, ds.generation
+			FROM sessions s
+			JOIN users u ON u.id = s.user_id
+			JOIN data_spaces ds ON ds.id = s.data_space_id
+			WHERE s.id = $1 AND s.token_hash = $2
+			  AND s.revoked_at IS NOT NULL
+			  AND s.revoked_reason = 'sandbox_generation_retired'
+			  AND ds.mode = 'sandbox' AND ds.status = 'retired'
+			  AND s.revoked_at = ds.retired_at
+			  AND u.is_active AND u.deleted_at IS NULL`, sessionID, tokenHash,
+		).Scan(
+			&principal.UserID, &principal.SessionID, &principal.TerminalID,
+			&principal.FullName, &principal.Username, &principal.Role,
+			&principal.MustChangePassword, &principal.DataSpaceID,
+			&principal.DataMode, &principal.SandboxGeneration,
+		)
+		if lookupErr == nil {
+			return principal, domain.NewError(
+				domain.CodeSandboxGenerationRetired,
+				"Generasi Sandbox telah diganti. Muat ulang data Sandbox untuk melanjutkan",
+			)
+		}
+	}
 	return principal, err
 }
 
@@ -153,7 +190,7 @@ func (s *Store) ChangeOwnPassword(ctx context.Context, principal domain.Principa
 		map[string]any{"mustChangePassword": false}, nil, s.Now()); err != nil {
 		return dbError(err, "audit password change")
 	}
-	if err = addChange(ctx, tx, "user", principal.UserID.String(), "updated", nil,
+	if err = addSharedChange(ctx, tx, "user", principal.UserID.String(), "updated", nil,
 		map[string]any{"id": principal.UserID, "mustChangePassword": false}, false); err != nil {
 		return dbError(err, "sync password change")
 	}
@@ -209,7 +246,7 @@ func (s *Store) CreateUser(ctx context.Context, actor domain.Principal, input do
 	if err = audit(ctx, tx, "user.created", "user", user.ID.String(), identity, nil, user, nil, s.Now()); err != nil {
 		return domain.User{}, dbError(err, "audit create user")
 	}
-	if err = addChange(ctx, tx, "user", user.ID.String(), "created", nil, user, false); err != nil {
+	if err = addSharedChange(ctx, tx, "user", user.ID.String(), "created", nil, user, false); err != nil {
 		return domain.User{}, dbError(err, "sync create user")
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -220,7 +257,11 @@ func (s *Store) CreateUser(ctx context.Context, actor domain.Principal, input do
 
 func (s *Store) UpdateUser(ctx context.Context, actor domain.Principal, targetID uuid.UUID, input domain.UpdateUserInput) (domain.User, error) {
 	defer observability.StartSegment(ctx, "Postgres.UpdateUser")()
-	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	// The superadmin advisory lock and row locks enforce the access invariant.
+	// READ COMMITTED is required because addSharedChange takes the Sandbox
+	// generation lock after the user write and must refresh its active-space
+	// snapshot if a reset completed while it waited.
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return domain.User{}, dbError(err, "begin update user")
 	}
@@ -288,7 +329,7 @@ func (s *Store) UpdateUser(ctx context.Context, actor domain.Principal, targetID
 	if err = audit(ctx, tx, "user.updated", "user", targetID.String(), identity, before, after, nil, s.Now()); err != nil {
 		return domain.User{}, dbError(err, "audit update user")
 	}
-	if err = addChange(ctx, tx, "user", targetID.String(), "updated", nil, after, false); err != nil {
+	if err = addSharedChange(ctx, tx, "user", targetID.String(), "updated", nil, after, false); err != nil {
 		return domain.User{}, dbError(err, "sync update user")
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -336,7 +377,7 @@ func (s *Store) ResetUserPassword(ctx context.Context, actor domain.Principal, t
 		map[string]any{"mustChangePassword": true}, nil, s.Now()); err != nil {
 		return domain.User{}, dbError(err, "audit password reset")
 	}
-	if err = addChange(ctx, tx, "user", targetID.String(), "updated", nil, after, false); err != nil {
+	if err = addSharedChange(ctx, tx, "user", targetID.String(), "updated", nil, after, false); err != nil {
 		return domain.User{}, dbError(err, "sync password reset")
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -350,7 +391,9 @@ func (s *Store) DeleteUser(ctx context.Context, actor domain.Principal, targetID
 	if actor.UserID == targetID {
 		return domain.NewError(domain.CodeSelfMutation, "Anda tidak dapat menghapus akun sendiri")
 	}
-	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable})
+	// See UpdateUser: the explicit invariant locks provide serialization, while
+	// READ COMMITTED lets the late shared-change fanout observe a completed reset.
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return dbError(err, "begin delete user")
 	}
@@ -389,7 +432,7 @@ func (s *Store) DeleteUser(ctx context.Context, actor domain.Principal, targetID
 		map[string]any{"reason": reason}, s.Now()); err != nil {
 		return dbError(err, "audit delete user")
 	}
-	if err = addChange(ctx, tx, "user", targetID.String(), "deleted", nil, after, true); err != nil {
+	if err = addSharedChange(ctx, tx, "user", targetID.String(), "deleted", nil, after, true); err != nil {
 		return dbError(err, "sync delete user")
 	}
 	return dbError(tx.Commit(ctx), "commit delete user")

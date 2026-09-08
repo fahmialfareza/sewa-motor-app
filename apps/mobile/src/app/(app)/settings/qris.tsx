@@ -185,13 +185,17 @@ export default function QrisSettingsScreen() {
     };
   }, [role]);
 
-  if (role !== "superadmin") {
+  if (role !== "superadmin" || session?.dataMode === "sandbox") {
     return (
       <AppScreen>
         <PageHeader back title="QRIS Dinamis" />
         <StateView
           icon="shield-lock-outline"
-          message="Hanya superadmin yang dapat mengubah identitas merchant QRIS."
+          message={
+            session?.dataMode === "sandbox"
+              ? "Sumber QRIS merchant digunakan bersama dan hanya dapat diubah dari Mode Produksi."
+              : "Hanya superadmin yang dapat mengubah identitas merchant QRIS."
+          }
           title="Akses dibatasi"
         />
       </AppScreen>

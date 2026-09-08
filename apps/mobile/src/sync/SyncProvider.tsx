@@ -13,6 +13,7 @@ type SyncRuntime = Omit<SyncStore, "setOnline">;
 export const FOREGROUND_SYNC_INTERVAL_MS = 60_000;
 
 const selectSyncRuntime = (state: SyncStore): SyncRuntime => ({
+  dataSpaceId: state.dataSpaceId,
   online: state.online,
   syncing: state.syncing,
   pendingCount: state.pendingCount,
@@ -49,9 +50,8 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   const appState = useRef(AppState.currentState);
 
   useEffect(() => {
-    void refresh();
     ensureBackgroundSyncRegistered();
-  }, [refresh]);
+  }, []);
 
   useEffect(() => {
     const unsubscribeNetwork = NetInfo.addEventListener((state) => {
@@ -87,8 +87,11 @@ export function SyncProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (sessionId) runForegroundSync(appState.current);
-  }, [sessionId]);
+    if (sessionId) {
+      void refresh();
+      runForegroundSync(appState.current);
+    }
+  }, [refresh, sessionId]);
 
   return <>{children}</>;
 }

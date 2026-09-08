@@ -331,6 +331,21 @@ const migrations: Migration[] = [
         );
     `,
   },
+  {
+    version: 9,
+    name: "sandbox_generation_and_payment_amount",
+    sql: `
+      ALTER TABLE transactions
+        ADD COLUMN payment_amount INTEGER NOT NULL DEFAULT 0
+        CHECK(payment_amount >= 0);
+
+      UPDATE transactions
+      SET payment_amount = total;
+
+      ALTER TABLE sync_metadata
+        ADD COLUMN generation INTEGER;
+    `,
+  },
 ];
 
 export async function runMigrations(database: SQLiteDatabase): Promise<void> {

@@ -1,6 +1,6 @@
 import type { SQLiteDatabase } from "expo-sqlite";
 
-import { applyRemoteChanges } from "@/db/repositories";
+import { applyRemoteChanges, listTransactions } from "@/db/repositories";
 import { latestMigrationVersion, runMigrations } from "@/db/migrations";
 import type { Transaction } from "@/domain/types";
 
@@ -9,6 +9,7 @@ const QRIS_PAYLOAD_HASH =
 
 const mockRunAsync = jest.fn<Promise<unknown>, unknown[]>();
 const mockGetFirstAsync = jest.fn<Promise<unknown>, unknown[]>();
+const mockGetAllAsync = jest.fn<Promise<unknown[]>, unknown[]>();
 const mockWithTransactionAsync = jest.fn(
   async (callback: () => Promise<void>) => callback(),
 );
@@ -17,6 +18,7 @@ jest.mock("@/db/client", () => ({
   getDatabase: async () => ({
     sqlite: {
       getFirstAsync: (...args: unknown[]) => mockGetFirstAsync(...args),
+      getAllAsync: (...args: unknown[]) => mockGetAllAsync(...args),
       runAsync: (...args: unknown[]) => mockRunAsync(...args),
       withTransactionAsync: (callback: () => Promise<void>) =>
         mockWithTransactionAsync(callback),
@@ -30,6 +32,7 @@ const remoteTransaction: Transaction = {
   occurredAt: "2026-07-28T00:00:00.000Z",
   subtotal: 70_000,
   total: 70_000,
+  paymentAmount: 70_000,
   originActorId: "owner",
   originActorName: "Owner",
   updatedActorName: "Owner",
@@ -60,10 +63,23 @@ describe("transaction item storage", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockRunAsync.mockResolvedValue({});
+    mockGetAllAsync.mockResolvedValue([]);
     mockGetFirstAsync.mockImplementation(async (sql) =>
       String(sql).includes("FROM sync_conflicts")
         ? null
         : { first_revision: null },
+    );
+  });
+
+  it("searches TEST transaction display IDs using the raw stored ID", async () => {
+    await listTransactions({ search: "TEST-TRX-01ARZ3N" });
+
+    expect(mockGetAllAsync).toHaveBeenCalledWith(
+      expect.stringContaining("id LIKE ?"),
+      "%01ARZ3N%",
+      "%01ARZ3N%",
+      30,
+      0,
     );
   });
 
@@ -120,7 +136,7 @@ describe("transaction item storage", () => {
       String(sql).includes("INSERT INTO transactions"),
     );
     expect(replaceCall?.[3]).toBe("2026-07-29T11:00:00.000Z");
-    expect(replaceCall?.[15]).toBe(QRIS_PAYLOAD_HASH);
+    expect(replaceCall?.[16]).toBe(QRIS_PAYLOAD_HASH);
   });
 
   it("removes rejected correction artifacts and preserves unresolved conflict state after a pull", async () => {
@@ -273,7 +289,7 @@ describe("transaction item storage", () => {
 
     await runMigrations(database);
 
-    expect(latestMigrationVersion).toBe(8);
+    expect(latestMigrationVersion).toBe(9);
     const migrationSql = String(execAsync.mock.calls[0]?.[0]);
     expect(migrationSql).toContain("SELECT MAX(rowid)");
     expect(migrationSql).toContain(
@@ -291,7 +307,7 @@ describe("transaction item storage", () => {
 
     await runMigrations(database);
 
-    expect(latestMigrationVersion).toBe(8);
+    expect(latestMigrationVersion).toBe(9);
     const migrationSql = String(execAsync.mock.calls[0]?.[0]);
     expect(migrationSql).toContain("payment_method");
     expect(migrationSql).toContain("payment_status = 'success'");
@@ -309,7 +325,7 @@ describe("transaction item storage", () => {
 
     await runMigrations(database);
 
-    expect(latestMigrationVersion).toBe(8);
+    expect(latestMigrationVersion).toBe(9);
     const migrationSql = String(execAsync.mock.calls[0]?.[0]);
     expect(migrationSql).toContain("transaction_revision");
     expect(migrationSql).toContain("SET print_state = 'unknown'");
@@ -329,7 +345,7 @@ describe("transaction item storage", () => {
 
     await runMigrations(database);
 
-    expect(latestMigrationVersion).toBe(8);
+    expect(latestMigrationVersion).toBe(9);
     const migrationSql = String(execAsync.mock.calls[0]?.[0]);
     expect(migrationSql).toContain("Operasi dikarantina");
     expect(migrationSql).toContain(
@@ -348,7 +364,7 @@ describe("transaction item storage", () => {
 
     await runMigrations(database);
 
-    expect(latestMigrationVersion).toBe(8);
+    expect(latestMigrationVersion).toBe(9);
     const migrationSql = String(execAsync.mock.calls[0]?.[0]);
     expect(migrationSql).toContain("strftime(\n        '%Y-%m-%dT%H:%M:%fZ'");
     expect(migrationSql).toContain(
@@ -366,7 +382,7 @@ describe("transaction item storage", () => {
 
     await runMigrations(database);
 
-    expect(latestMigrationVersion).toBe(8);
+    expect(latestMigrationVersion).toBe(9);
     const migrationSql = String(execAsync.mock.calls[0]?.[0]);
     expect(migrationSql).toContain("ADD COLUMN qris_payload_hash TEXT");
     expect(migrationSql).toContain("length(qris_payload_hash) = 64");

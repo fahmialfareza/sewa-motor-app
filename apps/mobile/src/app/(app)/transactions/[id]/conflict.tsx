@@ -2,6 +2,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
+import { useAuth } from "@/auth/AuthProvider";
 import { AppScreen } from "@/components/layout/AppScreen";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/Button";
@@ -10,11 +11,12 @@ import { getConflictForTransaction, resolveConflict } from "@/db/repositories";
 import type { SyncConflict, Transaction } from "@/domain/types";
 import { useSyncRuntime } from "@/sync/SyncProvider";
 import { colors, spacing, textStyles, typography } from "@/theme/tokens";
-import { formatRupiah } from "@/utils/format";
+import { displayTransactionId, formatRupiah } from "@/utils/format";
 
 export default function ConflictReviewScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const { session } = useAuth();
   const sync = useSyncRuntime();
   const [conflict, setConflict] = useState<SyncConflict | null>(null);
   const [busy, setBusy] = useState(false);
@@ -63,7 +65,10 @@ export default function ConflictReviewScreen() {
     <AppScreen>
       <PageHeader
         back
-        subtitle="Pilih hasil setelah membandingkan kedua versi"
+        subtitle={`${displayTransactionId(
+          conflict.transactionId,
+          session?.dataMode ?? "production",
+        )} • Pilih hasil setelah membandingkan kedua versi`}
         title="Konflik Revisi"
       />
       <View style={styles.columns}>

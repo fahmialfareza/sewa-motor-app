@@ -9,9 +9,9 @@ import (
 )
 
 type Querier interface {
-	CurrentTransactionItems(ctx context.Context, transactionID string) ([]TransactionItem, error)
+	CurrentTransactionItems(ctx context.Context, arg CurrentTransactionItemsParams) ([]TransactionItem, error)
 	GetLiveSessionPrincipal(ctx context.Context, tokenHash []byte) (GetLiveSessionPrincipalRow, error)
-	PullSyncChanges(ctx context.Context, arg PullSyncChangesParams) ([]SyncChange, error)
+	PullSyncChanges(ctx context.Context, arg PullSyncChangesParams) ([]PullSyncChangesRow, error)
 }
 
 var _ Querier = (*Queries)(nil)

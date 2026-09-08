@@ -1,14 +1,20 @@
 import * as Crypto from "expo-crypto";
 import * as SecureStore from "expo-secure-store";
 
-import type { Session } from "@/domain/types";
+import {
+  PRODUCTION_DATA_SPACE_ID,
+  type DataMode,
+  type Session,
+} from "@/domain/types";
 
 const keys = {
   session: "sewa-motor.session.v1",
   database: "sewa-motor.database-key.v1",
+  sandboxDatabase: "sewa-motor.database-key.sandbox.v1",
   terminal: "sewa-motor.terminal-identity.v1",
   printer: "sewa-motor.printer-config.v1",
   qris: "sewa-motor.qris-config.v1",
+  authNotice: "sewa-motor.auth-notice.v1",
 } as const;
 
 export interface TerminalIdentityRecord {
@@ -35,7 +41,33 @@ const secureOptions: SecureStore.SecureStoreOptions = {
 };
 
 export async function readSession(): Promise<Session | null> {
-  return readJson<Session>(keys.session);
+  const session = await readJson<
+    Omit<Session, "dataMode" | "dataSpaceId" | "sandboxGeneration"> &
+      Partial<
+        Pick<Session, "dataMode" | "dataSpaceId" | "sandboxGeneration">
+      > & {
+        mode?: DataMode;
+      }
+  >(keys.session);
+  if (!session) return null;
+  const dataMode: DataMode =
+    session.dataMode === "sandbox" || session.mode === "sandbox"
+      ? "sandbox"
+      : "production";
+  return {
+    ...session,
+    dataMode,
+    dataSpaceId:
+      typeof session.dataSpaceId === "string" && session.dataSpaceId.length > 0
+        ? session.dataSpaceId
+        : PRODUCTION_DATA_SPACE_ID,
+    sandboxGeneration:
+      dataMode === "sandbox" &&
+      Number.isInteger(session.sandboxGeneration) &&
+      Number(session.sandboxGeneration) > 0
+        ? Number(session.sandboxGeneration)
+        : null,
+  };
 }
 
 export async function writeSession(session: Session): Promise<void> {
@@ -46,12 +78,27 @@ export async function clearSession(): Promise<void> {
   await SecureStore.deleteItemAsync(keys.session);
 }
 
-export async function getOrCreateDatabaseKey(): Promise<string> {
-  const existing = await SecureStore.getItemAsync(keys.database);
+export async function getOrCreateDatabaseKey(
+  mode: DataMode = "production",
+): Promise<string> {
+  const key = mode === "sandbox" ? keys.sandboxDatabase : keys.database;
+  const existing = await SecureStore.getItemAsync(key);
   if (existing) return existing;
   const generated = bytesToHex(await Crypto.getRandomBytesAsync(32));
-  await SecureStore.setItemAsync(keys.database, generated, secureOptions);
+  await SecureStore.setItemAsync(key, generated, secureOptions);
   return generated;
+}
+
+export async function readAuthNotice(): Promise<string | null> {
+  return SecureStore.getItemAsync(keys.authNotice);
+}
+
+export async function writeAuthNotice(message: string): Promise<void> {
+  await SecureStore.setItemAsync(keys.authNotice, message, secureOptions);
+}
+
+export async function clearAuthNotice(): Promise<void> {
+  await SecureStore.deleteItemAsync(keys.authNotice);
 }
 
 export async function readTerminalIdentity(): Promise<TerminalIdentityRecord | null> {

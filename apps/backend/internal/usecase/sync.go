@@ -42,7 +42,7 @@ func (s Sync) Pull(ctx context.Context, principal domain.Principal, cursor int64
 	if limit < 1 || limit > 500 {
 		limit = 200
 	}
-	changes, err := s.Repo.PullChanges(ctx, cursor, limit+1)
+	changes, err := s.Repo.PullChanges(ctx, principal.EffectiveDataSpaceID(), cursor, limit+1)
 	if err != nil {
 		return nil, cursor, false, err
 	}
@@ -75,7 +75,13 @@ func (s Sync) apply(ctx context.Context, principal domain.Principal, operation d
 	if err := security.VerifyMutation(publicKey, operation); err != nil {
 		return syncError(ctx, result, domain.NewError(domain.CodeSignatureInvalid, "Tanda tangan terminal tidak valid"))
 	}
-	matches, err := s.Repo.OriginSessionMatches(ctx, operation.OriginSessionID, operation.OriginActorID, operation.TerminalID)
+	matches, err := s.Repo.OriginSessionMatches(
+		ctx,
+		operation.OriginSessionID,
+		operation.OriginActorID,
+		operation.TerminalID,
+		principal.EffectiveDataSpaceID(),
+	)
 	if err != nil {
 		return syncError(ctx, result, err)
 	}
@@ -110,7 +116,8 @@ func syncError(ctx context.Context, result domain.SyncOperationResult, err error
 	case domain.CodeNotFound:
 		result.Status = http.StatusNotFound
 	case domain.CodeRevisionConflict, domain.CodePaymentStateConflict,
-		domain.CodeConflict, domain.CodeIdempotencyMismatch:
+		domain.CodeConflict, domain.CodeIdempotencyMismatch,
+		domain.CodeSandboxGenerationRetired:
 		result.Status = http.StatusConflict
 	default:
 		result.Status = http.StatusInternalServerError

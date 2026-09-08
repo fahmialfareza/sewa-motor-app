@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	principalKey = "principal"
-	requestIDKey = "request-id"
+	principalKey      = "principal"
+	authenticationKey = "authentication"
+	requestIDKey      = "request-id"
 )
 
 type Pinger interface {
@@ -39,6 +40,7 @@ type Dependencies struct {
 	Reporting    usecase.Reporting
 	Terminals    usecase.Terminals
 	Sync         usecase.Sync
+	Sandbox      usecase.Sandbox
 	Redis        Pinger
 	Logger       *logrus.Logger
 	NewRelic     *newrelic.Application
@@ -67,42 +69,51 @@ func New(deps Dependencies) *gin.Engine {
 
 	protected := api.Group("")
 	protected.Use(server.authenticate())
-	protected.POST("/profile/password", server.changePassword)
+	// These control-plane endpoints remain available to a previously issued
+	// Sandbox session after the rollback flag is disabled. That lets the client
+	// identify the state, log out, or rotate safely back into Production.
 	protected.POST("/auth/logout", server.logout)
+	protected.POST("/auth/switch-mode", server.switchMode)
 	protected.GET("/profile", server.profile)
+	protected.GET("/sandbox/status", server.sandboxStatus)
 
-	protected.GET("/users", server.listUsers)
-	protected.POST("/users", server.createUser)
-	protected.GET("/users/:userId", server.getUser)
-	protected.PATCH("/users/:userId", server.updateUser)
-	protected.DELETE("/users/:userId", server.deleteUser)
-	protected.POST("/users/:userId/reset-password", server.resetPassword)
+	operational := protected.Group("")
+	operational.Use(server.requireSandboxEnabled())
+	operational.POST("/profile/password", server.requireProduction(), server.changePassword)
+	operational.POST("/sandbox/reset", server.requireProduction(), server.sandboxReset)
 
-	protected.GET("/packages", server.listPackages)
-	protected.POST("/packages", server.createPackage)
-	protected.GET("/packages/:packageId", server.getPackage)
-	protected.PATCH("/packages/:packageId", server.updatePackage)
-	protected.DELETE("/packages/:packageId", server.deletePackage)
+	operational.GET("/users", server.listUsers)
+	operational.POST("/users", server.requireProduction(), server.createUser)
+	operational.GET("/users/:userId", server.getUser)
+	operational.PATCH("/users/:userId", server.requireProduction(), server.updateUser)
+	operational.DELETE("/users/:userId", server.requireProduction(), server.deleteUser)
+	operational.POST("/users/:userId/reset-password", server.requireProduction(), server.resetPassword)
 
-	protected.GET("/transactions", server.listTransactions)
-	protected.POST("/transactions", server.createTransaction)
-	protected.GET("/transactions/:transactionId", server.getTransaction)
-	protected.DELETE("/transactions/:transactionId", server.deleteTransaction)
-	protected.GET("/transactions/:transactionId/revisions", server.listRevisions)
-	protected.POST("/transactions/:transactionId/revisions", server.correctTransaction)
-	protected.POST("/transactions/:transactionId/payment-status", server.setTransactionPaymentStatus)
-	protected.GET("/transactions/:transactionId/print-attempts", server.listPrintAttempts)
-	protected.POST("/transactions/:transactionId/print-attempts", server.recordPrintAttempt)
+	operational.GET("/packages", server.listPackages)
+	operational.POST("/packages", server.createPackage)
+	operational.GET("/packages/:packageId", server.getPackage)
+	operational.PATCH("/packages/:packageId", server.updatePackage)
+	operational.DELETE("/packages/:packageId", server.deletePackage)
 
-	protected.GET("/statistics/dashboard", server.dashboard)
-	protected.POST("/exports/transactions", server.exportTransactions)
+	operational.GET("/transactions", server.listTransactions)
+	operational.POST("/transactions", server.createTransaction)
+	operational.GET("/transactions/:transactionId", server.getTransaction)
+	operational.DELETE("/transactions/:transactionId", server.deleteTransaction)
+	operational.GET("/transactions/:transactionId/revisions", server.listRevisions)
+	operational.POST("/transactions/:transactionId/revisions", server.correctTransaction)
+	operational.POST("/transactions/:transactionId/payment-status", server.setTransactionPaymentStatus)
+	operational.GET("/transactions/:transactionId/print-attempts", server.listPrintAttempts)
+	operational.POST("/transactions/:transactionId/print-attempts", server.recordPrintAttempt)
 
-	protected.POST("/terminals/enroll", server.enrollTerminal)
-	protected.GET("/terminals/current", server.currentTerminal)
-	protected.POST("/terminals/:terminalId/revoke", server.revokeTerminal)
+	operational.GET("/statistics/dashboard", server.dashboard)
+	operational.POST("/exports/transactions", server.exportTransactions)
 
-	protected.POST("/sync/push", server.syncPush)
-	protected.GET("/sync/pull", server.syncPull)
+	operational.POST("/terminals/enroll", server.requireProduction(), server.enrollTerminal)
+	operational.GET("/terminals/current", server.currentTerminal)
+	operational.POST("/terminals/:terminalId/revoke", server.requireProduction(), server.revokeTerminal)
+
+	operational.POST("/sync/push", server.syncPush)
+	operational.GET("/sync/pull", server.syncPull)
 
 	// Conventional deployment probes remain available outside the versioned API.
 	router.GET("/healthz", server.live)
@@ -120,6 +131,13 @@ func (s *Server) transactionContext() gin.HandlerFunc {
 		transaction.AddAttribute("request.id", requestID(c))
 		transaction.AddAttribute("http.route", c.FullPath())
 		ctx := newrelic.NewContext(c.Request.Context(), transaction)
+		// Production is the fail-closed/default scope for public endpoints and
+		// authentication failures. Successful protected requests overwrite this
+		// with their immutable session-bound scope in authenticate().
+		ctx = observability.WithDataScope(ctx, observability.DataScope{
+			Mode:    string(domain.DataModeProduction),
+			SpaceID: domain.LiveDataSpaceIDString,
+		})
 		c.Request = c.Request.WithContext(ctx)
 		handlerName := c.HandlerName()
 		if index := strings.LastIndex(handlerName, "."); index >= 0 {
@@ -152,16 +170,20 @@ func (s *Server) accessLog() gin.HandlerFunc {
 		started := time.Now()
 		c.Next()
 		if s.deps.Logger != nil {
+			fields := logrus.Fields{
+				"request_id":  requestID(c),
+				"method":      c.Request.Method,
+				"path":        c.FullPath(),
+				"status":      c.Writer.Status(),
+				"duration_ms": time.Since(started).Milliseconds(),
+				"client_ip":   c.ClientIP(),
+			}
+			for name, value := range observability.DataScopeLogFields(c.Request.Context()) {
+				fields[name] = value
+			}
 			s.deps.Logger.
 				WithContext(c.Request.Context()).
-				WithFields(logrus.Fields{
-					"request_id":  requestID(c),
-					"method":      c.Request.Method,
-					"path":        c.FullPath(),
-					"status":      c.Writer.Status(),
-					"duration_ms": time.Since(started).Milliseconds(),
-					"client_ip":   c.ClientIP(),
-				}).
+				WithFields(fields).
 				Info("http_request")
 		}
 	}
@@ -176,6 +198,7 @@ func (s *Server) recovery() gin.HandlerFunc {
 				if s.deps.Logger != nil {
 					s.deps.Logger.
 						WithContext(c.Request.Context()).
+						WithFields(observability.DataScopeLogFields(c.Request.Context())).
 						WithError(err).
 						WithField("request_id", requestID(c)).
 						Error("panic")
@@ -205,14 +228,30 @@ func (s *Server) authenticate() gin.HandlerFunc {
 		}
 		auth, err := s.deps.Auth.Authenticate(c.Request.Context(), token)
 		if err != nil {
-			writeError(c, err)
-			c.Abort()
-			return
+			// A Sandbox reset revokes the old session, but the exact reset
+			// revocation may be consumed once by this endpoint to rotate into
+			// the active generation (or back into Production). No other route
+			// receives a principal for a revoked session.
+			isRecoveryRoute := c.Request.Method == http.MethodPost &&
+				c.FullPath() == "/api/v1/auth/switch-mode"
+			if !isRecoveryRoute ||
+				!domain.IsCode(err, domain.CodeSandboxGenerationRetired) ||
+				!auth.RecoverableRetiredSandbox || auth.Principal.SessionID == uuid.Nil ||
+				auth.Principal.EffectiveDataMode() != domain.DataModeSandbox {
+				writeError(c, err)
+				c.Abort()
+				return
+			}
 		}
 		c.Set(principalKey, auth.Principal)
+		c.Set(authenticationKey, auth)
+		attachDataScope(c, auth.Principal)
 		if transaction := newrelic.FromContext(c.Request.Context()); transaction != nil {
 			transaction.AddAttribute("user.id", auth.Principal.UserID.String())
 			transaction.AddAttribute("user.role", string(auth.Principal.Role))
+			if auth.RecoverableRetiredSandbox {
+				transaction.AddAttribute("sandbox.session_recovery", true)
+			}
 			if auth.Principal.TerminalID != nil {
 				transaction.AddAttribute("terminal.id", auth.Principal.TerminalID.String())
 			}
@@ -221,9 +260,55 @@ func (s *Server) authenticate() gin.HandlerFunc {
 	}
 }
 
+func attachDataScope(c *gin.Context, current domain.Principal) {
+	c.Request = c.Request.WithContext(observability.WithDataScope(
+		c.Request.Context(),
+		observability.DataScope{
+			Mode:       string(current.EffectiveDataMode()),
+			SpaceID:    current.EffectiveDataSpaceID().String(),
+			Generation: current.SandboxGeneration,
+		},
+	))
+}
+
+func (s *Server) requireProduction() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := usecase.RequireProduction(principal(c)); err != nil {
+			writeError(c, err)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func (s *Server) requireSandboxEnabled() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if principal(c).EffectiveDataMode() == domain.DataModeSandbox &&
+			!s.deps.Sandbox.Enabled {
+			writeError(c, domain.NewError(
+				domain.CodeForbidden,
+				"Mode Uji telah dinonaktifkan. Kembali ke Mode Produksi untuk melanjutkan",
+			))
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
 func principal(c *gin.Context) domain.Principal {
 	value, _ := c.Get(principalKey)
 	result, _ := value.(domain.Principal)
+	return result
+}
+
+func authentication(c *gin.Context) usecase.Authentication {
+	value, _ := c.Get(authenticationKey)
+	result, _ := value.(usecase.Authentication)
+	if result.Principal.SessionID == uuid.Nil {
+		result.Principal = principal(c)
+	}
 	return result
 }
 
@@ -282,7 +367,8 @@ func errorStatus(code string) int {
 		return http.StatusNotFound
 	case domain.CodeConflict, domain.CodeRevisionConflict, domain.CodePaymentStateConflict,
 		domain.CodeFinalSuperadmin,
-		domain.CodeSelfMutation, domain.CodeIdempotencyMismatch:
+		domain.CodeSelfMutation, domain.CodeIdempotencyMismatch,
+		domain.CodeSandboxGenerationRetired:
 		return http.StatusConflict
 	case domain.CodeRateLimited:
 		return http.StatusTooManyRequests

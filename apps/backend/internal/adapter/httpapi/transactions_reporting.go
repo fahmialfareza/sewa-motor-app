@@ -220,7 +220,12 @@ func (s *Server) deleteTransaction(c *gin.Context) {
 		writeError(c, err)
 		return
 	}
-	deleted, err := s.deps.Repo.GetTransaction(c.Request.Context(), before.ID, true)
+	deleted, err := s.deps.Repo.GetTransaction(
+		c.Request.Context(),
+		principal(c).EffectiveDataSpaceID(),
+		before.ID,
+		true,
+	)
 	if err != nil {
 		writeError(c, err)
 		return
@@ -324,7 +329,11 @@ func (s *Server) transactionView(c *gin.Context, item domain.Transaction) (gin.H
 		}
 		terminal = terminalSummary(value)
 	}
-	attempts, err := s.deps.Repo.ListPrintAttempts(c.Request.Context(), item.ID)
+	attempts, err := s.deps.Repo.ListPrintAttempts(
+		c.Request.Context(),
+		domain.EffectiveDataSpaceID(item.DataSpaceID),
+		item.ID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -346,8 +355,10 @@ func (s *Server) transactionView(c *gin.Context, item domain.Transaction) (gin.H
 		deletion = gin.H{"deletedAt": item.DeletedAt, "deletedBy": item.DeletedBy, "reason": item.DeleteReason}
 	}
 	view := gin.H{
-		"id": item.ID, "revision": item.Revision, "occurredAt": item.OccurredAt.UTC(),
+		"id": item.ID, "displayId": item.DisplayID,
+		"revision": item.Revision, "occurredAt": item.OccurredAt.UTC(),
 		"items": lines, "subtotal": item.Subtotal, "total": item.Total,
+		"paymentAmount": item.PaymentAmount,
 		"paymentMethod": item.PaymentMethod, "paymentStatus": item.PaymentStatus,
 		"paymentConfirmedRevision": item.PaymentConfirmedRevision,
 		"originActor":              item.OriginActor, "updatedBy": item.UpdatedBy, "terminal": terminal,
@@ -459,7 +470,8 @@ func (s *Server) dashboard(c *gin.Context) {
 	}
 	writeData(c, http.StatusOK, gin.H{
 		"period": period, "startsAt": data.From, "endsAt": data.To,
-		"grossRevenue": data.GrossRevenue, "transactionCount": data.TransactionCount,
+		"grossRevenue": data.GrossRevenue, "actualQrisAmount": data.ActualQrisAmount,
+		"transactionCount":  data.TransactionCount,
 		"packageQuantities": packageQuantities, "trend": trend, "recent": recent,
 	})
 }
@@ -493,7 +505,15 @@ func (s *Server) exportTransactions(c *gin.Context) {
 		writeError(c, err)
 		return
 	}
-	filename := fmt.Sprintf("transaksi-%s.%s", time.Now().Format("20060102-150405"), request.Format)
+	filename := transactionExportFilename(principal(c), request.Format, time.Now())
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	c.Data(http.StatusOK, contentType, body)
+}
+
+func transactionExportFilename(current domain.Principal, format string, now time.Time) string {
+	prefix := ""
+	if current.EffectiveDataMode() == domain.DataModeSandbox {
+		prefix = "TEST-"
+	}
+	return fmt.Sprintf("%stransaksi-%s.%s", prefix, now.Format("20060102-150405"), format)
 }

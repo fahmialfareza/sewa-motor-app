@@ -1,6 +1,6 @@
 import NetInfo from "@react-native-community/netinfo";
 
-import { apiRequest } from "@/api/client";
+import { ApiError, apiRequest } from "@/api/client";
 import type {
   ApiPackage,
   ApiTransaction,
@@ -74,7 +74,7 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
 
   try {
     while (true) {
-      const batch = await getOutboxOperations(25);
+      const batch = await getOutboxOperations(25, session.dataMode);
       if (batch.length === 0) break;
       const response = await apiRequest<SyncPushResponse>("/sync/push", {
         method: "POST",
@@ -87,27 +87,51 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
         },
       });
 
+      const retiredGeneration = response.results.find(
+        (result) => result.error?.code === "SANDBOX_GENERATION_RETIRED",
+      );
+      if (retiredGeneration?.error) {
+        throw new ApiError({
+          status: 409,
+          code: retiredGeneration.error.code,
+          message: retiredGeneration.error.message,
+          details: retiredGeneration.error.details,
+          requestId: retiredGeneration.error.requestId,
+        });
+      }
+
       for (const item of batch) {
         const result = response.results.find(
           (candidate) => candidate.operationId === item.operationId,
         );
         if (!result) {
-          await markOutboxResult(item.operationId, item.aggregateId, {
-            kind: "error",
-            message: "Server tidak mengembalikan hasil operasi.",
-          });
+          await markOutboxResult(
+            item.operationId,
+            item.aggregateId,
+            {
+              kind: "error",
+              message: "Server tidak mengembalikan hasil operasi.",
+            },
+            session.dataMode,
+          );
           continue;
         }
         if (result.status === "applied" || result.status === "duplicate") {
-          await markOutboxResult(item.operationId, item.aggregateId, {
-            kind: "success",
-          });
+          await markOutboxResult(
+            item.operationId,
+            item.aggregateId,
+            { kind: "success" },
+            session.dataMode,
+          );
           pushed += 1;
         } else if (
           result.status === "conflict" &&
           isRevisionConflict(result.conflict)
         ) {
-          const current = await getTransaction(item.aggregateId);
+          const current = await getTransaction(
+            item.aggregateId,
+            session.dataMode,
+          );
           const local = current
             ? mergeSnapshot(
                 current,
@@ -116,35 +140,53 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
               )
             : null;
           if (local) {
-            await markOutboxResult(item.operationId, item.aggregateId, {
-              kind: "conflict",
-              local,
-              server: mergeSnapshot(
+            await markOutboxResult(
+              item.operationId,
+              item.aggregateId,
+              {
+                kind: "conflict",
                 local,
-                result.conflict.serverSnapshot,
-                result.conflict.currentRevision,
-              ),
-            });
+                server: mergeSnapshot(
+                  local,
+                  result.conflict.serverSnapshot,
+                  result.conflict.currentRevision,
+                ),
+              },
+              session.dataMode,
+            );
             conflicts += 1;
           } else {
-            await markOutboxResult(item.operationId, item.aggregateId, {
-              kind: "rejected",
-              message:
-                result.error?.message ??
-                "Konflik revisi tidak dapat dipetakan ke transaksi lokal.",
-            });
+            await markOutboxResult(
+              item.operationId,
+              item.aggregateId,
+              {
+                kind: "rejected",
+                message:
+                  result.error?.message ??
+                  "Konflik revisi tidak dapat dipetakan ke transaksi lokal.",
+              },
+              session.dataMode,
+            );
           }
         } else if (
           result.status === "conflict" &&
           isPaymentStateConflict(result.conflict)
         ) {
-          const current = await getTransaction(item.aggregateId);
+          const current = await getTransaction(
+            item.aggregateId,
+            session.dataMode,
+          );
           if (!current) {
-            await markOutboxResult(item.operationId, item.aggregateId, {
-              kind: "rejected",
-              message:
-                "Konflik pembayaran tidak dapat dipetakan ke transaksi lokal.",
-            });
+            await markOutboxResult(
+              item.operationId,
+              item.aggregateId,
+              {
+                kind: "rejected",
+                message:
+                  "Konflik pembayaran tidak dapat dipetakan ke transaksi lokal.",
+              },
+              session.dataMode,
+            );
             conflicts += 1;
             continue;
           }
@@ -153,46 +195,68 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
             result.conflict.serverSnapshot,
             result.conflict.currentRevision,
           );
-          await markOutboxResult(item.operationId, item.aggregateId, {
-            kind: "payment-conflict",
-            message:
-              result.error?.message ??
-              "Status pembayaran berubah di server. Muat ulang transaksi.",
-            paymentStatus: result.conflict.paymentStatus,
-            paymentConfirmedRevision: result.conflict.paymentConfirmedRevision,
-            authoritative: {
-              ...authoritative,
-              syncState: "error",
+          await markOutboxResult(
+            item.operationId,
+            item.aggregateId,
+            {
+              kind: "payment-conflict",
+              message:
+                result.error?.message ??
+                "Status pembayaran berubah di server. Muat ulang transaksi.",
               paymentStatus: result.conflict.paymentStatus,
               paymentConfirmedRevision:
                 result.conflict.paymentConfirmedRevision,
+              authoritative: {
+                ...authoritative,
+                syncState: "error",
+                paymentStatus: result.conflict.paymentStatus,
+                paymentConfirmedRevision:
+                  result.conflict.paymentConfirmedRevision,
+              },
             },
-          });
+            session.dataMode,
+          );
           conflicts += 1;
         } else if (result.status === "conflict") {
-          await markOutboxResult(item.operationId, item.aggregateId, {
-            kind: "rejected",
-            message:
-              result.error?.message ??
-              "Server mengembalikan konflik yang tidak dapat diproses.",
-          });
+          await markOutboxResult(
+            item.operationId,
+            item.aggregateId,
+            {
+              kind: "rejected",
+              message:
+                result.error?.message ??
+                "Server mengembalikan konflik yang tidak dapat diproses.",
+            },
+            session.dataMode,
+          );
           conflicts += 1;
         } else if (result.status === "rejected") {
-          await markOutboxResult(item.operationId, item.aggregateId, {
-            kind: "rejected",
-            message: result.error?.message ?? "Operasi ditolak server.",
-          });
+          await markOutboxResult(
+            item.operationId,
+            item.aggregateId,
+            {
+              kind: "rejected",
+              message: result.error?.message ?? "Operasi ditolak server.",
+            },
+            session.dataMode,
+          );
         } else {
-          await markOutboxResult(item.operationId, item.aggregateId, {
-            kind: "error",
-            message: result.error?.message ?? "Operasi ditolak server.",
-          });
+          await markOutboxResult(
+            item.operationId,
+            item.aggregateId,
+            {
+              kind: "error",
+              message: result.error?.message ?? "Operasi ditolak server.",
+            },
+            session.dataMode,
+          );
         }
       }
     }
 
-    let cursor = (await getSyncMetadata()).cursor;
-    for (let page = 0; page < 20; page += 1) {
+    let cursor = (await getSyncMetadata(session.dataMode)).cursor;
+    const seenCursors = new Set(cursor ? [cursor] : []);
+    while (true) {
       const query = new URLSearchParams({
         limit: "100",
         ...(cursor ? { cursor } : {}),
@@ -201,6 +265,14 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
         `/sync/pull?${query.toString()}`,
         { token: session.token },
       );
+      if (response.hasMore && seenCursors.has(response.cursor)) {
+        throw new ApiError({
+          status: 200,
+          code: "INVALID_SYNC_CURSOR",
+          message:
+            "Sinkronisasi dihentikan karena server tidak memajukan cursor data.",
+        });
+      }
       const localChanges: RemoteChange[] = [];
       for (const change of response.changes) {
         if (change.aggregate === "package") {
@@ -274,10 +346,11 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
           }
         }
       }
-      await applyRemoteChanges(localChanges, response.cursor);
+      await applyRemoteChanges(localChanges, response.cursor, session.dataMode);
       pulled += response.changes.length;
       cursor = response.cursor;
       if (!response.hasMore) break;
+      seenCursors.add(cursor);
     }
 
     return {
@@ -291,7 +364,7 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
       error,
       "Sinkronisasi belum berhasil. Coba lagi.",
     );
-    await setSyncError(message);
+    await setSyncError(message, session.dataMode);
     throw error;
   }
 }

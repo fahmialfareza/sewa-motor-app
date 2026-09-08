@@ -26,3 +26,6 @@ export type ApiSyncChange = ApiSchema["SyncChange"];
 export type SyncPullResponse = ApiSchema["SyncPullResult"];
 export type UserListResponse = ApiSchema["User"][];
 export type PackageListResponse = ApiSchema["Package"][];
+
+export type SandboxStatusResponse = ApiSchema["SandboxStatus"];
+export type SandboxResetResponse = ApiSchema["SandboxResetResult"];

@@ -1,4 +1,5 @@
 export type Role = "admin" | "superadmin";
+export type DataMode = "production" | "sandbox";
 export type SyncState = "pending" | "synced" | "conflict" | "error";
 export type PrintState =
   "pending" | "success" | "failed" | "unknown" | "needs-reprint";
@@ -6,6 +7,8 @@ export type SelectablePaymentMethod = "cash" | "qris";
 export type PaymentMethod = SelectablePaymentMethod | "legacy";
 export type PaymentStatus = "pending" | "success" | "failed";
 export type QrisPayloadHash = string;
+
+export const PRODUCTION_DATA_SPACE_ID = "00000000-0000-4000-8000-000000000100";
 
 export interface UserSummary {
   id: string;
@@ -21,6 +24,9 @@ export interface Session {
   sessionId: string;
   user: UserSummary;
   establishedAt: string;
+  dataMode: DataMode;
+  dataSpaceId: string;
+  sandboxGeneration: number | null;
 }
 
 export interface RentalPackage {
@@ -52,6 +58,7 @@ export interface Transaction {
   occurredAt: string;
   subtotal: number;
   total: number;
+  paymentAmount: number;
   originActorId: string;
   originActorName: string;
   updatedActorName: string;
@@ -81,6 +88,7 @@ export interface SyncConflict {
 
 export interface DashboardStats {
   gross: number;
+  actualQrisAmount: number;
   transactionCount: number;
   quantities: { name: string; quantity: number; accent: string }[];
   buckets: number[];

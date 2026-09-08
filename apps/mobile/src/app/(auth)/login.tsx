@@ -26,7 +26,7 @@ type LoginForm = z.infer<typeof loginSchema>;
 
 export default function LoginScreen() {
   const router = useRouter();
-  const { login, demoEnabled, demoLogin } = useAuth();
+  const { bootError, demoEnabled, demoLogin, login, notice } = useAuth();
   const {
     control,
     handleSubmit,
@@ -74,6 +74,16 @@ export default function LoginScreen() {
           Login pertama memerlukan internet. Sesi yang sudah tersimpan dapat
           dibuka kembali saat offline.
         </Text>
+        {notice ? (
+          <Text accessibilityRole="alert" style={styles.notice}>
+            {notice}
+          </Text>
+        ) : null}
+        {bootError ? (
+          <Text accessibilityRole="alert" style={styles.error}>
+            Penyimpanan lokal belum dapat dibuka: {bootError}
+          </Text>
+        ) : null}
         <Controller
           control={control}
           name="username"
@@ -187,6 +197,13 @@ const styles = StyleSheet.create({
   form: { gap: spacing.md },
   help: { ...textStyles.body, color: colors.textMuted },
   error: { ...textStyles.body, color: colors.error },
+  notice: {
+    ...textStyles.body,
+    color: colors.warning,
+    backgroundColor: colors.warningSoft,
+    padding: spacing.sm,
+    borderRadius: radius.md,
+  },
   demo: { gap: spacing.sm, backgroundColor: colors.primarySoft },
   demoLabel: { ...textStyles.label, color: colors.primary },
   demoActions: { flexDirection: "row", gap: spacing.sm },

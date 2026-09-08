@@ -139,6 +139,10 @@ func dbError(err error, operation string) error {
 	if err == nil {
 		return nil
 	}
+	var domainErr *domain.Error
+	if errors.As(err, &domainErr) {
+		return err
+	}
 	if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, gorm.ErrRecordNotFound) {
 		return domain.NewError(domain.CodeNotFound, "Data tidak ditemukan")
 	}
@@ -178,11 +182,13 @@ func audit(ctx context.Context, tx pgx.Tx, eventType, aggregateType, aggregateID
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO audit_events (
+			data_space_id,
 			event_type, aggregate_type, aggregate_id,
 			origin_actor_id, origin_session_id,
 			submitted_by_actor_id, submitted_by_session_id, terminal_id,
 			before_values, after_values, metadata, occurred_at
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		identity.EffectiveDataSpaceID(),
 		eventType, aggregateType, aggregateID,
 		nilUUID(identity.OriginActorID), nilUUID(identity.OriginSessionID),
 		nilUUID(identity.SubmittedByActorID), nilUUID(identity.SubmittedBySessionID), identity.TerminalID,
@@ -191,15 +197,42 @@ func audit(ctx context.Context, tx pgx.Tx, eventType, aggregateType, aggregateID
 	return err
 }
 
-func addChange(ctx context.Context, tx pgx.Tx, aggregate, aggregateID, action string, revision *int, payload any, tombstone bool) error {
+func addChange(ctx context.Context, tx pgx.Tx, dataSpaceID uuid.UUID, aggregate, aggregateID, action string, revision *int, payload any, tombstone bool) error {
 	defer observability.StartSegment(ctx, "Postgres.addChange")()
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO sync_changes (aggregate, aggregate_id, action, revision, payload, tombstone)
-		VALUES ($1,$2,$3,$4,$5,$6)`,
+		INSERT INTO sync_changes (data_space_id, aggregate, aggregate_id, action, revision, payload, tombstone)
+		VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+		dataSpaceID, aggregate, aggregateID, action, revision, body, tombstone,
+	)
+	return err
+}
+
+// addSharedChange fans global identity/terminal changes into each active data
+// plane so independent mobile databases retain the shared control-plane view.
+func addSharedChange(ctx context.Context, tx pgx.Tx, aggregate, aggregateID, action string, revision *int, payload any, tombstone bool) error {
+	defer observability.StartSegment(ctx, "Postgres.addSharedChange")()
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	// Reset holds the exclusive form while replacing a Sandbox generation.
+	// This shared lock makes a global change either part of the reset snapshot
+	// or an event in the newly active generation, never lost between both.
+	if _, err = tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))`,
+		sandboxGenerationLock,
+	); err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO sync_changes (data_space_id, aggregate, aggregate_id, action, revision, payload, tombstone)
+		SELECT id, $1, $2, $3, $4, $5, $6
+		FROM data_spaces
+		WHERE status = 'active'`,
 		aggregate, aggregateID, action, revision, body, tombstone,
 	)
 	return err
@@ -226,5 +259,7 @@ func principalIdentity(principal domain.Principal) domain.MutationIdentity {
 		TerminalID:           principal.TerminalID,
 		SubmittedByActorID:   principal.UserID,
 		SubmittedBySessionID: principal.SessionID,
+		DataSpaceID:          principal.EffectiveDataSpaceID(),
+		DataMode:             principal.EffectiveDataMode(),
 	}
 }

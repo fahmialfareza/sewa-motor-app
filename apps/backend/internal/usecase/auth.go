@@ -13,18 +13,20 @@ import (
 )
 
 type Auth struct {
-	Repo       port.Repository
-	Passwords  port.PasswordHasher
-	Tokens     port.TokenManager
-	Sessions   port.SessionIndex
-	Limiter    port.RateLimiter
-	RateLimit  int
-	RateWindow time.Duration
+	Repo           port.Repository
+	Passwords      port.PasswordHasher
+	Tokens         port.TokenManager
+	Sessions       port.SessionIndex
+	Limiter        port.RateLimiter
+	RateLimit      int
+	RateWindow     time.Duration
+	SandboxEnabled bool
 }
 
 type Authentication struct {
-	Principal domain.Principal
-	TokenHash []byte
+	Principal                 domain.Principal
+	TokenHash                 []byte
+	RecoverableRetiredSandbox bool
 }
 
 func (a Auth) Login(ctx context.Context, input domain.LoginInput) (domain.LoginResult, error) {
@@ -58,7 +60,11 @@ func (a Auth) Login(ctx context.Context, input domain.LoginInput) (domain.LoginR
 			return domain.LoginResult{}, err
 		}
 	}
-	principal, err := a.Repo.CreateSession(ctx, user.ID, terminalID, tokenHash)
+	production, err := a.Repo.ActiveDataSpace(ctx, domain.DataModeProduction)
+	if err != nil {
+		return domain.LoginResult{}, err
+	}
+	principal, err := a.Repo.CreateSession(ctx, user.ID, terminalID, tokenHash, production.ID)
 	if err != nil {
 		return domain.LoginResult{}, err
 	}
@@ -78,13 +84,79 @@ func (a Auth) Authenticate(ctx context.Context, rawToken string) (Authentication
 			return Authentication{Principal: principal, TokenHash: tokenHash}, nil
 		}
 		a.Sessions.Delete(ctx, tokenHash)
+		if domain.IsCode(repoErr, domain.CodeSandboxGenerationRetired) &&
+			principal.SessionID != uuid.Nil {
+			return Authentication{
+				Principal: principal, TokenHash: tokenHash,
+				RecoverableRetiredSandbox: true,
+			}, repoErr
+		}
 	}
 	principal, err := a.Repo.PrincipalByTokenHash(ctx, tokenHash)
 	if err != nil {
+		if domain.IsCode(err, domain.CodeSandboxGenerationRetired) &&
+			principal.SessionID != uuid.Nil {
+			return Authentication{
+				Principal: principal, TokenHash: tokenHash,
+				RecoverableRetiredSandbox: true,
+			}, err
+		}
 		return Authentication{}, domain.NewError(domain.CodeUnauthorized, "Sesi tidak valid atau telah dicabut")
 	}
 	a.Sessions.Set(ctx, tokenHash, principal.SessionID)
 	return Authentication{Principal: principal, TokenHash: tokenHash}, nil
+}
+
+func (a Auth) SwitchMode(ctx context.Context, authentication Authentication, mode domain.DataMode) (domain.LoginResult, error) {
+	defer observability.StartSegment(ctx, "Usecase.Auth.SwitchMode")()
+	principal := authentication.Principal
+	if err := RequireReady(principal); err != nil {
+		return domain.LoginResult{}, err
+	}
+	if !mode.Valid() {
+		return domain.LoginResult{}, domain.Validation("Mode operasi harus production atau sandbox", map[string]any{"field": "mode"})
+	}
+	if mode == domain.DataModeSandbox && !a.SandboxEnabled {
+		return domain.LoginResult{}, domain.NewError(domain.CodeForbidden, "Mode Sandbox sedang dinonaktifkan")
+	}
+	if mode == principal.EffectiveDataMode() && !authentication.RecoverableRetiredSandbox {
+		return domain.LoginResult{}, domain.NewError(domain.CodeConflict, "Sesi sudah menggunakan mode yang dipilih")
+	}
+	space, err := a.Repo.ActiveDataSpace(ctx, mode)
+	if err != nil {
+		return domain.LoginResult{}, err
+	}
+	raw, tokenHash, err := a.Tokens.New()
+	if err != nil {
+		return domain.LoginResult{}, domain.WrapInternal(err, "issue switched session token")
+	}
+	var switched domain.Principal
+	if authentication.RecoverableRetiredSandbox {
+		if principal.EffectiveDataMode() != domain.DataModeSandbox {
+			return domain.LoginResult{}, domain.NewError(domain.CodeUnauthorized, "Sesi tidak valid atau telah dicabut")
+		}
+		switched, err = a.Repo.RecoverRetiredSandboxSession(
+			ctx,
+			principal,
+			authentication.TokenHash,
+			tokenHash,
+			space.ID,
+		)
+	} else {
+		switched, err = a.Repo.SwitchSession(
+			ctx,
+			principal,
+			authentication.TokenHash,
+			tokenHash,
+			space.ID,
+		)
+	}
+	if err != nil {
+		return domain.LoginResult{}, err
+	}
+	a.Sessions.Delete(ctx, authentication.TokenHash)
+	a.Sessions.Set(ctx, tokenHash, switched.SessionID)
+	return domain.LoginResult{Token: raw, Principal: switched}, nil
 }
 
 func (a Auth) Logout(ctx context.Context, principal domain.Principal) error {
@@ -94,6 +166,9 @@ func (a Auth) Logout(ctx context.Context, principal domain.Principal) error {
 
 func (a Auth) ChangePassword(ctx context.Context, principal domain.Principal, current, next string) error {
 	defer observability.StartSegment(ctx, "Usecase.Auth.ChangePassword")()
+	if err := RequireProduction(principal); err != nil {
+		return err
+	}
 	if err := domain.ValidatePassword(next); err != nil {
 		return err
 	}
@@ -131,6 +206,16 @@ func RequireSuperadmin(principal domain.Principal) error {
 	}
 	if !principal.IsSuperadmin() {
 		return domain.NewError(domain.CodeForbidden, "Tindakan ini hanya tersedia untuk superadmin")
+	}
+	return nil
+}
+
+func RequireProduction(principal domain.Principal) error {
+	if err := RequireReady(principal); err != nil {
+		return err
+	}
+	if principal.EffectiveDataMode() != domain.DataModeProduction {
+		return domain.NewError(domain.CodeForbidden, "Tindakan ini hanya tersedia di mode produksi")
 	}
 	return nil
 }

@@ -1,0 +1,263 @@
+import { useFocusEffect } from "expo-router";
+import { useCallback, useState } from "react";
+import { StyleSheet, Text, View } from "react-native";
+
+import { apiRequest } from "@/api/client";
+import type {
+  SandboxResetResponse,
+  SandboxStatusResponse,
+} from "@/api/contracts";
+import { useAuth } from "@/auth/AuthProvider";
+import { useSyncRuntime } from "@/sync/SyncProvider";
+import { colors, radius, spacing, textStyles } from "@/theme/tokens";
+import { toUserFacingErrorMessage } from "@/utils/errors";
+import { formatRupiah } from "@/utils/format";
+
+import { Button } from "../ui/Button";
+import { Card } from "../ui/Card";
+import { Field } from "../ui/Field";
+
+const RESET_CONFIRMATION = "RESET SANDBOX";
+
+export function ModeOperationCard() {
+  const { session, switchMode, switchingMode } = useAuth();
+  const sync = useSyncRuntime();
+  const [status, setStatus] = useState<SandboxStatusResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [resetExpanded, setResetExpanded] = useState(false);
+  const [confirmation, setConfirmation] = useState("");
+  const [resetting, setResetting] = useState(false);
+
+  const loadStatus = useCallback(async () => {
+    if (!session || session.token.startsWith("dev-only-")) {
+      setStatus(null);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    try {
+      setStatus(
+        await apiRequest<SandboxStatusResponse>("/sandbox/status", {
+          token: session.token,
+        }),
+      );
+      setError(null);
+    } catch (reason) {
+      setError(
+        toUserFacingErrorMessage(
+          reason,
+          "Status Mode Uji belum dapat dimuat. Coba lagi.",
+        ),
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [session]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void loadStatus();
+    }, [loadStatus]),
+  );
+
+  if (!session) return null;
+
+  const sandbox = session.dataMode === "sandbox";
+  const targetMode = sandbox ? "production" : "sandbox";
+  const canReset =
+    session.user.role === "superadmin" &&
+    session.dataMode === "production" &&
+    status?.enabled === true &&
+    status.generation !== null;
+
+  const changeMode = async () => {
+    setError(null);
+    setMessage(null);
+    try {
+      await switchMode(targetMode);
+      await sync.refresh();
+    } catch (reason) {
+      setError(
+        toUserFacingErrorMessage(
+          reason,
+          "Mode operasi belum dapat diganti. Coba lagi.",
+        ),
+      );
+    }
+  };
+
+  const resetSandbox = async () => {
+    if (!canReset || status.generation === null) return;
+    setResetting(true);
+    setError(null);
+    setMessage(null);
+    try {
+      const result = await apiRequest<SandboxResetResponse>("/sandbox/reset", {
+        method: "POST",
+        token: session.token,
+        body: {
+          expectedGeneration: status.generation,
+          confirmation: RESET_CONFIRMATION,
+        },
+      });
+      setConfirmation("");
+      setResetExpanded(false);
+      setMessage(
+        `Mode Uji direset ke generasi ${result.current.generation}. ${result.clonedPackageCount} paket produksi disalin.`,
+      );
+      await loadStatus();
+    } catch (reason) {
+      setError(
+        toUserFacingErrorMessage(
+          reason,
+          "Mode Uji belum dapat direset. Muat ulang status dan coba lagi.",
+        ),
+      );
+    } finally {
+      setResetting(false);
+    }
+  };
+
+  return (
+    <Card style={[styles.card, ...(sandbox ? [styles.sandboxCard] : [])]}>
+      <View style={styles.header}>
+        <View style={styles.copy}>
+          <Text style={styles.label}>MODE OPERASI</Text>
+          <Text style={styles.title}>
+            {sandbox ? "Mode Uji" : "Mode Produksi"}
+          </Text>
+        </View>
+        <View style={[styles.badge, sandbox && styles.sandboxBadge]}>
+          <Text style={[styles.badgeText, sandbox && styles.sandboxBadgeText]}>
+            {sandbox ? "UJI" : "LIVE"}
+          </Text>
+        </View>
+      </View>
+
+      <Text style={styles.description}>
+        {sandbox
+          ? `Data terisolasi dari laporan produksi. QRIS nyata selalu ${formatRupiah(status?.qrisAmount ?? 1_000)}.`
+          : "Transaksi, laporan, dan konfigurasi di mode ini adalah data operasional resmi."}
+      </Text>
+      {sandbox && session.sandboxGeneration ? (
+        <Text style={styles.generation}>
+          GENERASI UJI {session.sandboxGeneration}
+        </Text>
+      ) : null}
+
+      <Button
+        disabled={
+          loading || (!sandbox && status?.enabled !== true) || sync.syncing
+        }
+        loading={switchingMode}
+        onPress={() => void changeMode()}
+        variant={sandbox ? "primary" : "secondary"}
+      >
+        {sandbox ? "Kembali ke Produksi" : "Masuk ke Mode Uji"}
+      </Button>
+      {sync.pendingCount > 0 ? (
+        <Text style={styles.hint}>
+          {sync.pendingCount} operasi akan disinkronkan sebelum mode diganti.
+        </Text>
+      ) : null}
+      {!loading && !sandbox && status?.enabled === false ? (
+        <Text style={styles.hint}>
+          Mode Uji belum diaktifkan pada server produksi.
+        </Text>
+      ) : null}
+
+      {canReset ? (
+        resetExpanded ? (
+          <View style={styles.resetPanel}>
+            <Text style={styles.resetTitle}>Reset seluruh data Mode Uji</Text>
+            <Text style={styles.hint}>
+              Perangkat offline akan kehilangan generasi lama. Pembayaran QRIS
+              Rp1.000 tetap perlu direkonsiliasi. Ketik {RESET_CONFIRMATION}
+              untuk melanjutkan.
+            </Text>
+            <Field
+              autoCapitalize="characters"
+              label="Konfirmasi reset"
+              onChangeText={setConfirmation}
+              placeholder={RESET_CONFIRMATION}
+              value={confirmation}
+            />
+            <View style={styles.actions}>
+              <Button
+                disabled={resetting}
+                onPress={() => {
+                  setConfirmation("");
+                  setResetExpanded(false);
+                }}
+                style={styles.action}
+                variant="ghost"
+              >
+                Batal
+              </Button>
+              <Button
+                disabled={confirmation.trim() !== RESET_CONFIRMATION}
+                loading={resetting}
+                onPress={() => void resetSandbox()}
+                style={styles.action}
+                variant="danger"
+              >
+                Reset Mode Uji
+              </Button>
+            </View>
+          </View>
+        ) : (
+          <Button onPress={() => setResetExpanded(true)} variant="danger">
+            Reset data Mode Uji
+          </Button>
+        )
+      ) : null}
+      {message ? <Text style={styles.success}>{message}</Text> : null}
+      {error ? (
+        <Text accessibilityRole="alert" style={styles.error}>
+          {error}
+        </Text>
+      ) : null}
+    </Card>
+  );
+}
+
+const styles = StyleSheet.create({
+  card: { gap: spacing.md },
+  sandboxCard: {
+    backgroundColor: colors.warningSoft,
+    borderColor: colors.warning,
+  },
+  header: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  copy: { flex: 1 },
+  label: { ...textStyles.label, color: colors.primary, fontSize: 10 },
+  title: { ...textStyles.heading, marginTop: 2 },
+  description: { ...textStyles.body, color: colors.textMuted },
+  badge: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    borderRadius: radius.pill,
+    backgroundColor: colors.successSoft,
+  },
+  sandboxBadge: { backgroundColor: colors.warning },
+  badgeText: { ...textStyles.label, color: colors.success, fontSize: 10 },
+  sandboxBadgeText: { color: colors.onPrimary },
+  generation: { ...textStyles.technical, color: colors.warning },
+  hint: { ...textStyles.body, color: colors.textMuted, fontSize: 12 },
+  resetPanel: {
+    gap: spacing.sm,
+    paddingTop: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.warning,
+  },
+  resetTitle: { ...textStyles.heading, color: colors.error },
+  actions: { flexDirection: "row", gap: spacing.sm },
+  action: { flex: 1 },
+  success: { ...textStyles.body, color: colors.success },
+  error: { ...textStyles.body, color: colors.error },
+});

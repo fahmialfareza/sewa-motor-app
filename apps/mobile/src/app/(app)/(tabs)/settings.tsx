@@ -5,6 +5,7 @@ import { StyleSheet, Text, View } from "react-native";
 import { useAuth } from "@/auth/AuthProvider";
 import { AppScreen } from "@/components/layout/AppScreen";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { ModeOperationCard } from "@/components/settings/ModeOperationCard";
 import { Card } from "@/components/ui/Card";
 import { MenuRow } from "@/components/ui/MenuRow";
 import {
@@ -41,6 +42,8 @@ export default function SettingsScreen() {
         </View>
       </Card>
 
+      <ModeOperationCard />
+
       <Text style={styles.section}>AKUN & KEAMANAN</Text>
       <Card padded={false}>
         <MenuRow
@@ -48,11 +51,13 @@ export default function SettingsScreen() {
           onPress={() => router.push("/settings/profile")}
           title="Profil"
         />
-        <MenuRow
-          icon="lock-outline"
-          onPress={() => router.push("/settings/password")}
-          title="Ganti kata sandi"
-        />
+        {session?.dataMode === "production" ? (
+          <MenuRow
+            icon="lock-outline"
+            onPress={() => router.push("/settings/password")}
+            title="Ganti kata sandi"
+          />
+        ) : null}
       </Card>
       <Text style={styles.section}>TERMINAL</Text>
       <Card padded={false}>
@@ -62,7 +67,8 @@ export default function SettingsScreen() {
           onPress={() => router.push("/settings/printer")}
           title="Pengaturan printer"
         />
-        {session?.user.role === "superadmin" ? (
+        {session?.user.role === "superadmin" &&
+        session.dataMode === "production" ? (
           <MenuRow
             detail="Payload merchant untuk nominal QRIS otomatis"
             icon="qrcode"

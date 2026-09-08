@@ -2,6 +2,7 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useState } from "react";
 import { Alert, StyleSheet, Text, View } from "react-native";
 
+import { useAuth } from "@/auth/AuthProvider";
 import { AppScreen } from "@/components/layout/AppScreen";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/Button";
@@ -22,6 +23,7 @@ import { displayTransactionId, formatJakartaDateTime } from "@/utils/format";
 
 export default function SyncCenterScreen() {
   const router = useRouter();
+  const { session } = useAuth();
   const runtime = useSyncRuntime();
   const refreshRuntime = runtime.refresh;
   const requestSync = runtime.syncNow;
@@ -189,7 +191,10 @@ export default function SyncCenterScreen() {
           <Card key={conflict.id} style={styles.conflict}>
             <View style={styles.conflictCopy}>
               <Text style={styles.conflictId}>
-                {displayTransactionId(conflict.transactionId)}
+                {displayTransactionId(
+                  conflict.transactionId,
+                  session?.dataMode ?? "production",
+                )}
               </Text>
               <Text style={styles.detail}>
                 Lokal rev. {conflict.localSnapshot.revision} • Server rev.{" "}

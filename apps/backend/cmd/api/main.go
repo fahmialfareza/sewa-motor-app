@@ -15,11 +15,13 @@ import (
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/adapter/redisinfra"
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/adapter/security"
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/config"
+	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/domain"
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/observability"
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/port"
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/usecase"
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/migrations"
 	"github.com/newrelic/go-agent/v3/newrelic"
+	"github.com/sirupsen/logrus"
 )
 
 func main() {
@@ -94,8 +96,44 @@ func run() error {
 		Repo: store, Passwords: passwords, Tokens: security.OpaqueTokenManager{},
 		Sessions: sessionIndex, Limiter: limiter,
 		RateLimit: cfg.LoginRateLimit, RateWindow: cfg.LoginRateWindow,
+		SandboxEnabled: cfg.SandboxEnabled,
 	}
 	transactions := usecase.Transactions{Repo: store, Clock: port.SystemClock{}}
+	sandbox := usecase.Sandbox{
+		Repo:          store,
+		Clock:         port.SystemClock{},
+		Enabled:       cfg.SandboxEnabled,
+		QRISAmount:    cfg.SandboxQRISAmount,
+		RetentionDays: cfg.SandboxRetentionDays,
+	}
+	if cfg.SandboxEnabled {
+		activationCtx, activationCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		activationTransaction := telemetry.App.StartTransaction("SandboxInitialize")
+		activationCtx = newrelic.NewContext(activationCtx, activationTransaction)
+		activationCtx = observability.WithDataScope(activationCtx, observability.DataScope{
+			Mode: string(domain.DataModeSandbox),
+		})
+		space, activationErr := sandbox.Initialize(activationCtx)
+		if activationErr == nil {
+			activationCtx = observability.WithDataScope(activationCtx, observability.DataScope{
+				Mode:       string(space.Mode),
+				SpaceID:    space.ID.String(),
+				Generation: space.Generation,
+			})
+			logger.WithContext(activationCtx).WithFields(logrus.Fields{
+				"data.mode":       space.Mode,
+				"data.space_id":   space.ID,
+				"data.generation": space.Generation,
+			}).Info("sandbox generation ready")
+		} else {
+			observability.NoticeError(activationCtx, activationErr, "sandbox.initialize")
+		}
+		activationCancel()
+		activationTransaction.End()
+		if activationErr != nil {
+			return activationErr
+		}
+	}
 	router := httpapi.New(httpapi.Dependencies{
 		Repo: store, Auth: auth,
 		Users:        usecase.Users{Repo: store, Passwords: passwords},
@@ -104,6 +142,7 @@ func run() error {
 		Reporting:    usecase.Reporting{Repo: store, Exporter: exportadapter.Generator{}},
 		Terminals:    usecase.Terminals{Repo: store},
 		Sync:         usecase.Sync{Repo: store, Transactions: transactions},
+		Sandbox:      sandbox,
 		Redis:        redisPinger, Logger: logger, NewRelic: telemetry.App,
 	})
 	if err := router.SetTrustedProxies(cfg.TrustedProxies); err != nil {
@@ -121,6 +160,13 @@ func run() error {
 
 	shutdownSignal, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	go runSandboxJanitor(
+		shutdownSignal,
+		cfg.SandboxCleanupInterval,
+		sandbox,
+		telemetry.App,
+		logger,
+	)
 	serverError := make(chan error, 1)
 	go func() {
 		logger.WithField("address", cfg.HTTPAddr).Info("api listening")
@@ -133,7 +179,58 @@ func run() error {
 		}
 	case <-shutdownSignal.Done():
 	}
+	stop()
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer shutdownCancel()
 	return server.Shutdown(shutdownCtx)
+}
+
+func runSandboxJanitor(
+	ctx context.Context,
+	interval time.Duration,
+	service usecase.Sandbox,
+	app *newrelic.Application,
+	logger *logrus.Logger,
+) {
+	run := func() {
+		cleanupCtx := ctx
+		var transaction *newrelic.Transaction
+		if app != nil {
+			transaction = app.StartTransaction("SandboxCleanup")
+			cleanupCtx = newrelic.NewContext(cleanupCtx, transaction)
+		}
+		cleanupCtx = observability.WithDataScope(cleanupCtx, observability.DataScope{
+			Mode: string(domain.DataModeSandbox),
+		})
+		result, err := service.Cleanup(cleanupCtx)
+		if err != nil {
+			observability.NoticeError(cleanupCtx, err, "sandbox.cleanup")
+			if transaction != nil {
+				transaction.End()
+			}
+			return
+		}
+		if logger != nil {
+			logger.WithContext(cleanupCtx).WithFields(logrus.Fields{
+				"data.mode":               domain.DataModeSandbox,
+				"purged_generation_count": result.PurgedGenerationCount,
+				"purged_row_count":        result.PurgedRowCount,
+			}).Info("sandbox cleanup completed")
+		}
+		if transaction != nil {
+			transaction.End()
+		}
+	}
+
+	run()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			run()
+		}
+	}
 }

@@ -9,6 +9,9 @@ function session(id: string, role: "admin" | "superadmin"): Session {
     token: "token",
     sessionId: "session",
     establishedAt: "2026-07-28T00:00:00.000Z",
+    dataMode: "production",
+    dataSpaceId: "00000000-0000-4000-8000-000000000100",
+    sandboxGeneration: null,
     user: {
       id,
       fullName: "User",

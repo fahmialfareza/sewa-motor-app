@@ -44,6 +44,31 @@ func convert(source string) (string, error) {
 		line := lines[index]
 		trimmed := strings.TrimSpace(line)
 		indent := leadingWhitespace(line)
+		if len(indent) == 0 && strings.HasPrefix(trimmed, "jsonSchemaDialect:") {
+			// jsonSchemaDialect is an OpenAPI 3.1 document field. The generated
+			// compatibility document targets OpenAPI 3.0, whose Schema Object
+			// dialect is fixed by the specification.
+			index++
+			continue
+		}
+		if len(indent) == 2 && strings.HasPrefix(trimmed, "summary:") {
+			// Info.summary was introduced in OpenAPI 3.1. Operation summaries
+			// are more deeply indented and remain untouched.
+			index++
+			continue
+		}
+		if len(indent) == 2 && trimmed == "license:" {
+			// The authoritative contract identifies its proprietary license with
+			// OpenAPI 3.1's identifier field. OpenAPI 3.0 has no equivalent, so
+			// omit this code-generation-only metadata block instead of inventing
+			// a URL or emitting an invalid field.
+			index++
+			for index < len(lines) && (strings.TrimSpace(lines[index]) == "" ||
+				len(leadingWhitespace(lines[index])) > len(indent)) {
+				index++
+			}
+			continue
+		}
 
 		if trimmed == "oneOf:" {
 			end := index + 1
@@ -77,6 +102,10 @@ func convert(source string) (string, error) {
 						index+1,
 					)
 				}
+				// Every nullable union in the authoritative contract is an object
+				// union. OpenAPI 3.0 requires a sibling type for nullable, including
+				// when the value schema is expressed through allOf/oneOf.
+				output = append(output, indent+"type: object")
 				if branchCount == 1 {
 					output = append(output, indent+"allOf:")
 				} else {
@@ -85,7 +114,7 @@ func convert(source string) (string, error) {
 				for _, branch := range branches {
 					branchTrimmed := strings.TrimSpace(branch)
 					if branchTrimmed == `- type: "null"` ||
-						branchTrimmed == "- type: null" {
+						branchTrimmed == "- type: null" || branchTrimmed == "" {
 						continue
 					}
 					output = append(output, convertLine(branch)...)

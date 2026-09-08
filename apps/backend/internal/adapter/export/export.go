@@ -16,9 +16,13 @@ import (
 
 type Generator struct{}
 
-func (Generator) XLSX(rows []domain.ExportRow, from, to *time.Time) ([]byte, error) {
+func (Generator) XLSX(rows []domain.ExportRow, from, to *time.Time, mode domain.DataMode) ([]byte, error) {
 	var output bytes.Buffer
 	archive := zip.NewWriter(&output)
+	sheetName := "Transaksi"
+	if mode == domain.DataModeSandbox {
+		sheetName = "TEST - Transaksi"
+	}
 	files := map[string]string{
 		"[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
@@ -34,7 +38,7 @@ func (Generator) XLSX(rows []domain.ExportRow, from, to *time.Time) ([]byte, err
 </Relationships>`,
 		"xl/workbook.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <sheets><sheet name="Transaksi" sheetId="1" r:id="rId1"/></sheets>
+  <sheets><sheet name="` + sheetName + `" sheetId="1" r:id="rId1"/></sheets>
 </workbook>`,
 		"xl/_rels/workbook.xml.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
@@ -44,13 +48,13 @@ func (Generator) XLSX(rows []domain.ExportRow, from, to *time.Time) ([]byte, err
 		"xl/styles.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
   <numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0"/></numFmts>
-  <fonts count="2"><font><sz val="11"/><name val="Arial"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Arial"/></font></fonts>
-  <fills count="3"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF003D9B"/></patternFill></fill></fills>
+	  <fonts count="3"><font><sz val="11"/><name val="Arial"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Arial"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="12"/><name val="Arial"/></font></fonts>
+	  <fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF003D9B"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFD97706"/></patternFill></fill></fills>
   <borders count="1"><border/></borders>
   <cellStyleXfs count="1"><xf/></cellStyleXfs>
-  <cellXfs count="3"><xf fontId="0" fillId="0" borderId="0"/><xf fontId="1" fillId="2" borderId="0" applyFill="1" applyFont="1"/><xf fontId="0" fillId="0" borderId="0" numFmtId="164" applyNumberFormat="1"/></cellXfs>
+	  <cellXfs count="4"><xf fontId="0" fillId="0" borderId="0"/><xf fontId="1" fillId="2" borderId="0" applyFill="1" applyFont="1"/><xf fontId="0" fillId="0" borderId="0" numFmtId="164" applyNumberFormat="1"/><xf fontId="2" fillId="3" borderId="0" applyFill="1" applyFont="1"/></cellXfs>
 </styleSheet>`,
-		"xl/worksheets/sheet1.xml": buildSheet(rows),
+		"xl/worksheets/sheet1.xml": buildSheet(rows, mode),
 	}
 	names := make([]string, 0, len(files))
 	for name := range files {
@@ -72,16 +76,20 @@ func (Generator) XLSX(rows []domain.ExportRow, from, to *time.Time) ([]byte, err
 	return output.Bytes(), nil
 }
 
-func buildSheet(rows []domain.ExportRow) string {
+func buildSheet(rows []domain.ExportRow, mode domain.DataMode) string {
 	headers := []string{
 		"ID Transaksi", "Waktu (Asia/Jakarta)", "Revisi", "Kode Paket", "Nama Paket",
 		"Revisi Paket", "Harga Satuan", "Jumlah", "Total Baris", "Total Transaksi",
-		"Pembuat", "Username", "Metode Pembayaran", "QRIS Payload Hash",
+		"Nominal Pembayaran Aktual", "Pembuat", "Username", "Metode Pembayaran", "QRIS Payload Hash",
 		"Status Pembayaran", "Status Cetak",
+	}
+	headerRow := 1
+	if mode == domain.DataModeSandbox {
+		headerRow = 2
 	}
 	var body strings.Builder
 	body.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`)
-	body.WriteString(`<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>`)
+	body.WriteString(fmt.Sprintf(`<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="%d" topLeftCell="A%d" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><cols>`, headerRow, headerRow+1))
 	for index := range headers {
 		width := 15
 		if index == 0 || index == 1 {
@@ -89,17 +97,33 @@ func buildSheet(rows []domain.ExportRow) string {
 		}
 		body.WriteString(fmt.Sprintf(`<col min="%d" max="%d" width="%d" customWidth="1"/>`, index+1, index+1, width))
 	}
-	body.WriteString(`</cols><sheetData><row r="1">`)
+	body.WriteString(`</cols><sheetData>`)
+	if mode == domain.DataModeSandbox {
+		body.WriteString(`<row r="1">`)
+		body.WriteString(inlineCell("A1", "TEST - MODE UJI - BUKAN LAPORAN RESMI", 3))
+		body.WriteString(`</row>`)
+	}
+	body.WriteString(fmt.Sprintf(`<row r="%d">`, headerRow))
 	for index, header := range headers {
-		body.WriteString(inlineCell(cellName(index+1, 1), header, 1))
+		body.WriteString(inlineCell(cellName(index+1, headerRow), header, 1))
 	}
 	body.WriteString(`</row>`)
 	location, _ := time.LoadLocation("Asia/Jakarta")
+	reportedPayments := make(map[string]struct{}, len(rows))
 	for rowIndex, row := range rows {
-		number := rowIndex + 2
+		number := rowIndex + headerRow + 1
 		body.WriteString(fmt.Sprintf(`<row r="%d">`, number))
+		// Export rows are item-granular, but payment_amount is transaction-
+		// granular. Emit it once so summing the reconciliation column cannot
+		// multiply a real QRIS charge by the transaction's package-line count.
+		var paymentAmount any = row.PaymentAmount
+		if _, reported := reportedPayments[row.TransactionID]; reported {
+			paymentAmount = ""
+		} else {
+			reportedPayments[row.TransactionID] = struct{}{}
+		}
 		values := []any{
-			"TRX-" + row.TransactionID,
+			displayTransactionID(row.TransactionID, mode),
 			row.OccurredAt.In(location).Format("02-01-2006 15:04:05"),
 			row.Revision,
 			row.PackageCode,
@@ -109,6 +133,7 @@ func buildSheet(rows []domain.ExportRow) string {
 			row.Quantity,
 			row.LineTotal,
 			row.TransactionTotal,
+			paymentAmount,
 			row.CreatorName,
 			row.CreatorUsername,
 			string(row.PaymentMethod),
@@ -129,13 +154,17 @@ func buildSheet(rows []domain.ExportRow) string {
 		}
 		body.WriteString(`</row>`)
 	}
-	lastRow := len(rows) + 1
-	body.WriteString(fmt.Sprintf(`</sheetData><autoFilter ref="A1:P%d"/></worksheet>`, lastRow))
+	lastRow := len(rows) + headerRow
+	body.WriteString(`</sheetData>`)
+	if mode == domain.DataModeSandbox {
+		body.WriteString(`<mergeCells count="1"><mergeCell ref="A1:Q1"/></mergeCells>`)
+	}
+	body.WriteString(fmt.Sprintf(`<autoFilter ref="A%d:Q%d"/></worksheet>`, headerRow, lastRow))
 	return body.String()
 }
 
 func moneyColumn(zeroBased int) bool {
-	return zeroBased == 6 || zeroBased == 8 || zeroBased == 9
+	return zeroBased == 6 || zeroBased == 8 || zeroBased == 9 || zeroBased == 10
 }
 
 func inlineCell(reference, value string, style int) string {
@@ -162,9 +191,13 @@ func cellName(column, row int) string {
 	return string(letters) + strconv.Itoa(row)
 }
 
-func (Generator) PDF(rows []domain.ExportRow, from, to *time.Time) ([]byte, error) {
+func (Generator) PDF(rows []domain.ExportRow, from, to *time.Time, mode domain.DataMode) ([]byte, error) {
 	location, _ := time.LoadLocation("Asia/Jakarta")
-	lines := []string{"SEWA MOTOR POS - LAPORAN TRANSAKSI"}
+	lines := make([]string, 0, len(rows)+8)
+	if mode == domain.DataModeSandbox {
+		lines = append(lines, "*** TEST - MODE UJI - BUKAN LAPORAN RESMI ***")
+	}
+	lines = append(lines, "SEWA MOTOR POS - LAPORAN TRANSAKSI")
 	if from != nil && to != nil {
 		lines = append(lines, fmt.Sprintf("Periode: %s s.d. %s",
 			from.In(location).Format("02-01-2006"),
@@ -173,6 +206,7 @@ func (Generator) PDF(rows []domain.ExportRow, from, to *time.Time) ([]byte, erro
 	}
 	seen := make(map[string]struct{})
 	var total int64
+	var paymentTotal int64
 	for _, row := range rows {
 		firstLineForTransaction := false
 		if _, ok := seen[row.TransactionID]; !ok {
@@ -180,11 +214,14 @@ func (Generator) PDF(rows []domain.ExportRow, from, to *time.Time) ([]byte, erro
 			firstLineForTransaction = true
 			if row.PaymentStatus == domain.PaymentStatusSuccess {
 				total += row.TransactionTotal
+				if row.PaymentMethod == domain.PaymentMethodQRIS {
+					paymentTotal += row.PaymentAmount
+				}
 			}
 		}
 		lines = append(lines, fmt.Sprintf(
-			"TRX-%s | %s | %s | %d x Rp%s | Rp%s | %s | %s",
-			row.TransactionID,
+			"%s | %s | %s | %d x Rp%s | Rp%s | %s | %s",
+			displayTransactionID(row.TransactionID, mode),
 			row.OccurredAt.In(location).Format("02-01-2006 15:04"),
 			row.PackageName,
 			row.Quantity,
@@ -196,12 +233,28 @@ func (Generator) PDF(rows []domain.ExportRow, from, to *time.Time) ([]byte, erro
 		if firstLineForTransaction && row.QrisPayloadHash != nil {
 			lines = append(lines, "QRIS payload hash: "+*row.QrisPayloadHash)
 		}
+		if firstLineForTransaction {
+			lines = append(lines, "Total transaksi: Rp"+formatInteger(row.TransactionTotal)+" | Nominal pembayaran: Rp"+formatInteger(row.PaymentAmount))
+		}
 	}
 	lines = append(lines,
 		fmt.Sprintf("Jumlah transaksi: %d", len(seen)),
 		fmt.Sprintf("Pendapatan bruto: Rp%s", formatInteger(total)),
 	)
+	if mode == domain.DataModeSandbox {
+		lines = append(lines,
+			fmt.Sprintf("Pembayaran uji nyata: Rp%s", formatInteger(paymentTotal)),
+			"*** TEST - MODE UJI - BUKAN LAPORAN RESMI ***",
+		)
+	}
 	return minimalPDF(lines), nil
+}
+
+func displayTransactionID(id string, mode domain.DataMode) string {
+	if mode == domain.DataModeSandbox {
+		return "TEST-TRX-" + id
+	}
+	return "TRX-" + id
 }
 
 func minimalPDF(lines []string) []byte {

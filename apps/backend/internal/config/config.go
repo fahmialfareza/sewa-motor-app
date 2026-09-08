@@ -13,6 +13,10 @@ type Config struct {
 	DatabaseURL                string
 	RedisURL                   string
 	AutoMigrate                bool
+	SandboxEnabled             bool
+	SandboxRetentionDays       int
+	SandboxQRISAmount          int64
+	SandboxCleanupInterval     time.Duration
 	LogLevel                   string
 	ShutdownTimeout            time.Duration
 	SessionCacheTTL            time.Duration
@@ -28,15 +32,18 @@ type Config struct {
 
 func Load() (Config, error) {
 	cfg := Config{
-		HTTPAddr:        env("HTTP_ADDR", ":8080"),
-		DatabaseURL:     strings.TrimSpace(os.Getenv("DATABASE_URL")),
-		RedisURL:        strings.TrimSpace(os.Getenv("REDIS_URL")),
-		LogLevel:        env("LOG_LEVEL", "info"),
-		ShutdownTimeout: 10 * time.Second,
-		SessionCacheTTL: 15 * time.Minute,
-		LoginRateLimit:  10,
-		LoginRateWindow: time.Minute,
-		NewRelicAppName: env("NEW_RELIC_APP_NAME", "sewa-motor-backend"),
+		HTTPAddr:               env("HTTP_ADDR", ":8080"),
+		DatabaseURL:            strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		RedisURL:               strings.TrimSpace(os.Getenv("REDIS_URL")),
+		SandboxRetentionDays:   30,
+		SandboxQRISAmount:      1_000,
+		SandboxCleanupInterval: 24 * time.Hour,
+		LogLevel:               env("LOG_LEVEL", "info"),
+		ShutdownTimeout:        10 * time.Second,
+		SessionCacheTTL:        15 * time.Minute,
+		LoginRateLimit:         10,
+		LoginRateWindow:        time.Minute,
+		NewRelicAppName:        env("NEW_RELIC_APP_NAME", "sewa-motor-backend"),
 		NewRelicLicenseKey: strings.TrimSpace(
 			os.Getenv("NEW_RELIC_LICENSE_KEY"),
 		),
@@ -48,6 +55,18 @@ func Load() (Config, error) {
 	var err error
 	if cfg.AutoMigrate, err = strconv.ParseBool(env("AUTO_MIGRATE", "false")); err != nil {
 		return Config{}, fmt.Errorf("AUTO_MIGRATE: %w", err)
+	}
+	if cfg.SandboxEnabled, err = strconv.ParseBool(env("SANDBOX_ENABLED", "false")); err != nil {
+		return Config{}, fmt.Errorf("SANDBOX_ENABLED: %w", err)
+	}
+	if cfg.SandboxRetentionDays, err = strconv.Atoi(env("SANDBOX_RETENTION_DAYS", "30")); err != nil || cfg.SandboxRetentionDays < 1 || cfg.SandboxRetentionDays > 365 {
+		return Config{}, fmt.Errorf("SANDBOX_RETENTION_DAYS must be an integer between 1 and 365")
+	}
+	if cfg.SandboxQRISAmount, err = strconv.ParseInt(env("SANDBOX_QRIS_AMOUNT", "1000"), 10, 64); err != nil || cfg.SandboxQRISAmount != 1_000 {
+		return Config{}, fmt.Errorf("SANDBOX_QRIS_AMOUNT must be exactly 1000")
+	}
+	if cfg.SandboxCleanupInterval, err = time.ParseDuration(env("SANDBOX_CLEANUP_INTERVAL", "24h")); err != nil || cfg.SandboxCleanupInterval < time.Minute {
+		return Config{}, fmt.Errorf("SANDBOX_CLEANUP_INTERVAL must be a duration of at least 1m")
 	}
 	if cfg.ShutdownTimeout, err = time.ParseDuration(env("SHUTDOWN_TIMEOUT", "10s")); err != nil {
 		return Config{}, fmt.Errorf("SHUTDOWN_TIMEOUT: %w", err)

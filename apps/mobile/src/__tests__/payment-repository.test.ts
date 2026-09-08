@@ -1,5 +1,6 @@
 import type { Session, Transaction } from "@/domain/types";
 import {
+  applyRemoteChanges,
   beginPrintAttempt,
   completePrintAttempt,
   correctTransaction,
@@ -11,6 +12,12 @@ import {
   resolveConflict,
   setPaymentStatus,
 } from "@/db/repositories";
+import { setModeFromSession } from "@/mode/mode-store";
+import {
+  beginModeTransition,
+  MODE_TRANSITION_BUSY_MESSAGE,
+  resetMutationBarrierForTests,
+} from "@/mode/mutation-barrier";
 
 const QRIS_PAYLOAD_HASH =
   "9185bbfe94bb008d611da515fc94c2f3ad5f0c3fbfe278d8bdb463f9ce1cf500";
@@ -50,6 +57,9 @@ const session: Session = {
   token: "token",
   sessionId: "session-1",
   establishedAt: "2026-07-29T00:00:00.000Z",
+  dataMode: "production",
+  dataSpaceId: "00000000-0000-4000-8000-000000000100",
+  sandboxGeneration: null,
   user: {
     id: "actor-1",
     fullName: "Andi",
@@ -66,6 +76,7 @@ const row = {
   occurred_at: "2026-07-29T00:00:00.000Z",
   subtotal: 70_000,
   total: 70_000,
+  payment_amount: 70_000,
   origin_actor_id: "actor-1",
   origin_actor_name: "Andi",
   updated_actor_name: "Andi",
@@ -97,6 +108,7 @@ const transaction: Transaction = {
   occurredAt: row.occurred_at,
   subtotal: row.subtotal,
   total: row.total,
+  paymentAmount: row.total,
   originActorId: row.origin_actor_id,
   originActorName: row.origin_actor_name,
   updatedActorName: row.updated_actor_name,
@@ -187,12 +199,96 @@ function arrangeConflictResolution(): void {
 describe("payment-aware transaction repository", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    resetMutationBarrierForTests();
+    setModeFromSession(session);
     mockGetFirstAsync.mockReset();
     mockGetAllAsync.mockReset();
     mockRunAsync.mockReset();
     mockGetFirstAsync.mockResolvedValue(row);
     mockGetAllAsync.mockResolvedValue([item]);
     mockRunAsync.mockResolvedValue({});
+  });
+
+  afterEach(() => {
+    resetMutationBarrierForTests();
+  });
+
+  it("blocks a user mutation while a mode handoff owns the barrier", async () => {
+    const transitionLease = await beginModeTransition();
+    try {
+      await expect(
+        createTransaction(
+          [
+            {
+              package: {
+                id: "package-1",
+                revision: 1,
+                name: "Paket Standar",
+                description: "Paket",
+                accent: "standard",
+                unitPrice: 70_000,
+                active: true,
+                deletedAt: null,
+              },
+              quantity: 1,
+            },
+          ],
+          "cash",
+          null,
+          session,
+        ),
+      ).rejects.toThrow(MODE_TRANSITION_BUSY_MESSAGE);
+
+      expect(mockRunAsync).not.toHaveBeenCalled();
+    } finally {
+      transitionLease.release();
+    }
+  });
+
+  it("still admits sync-owned remote package writes during the drain", async () => {
+    const transitionLease = await beginModeTransition();
+    try {
+      await expect(
+        applyRemoteChanges(
+          [
+            {
+              cursor: "CURSOR-2",
+              aggregate: "package",
+              aggregateId: "package-2",
+              action: "upsert",
+              payload: {
+                id: "package-2",
+                revision: 2,
+                name: "Paket Sinkron",
+                description: "Dari server",
+                unitPrice: 80_000,
+                accent: "sunrise",
+                active: true,
+                deletedAt: null,
+              },
+              changedAt: "2026-09-08T00:00:00.000Z",
+            },
+          ],
+          "CURSOR-2",
+          "production",
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(mockRunAsync).toHaveBeenCalledWith(
+        expect.stringContaining("INSERT INTO packages_local"),
+        "package-2",
+        2,
+        "Paket Sinkron",
+        "Dari server",
+        80_000,
+        "sunrise",
+        1,
+        null,
+        expect.any(String),
+      );
+    } finally {
+      transitionLease.release();
+    }
   });
 
   it("creates a pending transaction with an explicit signed payment method", async () => {
@@ -236,7 +332,44 @@ describe("payment-aware transaction repository", () => {
     const transactionInsert = mockRunAsync.mock.calls.find(([sql]) =>
       String(sql).includes("INSERT INTO transactions"),
     );
-    expect(transactionInsert?.[15]).toBe(QRIS_PAYLOAD_HASH);
+    expect(transactionInsert?.[16]).toBe(QRIS_PAYLOAD_HASH);
+  });
+
+  it("stores the fixed Rp1.000 charge for a Sandbox QRIS transaction", async () => {
+    const sandboxSession: Session = {
+      ...session,
+      dataMode: "sandbox",
+      dataSpaceId: "00000000-0000-4000-8000-000000000200",
+      sandboxGeneration: 1,
+    };
+    setModeFromSession(sandboxSession);
+    const created = await createTransaction(
+      [
+        {
+          package: {
+            id: "package-1",
+            revision: 1,
+            name: "Paket Standar",
+            description: "Paket",
+            accent: "standard",
+            unitPrice: 70_000,
+            active: true,
+            deletedAt: null,
+          },
+          quantity: 2,
+        },
+      ],
+      "qris",
+      QRIS_PAYLOAD_HASH,
+      sandboxSession,
+    );
+
+    expect(created.total).toBe(140_000);
+    expect(created.paymentAmount).toBe(1_000);
+    const transactionInsert = mockRunAsync.mock.calls.find(([sql]) =>
+      String(sql).includes("INSERT INTO transactions"),
+    );
+    expect(transactionInsert?.[6]).toBe(1_000);
   });
 
   it("blocks printing until payment succeeds for the current revision", async () => {
@@ -331,7 +464,7 @@ describe("payment-aware transaction repository", () => {
     const transactionUpdate = mockRunAsync.mock.calls.find(([sql]) =>
       String(sql).includes("qris_payload_hash = ?"),
     );
-    expect(transactionUpdate?.[8]).toBe(QRIS_PAYLOAD_HASH);
+    expect(transactionUpdate?.[9]).toBe(QRIS_PAYLOAD_HASH);
     const revisionInsert = mockRunAsync.mock.calls.find(([sql]) =>
       String(sql).includes("INSERT INTO transaction_revisions"),
     );
@@ -590,10 +723,10 @@ describe("payment-aware transaction repository", () => {
     );
     expect(transactionCall?.[1]).toBe(authoritative.id);
     expect(transactionCall?.[2]).toBe(authoritative.revision);
-    expect(transactionCall?.[10]).toBe("error");
-    expect(transactionCall?.[12]).toBe(authoritative.paymentMethod);
-    expect(transactionCall?.[13]).toBe(authoritative.paymentStatus);
-    expect(transactionCall?.[14]).toBe(authoritative.paymentConfirmedRevision);
+    expect(transactionCall?.[11]).toBe("error");
+    expect(transactionCall?.[13]).toBe(authoritative.paymentMethod);
+    expect(transactionCall?.[14]).toBe(authoritative.paymentStatus);
+    expect(transactionCall?.[15]).toBe(authoritative.paymentConfirmedRevision);
 
     const auditCall = mockRunAsync.mock.calls.find(([sql]) =>
       String(sql).includes("'sync.payment_conflict_authoritative'"),
@@ -781,9 +914,9 @@ describe("payment-aware transaction repository", () => {
     );
     expect(replaceCall?.[1]).toBe(row.id);
     expect(replaceCall?.[2]).toBe(rebasedRevision);
-    expect(replaceCall?.[10]).toBe("pending");
-    expect(replaceCall?.[13]).toBe("pending");
-    expect(replaceCall?.[14]).toBeNull();
+    expect(replaceCall?.[11]).toBe("pending");
+    expect(replaceCall?.[14]).toBe("pending");
+    expect(replaceCall?.[15]).toBeNull();
 
     const revisionCall = mockRunAsync.mock.calls.find(([sql]) =>
       String(sql).includes("INSERT INTO transaction_revisions"),
@@ -966,7 +1099,7 @@ describe("payment-aware transaction repository", () => {
       String(sql).includes("ON CONFLICT(id) DO UPDATE"),
     );
     expect(restoreCalls.map((call) => call[2])).toEqual([2, 1]);
-    expect(restoreCalls.map((call) => call[10])).toEqual(["synced", "synced"]);
+    expect(restoreCalls.map((call) => call[11])).toEqual(["synced", "synced"]);
 
     const cleanupCalls = mockRunAsync.mock.calls.filter(([sql]) =>
       String(sql).includes("revision > ?"),
@@ -1014,9 +1147,9 @@ describe("payment-aware transaction repository", () => {
     );
     expect(restoreCall?.[1]).toBe(row.id);
     expect(restoreCall?.[2]).toBe(row.revision);
-    expect(restoreCall?.[10]).toBe("synced");
-    expect(restoreCall?.[13]).toBe("failed");
-    expect(restoreCall?.[14]).toBeNull();
+    expect(restoreCall?.[11]).toBe("synced");
+    expect(restoreCall?.[14]).toBe("failed");
+    expect(restoreCall?.[15]).toBeNull();
   });
 
   it("counts only payments confirmed for their current revision in dashboard SQL", async () => {

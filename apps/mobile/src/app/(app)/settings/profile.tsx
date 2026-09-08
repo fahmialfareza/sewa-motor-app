@@ -38,8 +38,9 @@ export default function ProfileScreen() {
         <Row label="ID sesi" value={session.sessionId} />
       </Card>
       <Text style={styles.note}>
-        Nama, username, dan peran dikelola oleh superadmin agar jejak audit
-        tetap konsisten.
+        {session.dataMode === "sandbox"
+          ? "Profil ini digunakan bersama dengan Produksi dan hanya dapat diubah dari Mode Produksi."
+          : "Nama, username, dan peran dikelola oleh superadmin agar jejak audit tetap konsisten."}
       </Text>
     </AppScreen>
   );

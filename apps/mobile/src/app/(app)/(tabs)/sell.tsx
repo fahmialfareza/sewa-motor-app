@@ -25,6 +25,7 @@ import {
   fingerprintStaticQris,
   validateStaticQris,
 } from "@/domain/qris";
+import { resolvePaymentAmount } from "@/domain/payments";
 import type {
   QrisPayloadHash,
   RentalPackage,
@@ -151,7 +152,10 @@ export default function SaleComposerScreen() {
           );
         }
         const staticQris = validateStaticQris(qrisConfig.staticPayload);
-        createDynamicQris(staticQris.payload, total);
+        createDynamicQris(
+          staticQris.payload,
+          resolvePaymentAmount(session.dataMode, paymentMethod, total),
+        );
         qrisPayloadHash = await fingerprintStaticQris(staticQris.payload);
       }
       const transaction = await createTransaction(

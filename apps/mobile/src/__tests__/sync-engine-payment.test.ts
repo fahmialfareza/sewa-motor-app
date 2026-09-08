@@ -47,6 +47,9 @@ const session: Session = {
   token: "session-token",
   sessionId: "session-1",
   establishedAt: "2026-07-29T00:00:00.000Z",
+  dataMode: "production",
+  dataSpaceId: "00000000-0000-4000-8000-000000000100",
+  sandboxGeneration: null,
   user: {
     id: "actor-1",
     fullName: "Andi",
@@ -76,6 +79,7 @@ const currentTransaction: Transaction = {
   occurredAt: "2026-07-29T00:00:00.000Z",
   subtotal: 70_000,
   total: 70_000,
+  paymentAmount: 70_000,
   originActorId: session.user.id,
   originActorName: session.user.fullName,
   updatedActorName: session.user.fullName,
@@ -121,6 +125,7 @@ const serverSnapshot = {
   ],
   subtotal: 140_000,
   total: 140_000,
+  paymentAmount: 140_000,
 };
 
 function arrangeSyncPush(result: Record<string, unknown>): void {
@@ -184,6 +189,7 @@ describe("payment conflict sync handling", () => {
           occurredAt: "2026-07-29T00:02:00.000Z",
           subtotal: serverSnapshot.subtotal,
           total: serverSnapshot.total,
+          paymentAmount: serverSnapshot.paymentAmount,
           syncState: "error",
           paymentMethod: "qris",
           paymentStatus: "success",
@@ -198,6 +204,7 @@ describe("payment conflict sync handling", () => {
           ],
         },
       },
+      "production",
     );
   });
 
@@ -223,6 +230,7 @@ describe("payment conflict sync handling", () => {
         kind: "rejected",
         message: "Server mengembalikan konflik yang tidak dapat diproses.",
       },
+      "production",
     );
   });
 });

@@ -28,6 +28,15 @@ type LoginResult struct {
 	Principal Principal `json:"user"`
 }
 
+type SwitchModeInput struct {
+	Mode DataMode `json:"mode"`
+}
+
+type ResetSandboxInput struct {
+	ExpectedGeneration int64  `json:"expectedGeneration"`
+	Confirmation       string `json:"confirmation"`
+}
+
 type CreateUserInput struct {
 	FullName          string
 	Username          string
@@ -78,6 +87,12 @@ type MutationIdentity struct {
 	TerminalID           *uuid.UUID
 	SubmittedByActorID   uuid.UUID
 	SubmittedBySessionID uuid.UUID
+	DataSpaceID          uuid.UUID
+	DataMode             DataMode
+}
+
+func (identity MutationIdentity) EffectiveDataSpaceID() uuid.UUID {
+	return EffectiveDataSpaceID(identity.DataSpaceID)
 }
 
 type CreateTransactionInput struct {
@@ -139,6 +154,14 @@ type TransactionFilter struct {
 	Limit          int
 	CursorOccurred *time.Time
 	CursorID       string
+	DataSpaceID    uuid.UUID
+}
+
+func EffectiveDataSpaceID(value uuid.UUID) uuid.UUID {
+	if value == uuid.Nil {
+		return LiveDataSpaceID()
+	}
+	return value
 }
 
 type TransactionPage struct {

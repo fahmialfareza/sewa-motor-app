@@ -26,6 +26,19 @@ const (
 	True ActionResultSuccess = true
 )
 
+// Defines values for DataMode.
+const (
+	DataModeProduction DataMode = "production"
+	DataModeSandbox    DataMode = "sandbox"
+)
+
+// Defines values for DataSpaceStatus.
+const (
+	Active  DataSpaceStatus = "active"
+	Purged  DataSpaceStatus = "purged"
+	Retired DataSpaceStatus = "retired"
+)
+
 // Defines values for EnrollTerminalRequestAlgorithm.
 const (
 	EnrollTerminalRequestAlgorithmEd25519 EnrollTerminalRequestAlgorithm = "Ed25519"
@@ -125,6 +138,21 @@ const (
 	RecordPrintAttemptRequestStatusPending RecordPrintAttemptRequestStatus = "pending"
 	RecordPrintAttemptRequestStatusSuccess RecordPrintAttemptRequestStatus = "success"
 	RecordPrintAttemptRequestStatusUnknown RecordPrintAttemptRequestStatus = "unknown"
+)
+
+// Defines values for ResetSandboxRequestConfirmation.
+const (
+	RESETSANDBOX ResetSandboxRequestConfirmation = "RESET SANDBOX"
+)
+
+// Defines values for SandboxStatusDataMode.
+const (
+	SandboxStatusDataModeSandbox SandboxStatusDataMode = "sandbox"
+)
+
+// Defines values for SandboxStatusQrisAmount.
+const (
+	N1000 SandboxStatusQrisAmount = 1000
 )
 
 // Defines values for SelectablePaymentMethod.
@@ -298,7 +326,9 @@ type CreateUserRequest struct {
 
 // DashboardStatistics defines model for DashboardStatistics.
 type DashboardStatistics struct {
-	EndsAt time.Time `json:"endsAt"`
+	// ActualQrisAmount Whole Indonesian rupiah; decimals are never accepted.
+	ActualQrisAmount Rupiah    `json:"actualQrisAmount"`
+	EndsAt           time.Time `json:"endsAt"`
 
 	// GrossRevenue Whole Indonesian rupiah; decimals are never accepted.
 	GrossRevenue      Rupiah            `json:"grossRevenue"`
@@ -315,6 +345,26 @@ type DashboardStatisticsEnvelope struct {
 	Data DashboardStatistics `json:"data"`
 	Meta Meta                `json:"meta"`
 }
+
+// DataMode Server-authorized business data boundary bound to the session.
+type DataMode string
+
+// DataSpace defines model for DataSpace.
+type DataSpace struct {
+	ActivatedAt time.Time `json:"activatedAt"`
+	Generation  int64     `json:"generation"`
+	Id          UUID      `json:"id"`
+
+	// Mode Server-authorized business data boundary bound to the session.
+	Mode       DataMode        `json:"mode"`
+	PurgeAfter *time.Time      `json:"purgeAfter"`
+	PurgedAt   *time.Time      `json:"purgedAt"`
+	RetiredAt  *time.Time      `json:"retiredAt"`
+	Status     DataSpaceStatus `json:"status"`
+}
+
+// DataSpaceStatus defines model for DataSpaceStatus.
+type DataSpaceStatus string
 
 // DeleteTransactionRequest defines model for DeleteTransactionRequest.
 type DeleteTransactionRequest struct {
@@ -395,10 +445,16 @@ type LoginRequest struct {
 
 // LoginResult defines model for LoginResult.
 type LoginResult struct {
-	SessionId    UUID      `json:"sessionId"`
-	SessionToken *string   `json:"sessionToken,omitempty"`
-	Terminal     *Terminal `json:"terminal"`
-	User         User      `json:"user"`
+	// DataMode Server-authorized business data boundary bound to the session.
+	DataMode    DataMode `json:"dataMode"`
+	DataSpaceId UUID     `json:"dataSpaceId"`
+
+	// SandboxGeneration Zero in production; the active immutable generation in Sandbox Mode.
+	SandboxGeneration int64     `json:"sandboxGeneration"`
+	SessionId         UUID      `json:"sessionId"`
+	SessionToken      *string   `json:"sessionToken,omitempty"`
+	Terminal          *Terminal `json:"terminal"`
+	User              User      `json:"user"`
 }
 
 // Meta defines model for Meta.
@@ -574,9 +630,15 @@ type ProfileEnvelope struct {
 
 // ProfileResult defines model for ProfileResult.
 type ProfileResult struct {
-	SessionId UUID      `json:"sessionId"`
-	Terminal  *Terminal `json:"terminal"`
-	User      User      `json:"user"`
+	// DataMode Server-authorized business data boundary bound to the session.
+	DataMode    DataMode `json:"dataMode"`
+	DataSpaceId UUID     `json:"dataSpaceId"`
+
+	// SandboxGeneration Zero in production; the active immutable generation in Sandbox Mode.
+	SandboxGeneration int64     `json:"sandboxGeneration"`
+	SessionId         UUID      `json:"sessionId"`
+	Terminal          *Terminal `json:"terminal"`
+	User              User      `json:"user"`
 }
 
 // QrisPayloadHash Lowercase SHA-256 digest of the exact configured static merchant QRIS
@@ -607,6 +669,15 @@ type ResetPasswordRequest struct {
 	TemporaryPassword string `json:"temporaryPassword"`
 }
 
+// ResetSandboxRequest defines model for ResetSandboxRequest.
+type ResetSandboxRequest struct {
+	Confirmation       ResetSandboxRequestConfirmation `json:"confirmation"`
+	ExpectedGeneration int64                           `json:"expectedGeneration"`
+}
+
+// ResetSandboxRequestConfirmation defines model for ResetSandboxRequest.Confirmation.
+type ResetSandboxRequestConfirmation string
+
 // RevisionConflictDetails defines model for RevisionConflictDetails.
 type RevisionConflictDetails struct {
 	BaseRevision    int                 `json:"baseRevision"`
@@ -628,6 +699,48 @@ type RevisionConflictEnvelope struct {
 // Rupiah Whole Indonesian rupiah; decimals are never accepted.
 type Rupiah = int64
 
+// SandboxResetEnvelope defines model for SandboxResetEnvelope.
+type SandboxResetEnvelope struct {
+	Data SandboxResetResult `json:"data"`
+	Meta Meta               `json:"meta"`
+}
+
+// SandboxResetResult defines model for SandboxResetResult.
+type SandboxResetResult struct {
+	ClonedPackageCount  int       `json:"clonedPackageCount"`
+	Current             DataSpace `json:"current"`
+	Previous            DataSpace `json:"previous"`
+	RevokedSessionCount int64     `json:"revokedSessionCount"`
+}
+
+// SandboxStatus defines model for SandboxStatus.
+type SandboxStatus struct {
+	DataMode SandboxStatusDataMode `json:"dataMode"`
+
+	// DataSpaceId Null while Sandbox is disabled and has not been activated.
+	DataSpaceId *openapi_types.UUID `json:"dataSpaceId"`
+	Enabled     bool                `json:"enabled"`
+
+	// Generation Null while Sandbox is disabled and has not been activated.
+	Generation *int64 `json:"generation"`
+
+	// QrisAmount Real merchant QRIS charge used by every Sandbox QRIS transaction.
+	QrisAmount    SandboxStatusQrisAmount `json:"qrisAmount"`
+	RetentionDays int                     `json:"retentionDays"`
+}
+
+// SandboxStatusDataMode defines model for SandboxStatus.DataMode.
+type SandboxStatusDataMode string
+
+// SandboxStatusQrisAmount Real merchant QRIS charge used by every Sandbox QRIS transaction.
+type SandboxStatusQrisAmount int64
+
+// SandboxStatusEnvelope defines model for SandboxStatusEnvelope.
+type SandboxStatusEnvelope struct {
+	Data SandboxStatus `json:"data"`
+	Meta Meta          `json:"meta"`
+}
+
 // SelectablePaymentMethod defines model for SelectablePaymentMethod.
 type SelectablePaymentMethod string
 
@@ -648,6 +761,12 @@ type SetPaymentStatusRequest struct {
 // StatisticsPeriod defines model for StatisticsPeriod.
 type StatisticsPeriod string
 
+// SwitchModeRequest defines model for SwitchModeRequest.
+type SwitchModeRequest struct {
+	// Mode Server-authorized business data boundary bound to the session.
+	Mode DataMode `json:"mode"`
+}
+
 // SyncAction Print attempts use `aggregate: print_attempt` with `action: create`.
 // As a temporary, telemetry-backed compatibility path, the server accepts a
 // truly absent `paymentMethod` only for an already-signed transaction
@@ -667,7 +786,8 @@ type SyncChange struct {
 	AggregateId string              `json:"aggregateId"`
 	ChangedAt   time.Time           `json:"changedAt"`
 
-	// Cursor Durable opaque cursor after this individual change.
+	// Cursor Durable cursor after this individual change. Production retains the
+	// legacy decimal form; Sandbox uses `sandbox:<generation>:<position>`.
 	Cursor    string              `json:"cursor"`
 	Payload   *SyncChange_Payload `json:"payload"`
 	Revision  *int                `json:"revision"`
@@ -784,8 +904,11 @@ type SyncPullEnvelope struct {
 // SyncPullResult defines model for SyncPullResult.
 type SyncPullResult struct {
 	Changes []SyncChange `json:"changes"`
-	Cursor  string       `json:"cursor"`
-	HasMore bool         `json:"hasMore"`
+
+	// Cursor Production decimal cursor or generation-bound Sandbox cursor in the
+	// form `sandbox:<generation>:<position>`.
+	Cursor  string `json:"cursor"`
+	HasMore bool   `json:"hasMore"`
 }
 
 // SyncPushEnvelope defines model for SyncPushEnvelope.
@@ -850,11 +973,17 @@ type Transaction struct {
 	CreatedAt time.Time         `json:"createdAt"`
 	Deletion  *DeletionMetadata `json:"deletion"`
 
+	// DisplayId Display identity; Sandbox transactions use a `TEST-` prefix.
+	DisplayId string `json:"displayId"`
+
 	// Id Canonical uppercase ULID without a display prefix.
 	Id          ULID              `json:"id"`
 	Items       []TransactionItem `json:"items"`
 	OccurredAt  time.Time         `json:"occurredAt"`
 	OriginActor UserSummary       `json:"originActor"`
+
+	// PaymentAmount Whole Indonesian rupiah; decimals are never accepted.
+	PaymentAmount Rupiah `json:"paymentAmount"`
 
 	// PaymentConfirmedRevision The transaction revision confirmed by a successful payment. It is
 	// null while payment is pending or failed.
@@ -982,6 +1111,9 @@ type TransactionRevisionListEnvelope struct {
 type TransactionSnapshot struct {
 	Items      []TransactionItemSnapshot `json:"items"`
 	OccurredAt time.Time                 `json:"occurredAt"`
+
+	// PaymentAmount Whole Indonesian rupiah; decimals are never accepted.
+	PaymentAmount Rupiah `json:"paymentAmount"`
 
 	// PaymentConfirmedRevision The snapshot revision when payment succeeded; null until payment succeeds.
 	PaymentConfirmedRevision *int `json:"paymentConfirmedRevision"`
@@ -1129,6 +1261,12 @@ type Profile = ProfileEnvelope
 // RevisionConflict defines model for RevisionConflict.
 type RevisionConflict = RevisionConflictEnvelope
 
+// SandboxResetResponse defines model for SandboxResetResponse.
+type SandboxResetResponse = SandboxResetEnvelope
+
+// SandboxStatusResponse defines model for SandboxStatusResponse.
+type SandboxStatusResponse = SandboxStatusEnvelope
+
 // SyncPull defines model for SyncPull.
 type SyncPull = SyncPullEnvelope
 
@@ -1209,6 +1347,9 @@ type ListUsersParams struct {
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
+// SwitchDataModeJSONRequestBody defines body for SwitchDataMode for application/json ContentType.
+type SwitchDataModeJSONRequestBody = SwitchModeRequest
+
 // ExportTransactionsJSONRequestBody defines body for ExportTransactions for application/json ContentType.
 type ExportTransactionsJSONRequestBody = ExportTransactionsRequest
 
@@ -1220,6 +1361,9 @@ type UpdatePackageJSONRequestBody = UpdatePackageRequest
 
 // ChangeOwnPasswordJSONRequestBody defines body for ChangeOwnPassword for application/json ContentType.
 type ChangeOwnPasswordJSONRequestBody = ChangePasswordRequest
+
+// ResetSandboxJSONRequestBody defines body for ResetSandbox for application/json ContentType.
+type ResetSandboxJSONRequestBody = ResetSandboxRequest
 
 // PushSyncMutationsJSONRequestBody defines body for PushSyncMutations for application/json ContentType.
 type PushSyncMutationsJSONRequestBody = SyncPushRequest
@@ -1751,6 +1895,9 @@ type ServerInterface interface {
 	// Revoke the current session
 	// (POST /auth/logout)
 	Logout(c *gin.Context)
+	// Rotate the current session into production or Sandbox Mode
+	// (POST /auth/switch-mode)
+	SwitchDataMode(c *gin.Context)
 	// Download a filtered XLSX or PDF
 	// (POST /exports/transactions)
 	ExportTransactions(c *gin.Context)
@@ -1781,6 +1928,12 @@ type ServerInterface interface {
 	// Change the authenticated user's password
 	// (POST /profile/password)
 	ChangeOwnPassword(c *gin.Context)
+	// Retire and replace the shared Sandbox generation
+	// (POST /sandbox/reset)
+	ResetSandbox(c *gin.Context)
+	// Get Sandbox availability and active generation
+	// (GET /sandbox/status)
+	GetSandboxStatus(c *gin.Context)
 	// Get dashboard aggregates
 	// (GET /statistics/dashboard)
 	GetDashboardStatistics(c *gin.Context, params GetDashboardStatisticsParams)
@@ -1881,6 +2034,21 @@ func (siw *ServerInterfaceWrapper) Logout(c *gin.Context) {
 	}
 
 	siw.Handler.Logout(c)
+}
+
+// SwitchDataMode operation middleware
+func (siw *ServerInterfaceWrapper) SwitchDataMode(c *gin.Context) {
+
+	c.Set(BearerAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SwitchDataMode(c)
 }
 
 // ExportTransactions operation middleware
@@ -2097,6 +2265,36 @@ func (siw *ServerInterfaceWrapper) ChangeOwnPassword(c *gin.Context) {
 	}
 
 	siw.Handler.ChangeOwnPassword(c)
+}
+
+// ResetSandbox operation middleware
+func (siw *ServerInterfaceWrapper) ResetSandbox(c *gin.Context) {
+
+	c.Set(BearerAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ResetSandbox(c)
+}
+
+// GetSandboxStatus operation middleware
+func (siw *ServerInterfaceWrapper) GetSandboxStatus(c *gin.Context) {
+
+	c.Set(BearerAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetSandboxStatus(c)
 }
 
 // GetDashboardStatistics operation middleware
@@ -2770,6 +2968,7 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 
 	router.POST(options.BaseURL+"/auth/login", wrapper.Login)
 	router.POST(options.BaseURL+"/auth/logout", wrapper.Logout)
+	router.POST(options.BaseURL+"/auth/switch-mode", wrapper.SwitchDataMode)
 	router.POST(options.BaseURL+"/exports/transactions", wrapper.ExportTransactions)
 	router.GET(options.BaseURL+"/health/live", wrapper.GetLiveness)
 	router.GET(options.BaseURL+"/health/ready", wrapper.GetReadiness)
@@ -2780,6 +2979,8 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.PATCH(options.BaseURL+"/packages/:packageId", wrapper.UpdatePackage)
 	router.GET(options.BaseURL+"/profile", wrapper.GetProfile)
 	router.POST(options.BaseURL+"/profile/password", wrapper.ChangeOwnPassword)
+	router.POST(options.BaseURL+"/sandbox/reset", wrapper.ResetSandbox)
+	router.GET(options.BaseURL+"/sandbox/status", wrapper.GetSandboxStatus)
 	router.GET(options.BaseURL+"/statistics/dashboard", wrapper.GetDashboardStatistics)
 	router.GET(options.BaseURL+"/sync/pull", wrapper.PullSyncChanges)
 	router.POST(options.BaseURL+"/sync/push", wrapper.PushSyncMutations)
@@ -2963,6 +3164,24 @@ type RevisionConflictJSONResponse struct {
 	Body RevisionConflictEnvelope
 
 	Headers RevisionConflictResponseHeaders
+}
+
+type SandboxResetResponseResponseHeaders struct {
+	XRequestId openapi_types.UUID
+}
+type SandboxResetResponseJSONResponse struct {
+	Body SandboxResetEnvelope
+
+	Headers SandboxResetResponseResponseHeaders
+}
+
+type SandboxStatusResponseResponseHeaders struct {
+	XRequestId openapi_types.UUID
+}
+type SandboxStatusResponseJSONResponse struct {
+	Body SandboxStatusEnvelope
+
+	Headers SandboxStatusResponseResponseHeaders
 }
 
 type ServiceUnavailableResponseHeaders struct {
@@ -3153,6 +3372,64 @@ func (response Logout401JSONResponse) VisitLogoutResponse(w http.ResponseWriter)
 type Logout409JSONResponse struct{ ConflictJSONResponse }
 
 func (response Logout409JSONResponse) VisitLogoutResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SwitchDataModeRequestObject struct {
+	Body *SwitchDataModeJSONRequestBody
+}
+
+type SwitchDataModeResponseObject interface {
+	VisitSwitchDataModeResponse(w http.ResponseWriter) error
+}
+
+type SwitchDataMode200JSONResponse struct{ LoginJSONResponse }
+
+func (response SwitchDataMode200JSONResponse) VisitSwitchDataModeResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SwitchDataMode400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response SwitchDataMode400JSONResponse) VisitSwitchDataModeResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SwitchDataMode401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response SwitchDataMode401JSONResponse) VisitSwitchDataModeResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SwitchDataMode403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response SwitchDataMode403JSONResponse) VisitSwitchDataModeResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SwitchDataMode409JSONResponse struct{ ConflictJSONResponse }
+
+func (response SwitchDataMode409JSONResponse) VisitSwitchDataModeResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
 	w.WriteHeader(409)
@@ -3691,6 +3968,95 @@ func (response ChangeOwnPassword422JSONResponse) VisitChangeOwnPasswordResponse(
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
 	w.WriteHeader(422)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ResetSandboxRequestObject struct {
+	Body *ResetSandboxJSONRequestBody
+}
+
+type ResetSandboxResponseObject interface {
+	VisitResetSandboxResponse(w http.ResponseWriter) error
+}
+
+type ResetSandbox200JSONResponse struct {
+	SandboxResetResponseJSONResponse
+}
+
+func (response ResetSandbox200JSONResponse) VisitResetSandboxResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ResetSandbox400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response ResetSandbox400JSONResponse) VisitResetSandboxResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ResetSandbox401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ResetSandbox401JSONResponse) VisitResetSandboxResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ResetSandbox403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response ResetSandbox403JSONResponse) VisitResetSandboxResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ResetSandbox409JSONResponse struct{ ConflictJSONResponse }
+
+func (response ResetSandbox409JSONResponse) VisitResetSandboxResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type GetSandboxStatusRequestObject struct {
+}
+
+type GetSandboxStatusResponseObject interface {
+	VisitGetSandboxStatusResponse(w http.ResponseWriter) error
+}
+
+type GetSandboxStatus200JSONResponse struct {
+	SandboxStatusResponseJSONResponse
+}
+
+func (response GetSandboxStatus200JSONResponse) VisitGetSandboxStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type GetSandboxStatus401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetSandboxStatus401JSONResponse) VisitGetSandboxStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(401)
 
 	return json.NewEncoder(w).Encode(response.Body)
 }
@@ -4912,6 +5278,9 @@ type StrictServerInterface interface {
 	// Revoke the current session
 	// (POST /auth/logout)
 	Logout(ctx context.Context, request LogoutRequestObject) (LogoutResponseObject, error)
+	// Rotate the current session into production or Sandbox Mode
+	// (POST /auth/switch-mode)
+	SwitchDataMode(ctx context.Context, request SwitchDataModeRequestObject) (SwitchDataModeResponseObject, error)
 	// Download a filtered XLSX or PDF
 	// (POST /exports/transactions)
 	ExportTransactions(ctx context.Context, request ExportTransactionsRequestObject) (ExportTransactionsResponseObject, error)
@@ -4942,6 +5311,12 @@ type StrictServerInterface interface {
 	// Change the authenticated user's password
 	// (POST /profile/password)
 	ChangeOwnPassword(ctx context.Context, request ChangeOwnPasswordRequestObject) (ChangeOwnPasswordResponseObject, error)
+	// Retire and replace the shared Sandbox generation
+	// (POST /sandbox/reset)
+	ResetSandbox(ctx context.Context, request ResetSandboxRequestObject) (ResetSandboxResponseObject, error)
+	// Get Sandbox availability and active generation
+	// (GET /sandbox/status)
+	GetSandboxStatus(ctx context.Context, request GetSandboxStatusRequestObject) (GetSandboxStatusResponseObject, error)
 	// Get dashboard aggregates
 	// (GET /statistics/dashboard)
 	GetDashboardStatistics(ctx context.Context, request GetDashboardStatisticsRequestObject) (GetDashboardStatisticsResponseObject, error)
@@ -5070,6 +5445,39 @@ func (sh *strictHandler) Logout(ctx *gin.Context) {
 		ctx.Status(http.StatusInternalServerError)
 	} else if validResponse, ok := response.(LogoutResponseObject); ok {
 		if err := validResponse.VisitLogoutResponse(ctx.Writer); err != nil {
+			ctx.Error(err)
+		}
+	} else if response != nil {
+		ctx.Error(fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SwitchDataMode operation middleware
+func (sh *strictHandler) SwitchDataMode(ctx *gin.Context) {
+	var request SwitchDataModeRequestObject
+
+	var body SwitchDataModeJSONRequestBody
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		ctx.Status(http.StatusBadRequest)
+		ctx.Error(err)
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.SwitchDataMode(ctx, request.(SwitchDataModeRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SwitchDataMode")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		ctx.Error(err)
+		ctx.Status(http.StatusInternalServerError)
+	} else if validResponse, ok := response.(SwitchDataModeResponseObject); ok {
+		if err := validResponse.VisitSwitchDataModeResponse(ctx.Writer); err != nil {
 			ctx.Error(err)
 		}
 	} else if response != nil {
@@ -5360,6 +5768,64 @@ func (sh *strictHandler) ChangeOwnPassword(ctx *gin.Context) {
 		ctx.Status(http.StatusInternalServerError)
 	} else if validResponse, ok := response.(ChangeOwnPasswordResponseObject); ok {
 		if err := validResponse.VisitChangeOwnPasswordResponse(ctx.Writer); err != nil {
+			ctx.Error(err)
+		}
+	} else if response != nil {
+		ctx.Error(fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ResetSandbox operation middleware
+func (sh *strictHandler) ResetSandbox(ctx *gin.Context) {
+	var request ResetSandboxRequestObject
+
+	var body ResetSandboxJSONRequestBody
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		ctx.Status(http.StatusBadRequest)
+		ctx.Error(err)
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.ResetSandbox(ctx, request.(ResetSandboxRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ResetSandbox")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		ctx.Error(err)
+		ctx.Status(http.StatusInternalServerError)
+	} else if validResponse, ok := response.(ResetSandboxResponseObject); ok {
+		if err := validResponse.VisitResetSandboxResponse(ctx.Writer); err != nil {
+			ctx.Error(err)
+		}
+	} else if response != nil {
+		ctx.Error(fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetSandboxStatus operation middleware
+func (sh *strictHandler) GetSandboxStatus(ctx *gin.Context) {
+	var request GetSandboxStatusRequestObject
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.GetSandboxStatus(ctx, request.(GetSandboxStatusRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetSandboxStatus")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		ctx.Error(err)
+		ctx.Status(http.StatusInternalServerError)
+	} else if validResponse, ok := response.(GetSandboxStatusResponseObject); ok {
+		if err := validResponse.VisitGetSandboxStatusResponse(ctx.Writer); err != nil {
 			ctx.Error(err)
 		}
 	} else if response != nil {

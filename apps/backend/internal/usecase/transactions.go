@@ -24,6 +24,8 @@ func identity(principal domain.Principal) domain.MutationIdentity {
 		TerminalID:           principal.TerminalID,
 		SubmittedByActorID:   principal.UserID,
 		SubmittedBySessionID: principal.SessionID,
+		DataSpaceID:          principal.EffectiveDataSpaceID(),
+		DataMode:             principal.EffectiveDataMode(),
 	}
 }
 
@@ -62,7 +64,7 @@ func (t Transactions) Correct(ctx context.Context, principal domain.Principal, i
 	if err := domain.ValidateTransactionID(input.ID); err != nil {
 		return domain.Transaction{}, err
 	}
-	current, err := t.Repo.GetTransaction(ctx, input.ID, principal.IsSuperadmin())
+	current, err := t.Repo.GetTransaction(ctx, principal.EffectiveDataSpaceID(), input.ID, principal.IsSuperadmin())
 	if err != nil {
 		return domain.Transaction{}, err
 	}
@@ -118,7 +120,7 @@ func (t Transactions) SetPaymentStatus(
 			map[string]any{"field": "occurredAt"},
 		)
 	}
-	current, err := t.Repo.GetTransaction(ctx, input.ID, principal.IsSuperadmin())
+	current, err := t.Repo.GetTransaction(ctx, principal.EffectiveDataSpaceID(), input.ID, principal.IsSuperadmin())
 	if err != nil {
 		return domain.Transaction{}, err
 	}
@@ -140,7 +142,7 @@ func (t Transactions) Get(ctx context.Context, principal domain.Principal, id st
 	if err := domain.ValidateTransactionID(id); err != nil {
 		return domain.Transaction{}, err
 	}
-	return t.Repo.GetTransaction(ctx, id, principal.IsSuperadmin())
+	return t.Repo.GetTransaction(ctx, principal.EffectiveDataSpaceID(), id, principal.IsSuperadmin())
 }
 
 func (t Transactions) List(ctx context.Context, principal domain.Principal, filter domain.TransactionFilter) (domain.TransactionPage, error) {
@@ -154,6 +156,7 @@ func (t Transactions) List(ctx context.Context, principal domain.Principal, filt
 	if !principal.IsSuperadmin() {
 		filter.IncludeDeleted = false
 	}
+	filter.DataSpaceID = principal.EffectiveDataSpaceID()
 	return t.Repo.ListTransactions(ctx, filter)
 }
 
@@ -165,7 +168,7 @@ func (t Transactions) Revisions(ctx context.Context, principal domain.Principal,
 	if err := domain.ValidateTransactionID(id); err != nil {
 		return nil, err
 	}
-	return t.Repo.ListTransactionRevisions(ctx, id)
+	return t.Repo.ListTransactionRevisions(ctx, principal.EffectiveDataSpaceID(), id)
 }
 
 func (t Transactions) PrintAttempts(ctx context.Context, principal domain.Principal, id string) ([]domain.PrintAttempt, error) {
@@ -176,7 +179,7 @@ func (t Transactions) PrintAttempts(ctx context.Context, principal domain.Princi
 	if err := domain.ValidateTransactionID(id); err != nil {
 		return nil, err
 	}
-	return t.Repo.ListPrintAttempts(ctx, id)
+	return t.Repo.ListPrintAttempts(ctx, principal.EffectiveDataSpaceID(), id)
 }
 
 func (t Transactions) Delete(ctx context.Context, principal domain.Principal, id, reason string) error {

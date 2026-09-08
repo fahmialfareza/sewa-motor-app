@@ -30,6 +30,9 @@ func TestMigrationPlanIsOrderedAndCompatible(t *testing.T) {
 	if len(orderedMigrations) < 3 || orderedMigrations[2].version != "000003_qris_payload_binding" {
 		t.Fatalf("QRIS payload binding migration is missing or out of order: %+v", orderedMigrations)
 	}
+	if len(orderedMigrations) < 4 || orderedMigrations[3].version != "000004_sandbox_data_spaces" {
+		t.Fatalf("Sandbox data-space migration is missing or out of order: %+v", orderedMigrations)
+	}
 
 	seen := make(map[string]struct{}, len(orderedMigrations))
 	previous := ""
@@ -145,10 +148,14 @@ func TestPaymentMigrationIsSeparatedFromInitialModel(t *testing.T) {
 	}
 }
 
-func TestInitialModelsMatchSQLCSnapshotTables(t *testing.T) {
+func TestMigrationTablesMatchSQLCSnapshotTables(t *testing.T) {
 	t.Parallel()
 
-	modelTables := modelTableNames(t)
+	// The immutable 000001 models still describe their original migration.
+	// data_spaces is added by the GORM-run 000004 migration, so include that
+	// additive table when comparing against sqlc's current-schema snapshot.
+	migrationTables := append(modelTableNames(t), "data_spaces")
+	sort.Strings(migrationTables)
 	snapshotPath := filepath.Join("..", "sqlc", "schema.sql")
 	body, err := os.ReadFile(snapshotPath)
 	if err != nil {
@@ -161,13 +168,34 @@ func TestInitialModelsMatchSQLCSnapshotTables(t *testing.T) {
 	}
 	sort.Strings(snapshotTables)
 
-	if !reflect.DeepEqual(modelTables, snapshotTables) {
-		t.Fatalf("GORM tables and sqlc snapshot differ\nGORM: %v\nsqlc: %v", modelTables, snapshotTables)
+	if !reflect.DeepEqual(migrationTables, snapshotTables) {
+		t.Fatalf("migration tables and sqlc snapshot differ\nmigrations: %v\nsqlc: %v", migrationTables, snapshotTables)
 	}
 	if files, err := filepath.Glob("*.up.sql"); err != nil {
 		t.Fatalf("list runtime SQL migrations: %v", err)
 	} else if len(files) != 0 {
 		t.Fatalf("runtime SQL migrations remain: %v", files)
+	}
+}
+
+func TestSQLCSnapshotPreservesSandboxLifecycleInvariants(t *testing.T) {
+	t.Parallel()
+
+	body, err := os.ReadFile(filepath.Join("..", "sqlc", "schema.sql"))
+	if err != nil {
+		t.Fatalf("read sqlc schema snapshot: %v", err)
+	}
+	snapshot := string(body)
+	for _, required := range []string{
+		"CONSTRAINT data_spaces_lifecycle_shape CHECK",
+		"CREATE INDEX packages_data_space_live_idx",
+		"current_setting('app.sandbox_purge_data_space_id', true)",
+		"(to_jsonb(OLD) ->> 'data_space_id') = purge_space",
+		"status = 'retired' AND purge_after <= now()",
+	} {
+		if !strings.Contains(snapshot, required) {
+			t.Errorf("sqlc schema snapshot is missing Sandbox invariant %q", required)
+		}
 	}
 }
 

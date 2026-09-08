@@ -18,7 +18,7 @@ func TestTransactionSnapshotMatchesPublicConflictContract(t *testing.T) {
 			LineNumber: 1, PackageID: uuid.MustParse("00000000-0000-4000-8000-000000000001"),
 			PackageRevision: 2, PackageCode: "STANDARD", PackageName: "Paket Standar",
 			PackageDescription: "Deskripsi", UnitPrice: 70_000, Quantity: 2, LineTotal: 140_000,
-		}}, 140_000),
+		}}, 140_000, 140_000),
 		domain.PaymentStatusPending,
 		nil,
 	)
@@ -33,12 +33,13 @@ func TestTransactionSnapshotMatchesPublicConflictContract(t *testing.T) {
 	for _, key := range []string{
 		"occurredAt", "paymentMethod", "paymentStatus",
 		"paymentConfirmedRevision", "items", "subtotal", "total",
+		"paymentAmount",
 	} {
 		if _, ok := decoded[key]; !ok {
 			t.Fatalf("public snapshot is missing %q: %s", key, body)
 		}
 	}
-	if len(decoded) != 7 {
+	if len(decoded) != 8 {
 		t.Fatalf("public snapshot has unexpected fields: %s", body)
 	}
 	items := decoded["items"].([]any)
@@ -65,6 +66,7 @@ func TestTransactionSnapshotIncludesQrisPayloadBinding(t *testing.T) {
 		&hash,
 		nil,
 		70_000,
+		1_000,
 	)
 	if snapshot["qrisPayloadHash"] != hash {
 		t.Fatalf("QRIS payload hash missing from immutable snapshot: %#v", snapshot)
@@ -112,6 +114,7 @@ func TestResolveTransactionItemsEnforcesQRISLimitAfterPriceResolution(t *testing
 	if _, _, err := resolveTransactionItems(
 		context.Background(),
 		query,
+		domain.LiveDataSpaceID(),
 		domain.PaymentMethodQRIS,
 		inputs,
 	); !domain.IsCode(err, domain.CodeValidation) {
@@ -121,6 +124,7 @@ func TestResolveTransactionItemsEnforcesQRISLimitAfterPriceResolution(t *testing
 	items, total, err := resolveTransactionItems(
 		context.Background(),
 		query,
+		domain.LiveDataSpaceID(),
 		domain.PaymentMethodCash,
 		inputs,
 	)

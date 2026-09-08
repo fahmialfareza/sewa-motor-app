@@ -14,9 +14,10 @@ const correctionTestTransactionID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
 
 type correctionRepository struct {
 	port.Repository
-	transaction   domain.Transaction
-	correctCalled bool
-	paymentCalled bool
+	transaction        domain.Transaction
+	requestedDataSpace uuid.UUID
+	correctCalled      bool
+	paymentCalled      bool
 }
 
 func (r *correctionRepository) SetTransactionPaymentStatus(
@@ -33,10 +34,12 @@ func (r *correctionRepository) SetTransactionPaymentStatus(
 }
 
 func (r *correctionRepository) GetTransaction(
-	context.Context,
-	string,
-	bool,
+	_ context.Context,
+	dataSpaceID uuid.UUID,
+	_ string,
+	_ bool,
 ) (domain.Transaction, error) {
+	r.requestedDataSpace = dataSpaceID
 	return r.transaction, nil
 }
 
@@ -239,5 +242,89 @@ func TestTransactionsSetPaymentStatusAuthorization(t *testing.T) {
 				t.Fatal("payment mutation was not called")
 			}
 		})
+	}
+}
+
+func TestSandboxTransactionsPreserveOwnershipRules(t *testing.T) {
+	ownerID := uuid.New()
+	otherID := uuid.New()
+	terminalID := uuid.New()
+	dataSpaceID := uuid.New()
+
+	mutations := []struct {
+		name   string
+		run    func(Transactions, domain.Principal) error
+		called func(*correctionRepository) bool
+	}{
+		{
+			name: "correction",
+			run: func(service Transactions, principal domain.Principal) error {
+				_, err := service.Correct(context.Background(), principal, correctionInput())
+				return err
+			},
+			called: func(repo *correctionRepository) bool { return repo.correctCalled },
+		},
+		{
+			name: "payment",
+			run: func(service Transactions, principal domain.Principal) error {
+				_, err := service.SetPaymentStatus(
+					context.Background(),
+					principal,
+					domain.SetPaymentStatusInput{
+						ID: correctionTestTransactionID, BaseRevision: 1,
+						Status:     domain.PaymentStatusSuccess,
+						OccurredAt: time.Date(2026, 7, 29, 1, 2, 3, 0, time.UTC),
+					},
+				)
+				return err
+			},
+			called: func(repo *correctionRepository) bool { return repo.paymentCalled },
+		},
+	}
+	actors := []struct {
+		name          string
+		userID        uuid.UUID
+		role          domain.Role
+		wantForbidden bool
+	}{
+		{name: "owner admin", userID: ownerID, role: domain.RoleAdmin},
+		{name: "different admin", userID: otherID, role: domain.RoleAdmin, wantForbidden: true},
+		{name: "superadmin", userID: otherID, role: domain.RoleSuperadmin},
+	}
+
+	for _, mutation := range mutations {
+		for _, actor := range actors {
+			t.Run(mutation.name+"/"+actor.name, func(t *testing.T) {
+				principal := correctionPrincipal(actor.userID, terminalID, actor.role)
+				principal.DataMode = domain.DataModeSandbox
+				principal.DataSpaceID = dataSpaceID
+				principal.SandboxGeneration = 7
+				repo := &correctionRepository{transaction: domain.Transaction{
+					ID: correctionTestTransactionID, Revision: 1,
+					PaymentStatus: domain.PaymentStatusPending,
+					OriginActor:   domain.ActorSummary{ID: ownerID},
+				}}
+
+				err := mutation.run(Transactions{Repo: repo}, principal)
+				if repo.requestedDataSpace != dataSpaceID {
+					t.Fatalf("repository read used data space %s, want %s", repo.requestedDataSpace, dataSpaceID)
+				}
+				if actor.wantForbidden {
+					if !domain.IsCode(err, domain.CodeForbidden) {
+						t.Fatalf("expected forbidden, got %v", err)
+					}
+					if mutation.called(repo) {
+						t.Fatal("repository mutation was called for a forbidden Sandbox actor")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("Sandbox mutation was rejected: %v", err)
+				}
+				if !mutation.called(repo) {
+					t.Fatal("repository mutation was not called for an authorized Sandbox actor")
+				}
+			})
+		}
 	}
 }

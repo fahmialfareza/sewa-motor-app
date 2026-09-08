@@ -21,6 +21,7 @@ import {
   fingerprintStaticQris,
   validateStaticQris,
 } from "@/domain/qris";
+import { resolvePaymentAmount } from "@/domain/payments";
 import type {
   QrisPayloadHash,
   SelectablePaymentMethod,
@@ -29,7 +30,7 @@ import type {
 import { readQrisConfig, type QrisConfig } from "@/security/secure-store";
 import { useSyncRuntime } from "@/sync/SyncProvider";
 import { colors, spacing, textStyles, typography } from "@/theme/tokens";
-import { formatRupiah } from "@/utils/format";
+import { displayTransactionId, formatRupiah } from "@/utils/format";
 
 interface TransactionLoadResult {
   id: string;
@@ -188,7 +189,10 @@ export default function CorrectTransactionScreen() {
           );
         }
         const staticQris = validateStaticQris(qrisConfig.staticPayload);
-        createDynamicQris(staticQris.payload, total);
+        createDynamicQris(
+          staticQris.payload,
+          resolvePaymentAmount(session.dataMode, paymentMethod, total),
+        );
         qrisPayloadHash = await fingerprintStaticQris(staticQris.payload);
       }
       await correctTransaction(
@@ -234,7 +238,10 @@ export default function CorrectTransactionScreen() {
     >
       <PageHeader
         back
-        subtitle={`Revisi saat ini #${transaction.revision}`}
+        subtitle={`${displayTransactionId(
+          transaction.id,
+          session?.dataMode ?? "production",
+        )} • Revisi saat ini #${transaction.revision}`}
         title="Koreksi Transaksi"
       />
       <Card style={styles.notice}>

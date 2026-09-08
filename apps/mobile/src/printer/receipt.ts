@@ -35,12 +35,20 @@ export function formatReceipt(
   columns: 32 | 48,
 ): string {
   const rule = "-".repeat(columns);
+  const sandbox = document.dataMode === "sandbox";
+  const displayId = displayTransactionId(
+    document.transactionId,
+    document.dataMode,
+  );
   const output = [
+    sandbox ? center("MODE UJI", columns) : "",
+    sandbox ? center("BUKAN STRUK RESMI", columns) : "",
+    sandbox ? rule : "",
     center("SEWA MOTOR", columns),
     center("POINT OF SALE", columns),
     document.isCopy ? center("*** SALINAN ***", columns) : "",
     rule,
-    displayTransactionId(document.transactionId),
+    displayId,
     `Revisi ${document.revision}`,
     new Date(document.occurredAt).toISOString(),
     `Kasir: ${sanitize(document.cashierName)}`,
@@ -63,8 +71,22 @@ export function formatReceipt(
   output.push(
     rule,
     twoColumns("Subtotal", rupiah(document.subtotal), columns),
-    twoColumns("TOTAL", rupiah(document.total), columns),
+    twoColumns(
+      sandbox ? "TOTAL SIMULASI" : "TOTAL",
+      rupiah(document.total),
+      columns,
+    ),
+    ...(sandbox && document.paymentMethod === "qris"
+      ? [twoColumns("QRIS NYATA", rupiah(document.paymentAmount), columns)]
+      : []),
     rule,
+    ...(sandbox
+      ? [
+          center("MODE UJI", columns),
+          center("BUKAN STRUK RESMI", columns),
+          rule,
+        ]
+      : []),
     center("Terima kasih", columns),
     "",
     "",
@@ -77,20 +99,53 @@ export function encodeEscPos(
   document: ReceiptDocument,
   columns: 32 | 48,
 ): Uint8Array {
-  const text = formatReceipt(document, columns);
-  const textBytes = Uint8Array.from(
-    Array.from(text, (character) => {
+  const initialize = Uint8Array.from([0x1b, 0x40]);
+  const centerAlign = Uint8Array.from([0x1b, 0x61, 0x01]);
+  const leftAlign = Uint8Array.from([0x1b, 0x61, 0x00]);
+  const boldOn = Uint8Array.from([0x1b, 0x45, 0x01]);
+  const boldOff = Uint8Array.from([0x1b, 0x45, 0x00]);
+  // GS ! 0x10 doubles height without making the 18-character warning too
+  // wide for 58 mm paper.
+  const doubleHeight = Uint8Array.from([0x1d, 0x21, 0x10]);
+  const normalSize = Uint8Array.from([0x1d, 0x21, 0x00]);
+  const cut = Uint8Array.from([0x1d, 0x56, 0x41, 0x00]);
+  const chunks: Uint8Array[] = [initialize];
+  for (const line of formatReceipt(document, columns).split("\n")) {
+    const warning =
+      document.dataMode === "sandbox" &&
+      (line.trim() === "MODE UJI" || line.trim() === "BUKAN STRUK RESMI");
+    if (warning) {
+      chunks.push(
+        centerAlign,
+        boldOn,
+        doubleHeight,
+        encodePrinterText(`${line.trim()}\n`),
+        normalSize,
+        boldOff,
+        leftAlign,
+      );
+    } else {
+      chunks.push(encodePrinterText(`${line}\n`));
+    }
+  }
+  chunks.push(cut);
+
+  const result = new Uint8Array(
+    chunks.reduce((length, chunk) => length + chunk.length, 0),
+  );
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return result;
+}
+
+function encodePrinterText(value: string): Uint8Array {
+  return Uint8Array.from(
+    Array.from(value, (character) => {
       const code = character.charCodeAt(0);
       return code >= 32 || code === 10 ? Math.min(code, 126) : 63;
     }),
   );
-  const initialize = Uint8Array.from([0x1b, 0x40]);
-  const cut = Uint8Array.from([0x1d, 0x56, 0x41, 0x00]);
-  const result = new Uint8Array(
-    initialize.length + textBytes.length + cut.length,
-  );
-  result.set(initialize, 0);
-  result.set(textBytes, initialize.length);
-  result.set(cut, initialize.length + textBytes.length);
-  return result;
 }

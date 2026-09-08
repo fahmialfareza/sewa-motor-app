@@ -30,45 +30,24 @@ func (s *Server) login(c *gin.Context) {
 		writeError(c, err)
 		return
 	}
-	user, err := s.deps.Repo.GetUser(c.Request.Context(), result.Principal.UserID)
+	attachDataScope(c, result.Principal)
+	data, err := s.sessionView(c, result.Principal)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	var terminal any
-	if result.Principal.TerminalID != nil {
-		item, terminalErr := s.deps.Repo.GetTerminal(c.Request.Context(), *result.Principal.TerminalID)
-		if terminalErr != nil {
-			writeError(c, terminalErr)
-			return
-		}
-		terminal = item
-	}
-	writeData(c, http.StatusOK, gin.H{
-		"sessionToken": result.Token,
-		"sessionId":    result.Principal.SessionID,
-		"user":         user,
-		"terminal":     terminal,
-	})
+	data["sessionToken"] = result.Token
+	writeData(c, http.StatusOK, data)
 }
 
 func (s *Server) profile(c *gin.Context) {
 	current := principal(c)
-	user, err := s.deps.Repo.GetUser(c.Request.Context(), current.UserID)
+	data, err := s.sessionView(c, current)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	var terminal any
-	if current.TerminalID != nil {
-		item, terminalErr := s.deps.Repo.GetTerminal(c.Request.Context(), *current.TerminalID)
-		if terminalErr != nil {
-			writeError(c, terminalErr)
-			return
-		}
-		terminal = item
-	}
-	writeData(c, http.StatusOK, gin.H{"user": user, "sessionId": current.SessionID, "terminal": terminal})
+	writeData(c, http.StatusOK, data)
 }
 
 func (s *Server) changePassword(c *gin.Context) {
@@ -86,16 +65,65 @@ func (s *Server) changePassword(c *gin.Context) {
 		return
 	}
 	current.MustChangePassword = false
-	user, err := s.deps.Repo.GetUser(c.Request.Context(), current.UserID)
+	data, err := s.sessionView(c, current)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
+	writeData(c, http.StatusOK, data)
+}
+
+func (s *Server) switchMode(c *gin.Context) {
+	var request domain.SwitchModeInput
+	if err := decodeJSON(c, &request); err != nil {
+		writeError(c, err)
+		return
+	}
+	auth := authentication(c)
+	current := auth.Principal
+	// Resolve shared profile/terminal data before rotating the session. Once
+	// SwitchMode commits, the old token is revoked and the raw replacement token
+	// exists only in this response; no fallible enrichment may happen afterward.
+	data, err := s.sessionView(c, current)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	result, err := s.deps.Auth.SwitchMode(c.Request.Context(), auth, request.Mode)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	attachDataScope(c, result.Principal)
+	data["sessionId"] = result.Principal.SessionID
+	data["dataMode"] = result.Principal.EffectiveDataMode()
+	data["dataSpaceId"] = result.Principal.EffectiveDataSpaceID()
+	data["sandboxGeneration"] = result.Principal.SandboxGeneration
+	data["sessionToken"] = result.Token
+	writeData(c, http.StatusOK, data)
+}
+
+func (s *Server) sessionView(c *gin.Context, current domain.Principal) (gin.H, error) {
+	user, err := s.deps.Repo.GetUser(c.Request.Context(), current.UserID)
+	if err != nil {
+		return nil, err
+	}
 	var terminal any
 	if current.TerminalID != nil {
-		terminal, _ = s.deps.Repo.GetTerminal(c.Request.Context(), *current.TerminalID)
+		item, terminalErr := s.deps.Repo.GetTerminal(c.Request.Context(), *current.TerminalID)
+		if terminalErr != nil {
+			return nil, terminalErr
+		}
+		terminal = item
 	}
-	writeData(c, http.StatusOK, gin.H{"user": user, "sessionId": current.SessionID, "terminal": terminal})
+	return gin.H{
+		"sessionId":         current.SessionID,
+		"user":              user,
+		"terminal":          terminal,
+		"dataMode":          current.EffectiveDataMode(),
+		"dataSpaceId":       current.EffectiveDataSpaceID(),
+		"sandboxGeneration": current.SandboxGeneration,
+	}, nil
 }
 
 func (s *Server) logout(c *gin.Context) {
@@ -316,7 +344,11 @@ func (s *Server) updatePackage(c *gin.Context) {
 			writeError(c, err)
 			return
 		}
-		deleted, getErr := s.deps.Repo.GetPackage(c.Request.Context(), id)
+		deleted, getErr := s.deps.Repo.GetPackage(
+			c.Request.Context(),
+			principal(c).EffectiveDataSpaceID(),
+			id,
+		)
 		if getErr != nil {
 			writeError(c, getErr)
 			return
@@ -354,7 +386,7 @@ func (s *Server) deletePackage(c *gin.Context) {
 		writeError(c, err)
 		return
 	}
-	item, err := s.deps.Repo.GetPackage(c.Request.Context(), id)
+	item, err := s.deps.Repo.GetPackage(c.Request.Context(), principal(c).EffectiveDataSpaceID(), id)
 	if err != nil {
 		writeError(c, err)
 		return

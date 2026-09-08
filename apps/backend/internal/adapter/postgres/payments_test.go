@@ -136,6 +136,7 @@ func TestPaymentFinalConflictIncludesAuthoritativeSnapshot(t *testing.T) {
 		}`),
 		confirmedRevision,
 		domain.PaymentMethodQRIS,
+		1_000,
 		nil,
 		domain.PaymentStatusSuccess,
 		&confirmedRevision,

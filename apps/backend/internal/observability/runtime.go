@@ -28,6 +28,19 @@ type Runtime struct {
 	enabled bool
 }
 
+// DataScope identifies the immutable production or sandbox boundary attached
+// to an authenticated session. It intentionally contains no domain types so
+// observability can remain below the HTTP and use-case layers.
+type DataScope struct {
+	Mode       string
+	SpaceID    string
+	Generation int64
+}
+
+type dataScopeContextKey struct{}
+
+type dataScopeLogHook struct{}
+
 var defaultLogger = newBaseLogger("info")
 
 func New(config Config) (*Runtime, error) {
@@ -80,11 +93,71 @@ func StartSegment(ctx context.Context, name string) func() {
 	return segment.End
 }
 
+// WithDataScope correlates every downstream segment, noticed error, and
+// structured log with the request's server-authorized data boundary.
+func WithDataScope(ctx context.Context, scope DataScope) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if transaction := newrelic.FromContext(ctx); transaction != nil {
+		if scope.Mode != "" {
+			transaction.AddAttribute("data.mode", scope.Mode)
+		}
+		if scope.SpaceID != "" {
+			transaction.AddAttribute("data.space_id", scope.SpaceID)
+		}
+		if scope.Generation > 0 {
+			transaction.AddAttribute("data.generation", scope.Generation)
+		}
+	}
+	return context.WithValue(ctx, dataScopeContextKey{}, scope)
+}
+
+func DataScopeFromContext(ctx context.Context) (DataScope, bool) {
+	if ctx == nil {
+		return DataScope{}, false
+	}
+	scope, ok := ctx.Value(dataScopeContextKey{}).(DataScope)
+	return scope, ok
+}
+
+func DataScopeLogFields(ctx context.Context) logrus.Fields {
+	scope, ok := DataScopeFromContext(ctx)
+	if !ok {
+		return logrus.Fields{}
+	}
+	fields := logrus.Fields{}
+	if scope.Mode != "" {
+		fields["data.mode"] = scope.Mode
+	}
+	if scope.SpaceID != "" {
+		fields["data.space_id"] = scope.SpaceID
+	}
+	if scope.Generation > 0 {
+		fields["data.generation"] = scope.Generation
+	}
+	return fields
+}
+
+func (dataScopeLogHook) Levels() []logrus.Level { return logrus.AllLevels }
+
+func (dataScopeLogHook) Fire(entry *logrus.Entry) error {
+	for name, value := range DataScopeLogFields(entry.Context) {
+		if _, exists := entry.Data[name]; !exists {
+			entry.Data[name] = value
+		}
+	}
+	return nil
+}
+
 func NoticeError(ctx context.Context, err error, operation string) {
 	if err == nil {
 		return
 	}
 	attributes := map[string]any{"operation": operation}
+	for name, value := range DataScopeLogFields(ctx) {
+		attributes[name] = value
+	}
 	if transaction := newrelic.FromContext(ctx); transaction != nil {
 		transaction.NoticeError(newrelic.Error{
 			Message:    err.Error(),
@@ -95,6 +168,7 @@ func NoticeError(ctx context.Context, err error, operation string) {
 	}
 	Logger().
 		WithContext(ctx).
+		WithFields(DataScopeLogFields(ctx)).
 		WithError(err).
 		WithField("operation", operation).
 		Error("operation failed")
@@ -102,6 +176,7 @@ func NoticeError(ctx context.Context, err error, operation string) {
 
 func newBaseLogger(level string) *logrus.Logger {
 	logger := logrus.New()
+	logger.AddHook(dataScopeLogHook{})
 	logger.SetOutput(os.Stdout)
 	logger.SetFormatter(&logrus.JSONFormatter{
 		TimestampFormat: time.RFC3339Nano,

@@ -12,11 +12,13 @@ describe("API transaction mapping", () => {
   it("stores a Jakarta-offset occurrence time as canonical UTC", () => {
     const value: ApiTransaction = {
       id: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      displayId: "TRX-01ARZ3NDEKTSV4RRFFQ69G5FAV",
       revision: 1,
       occurredAt: "2026-07-29T18:00:00+07:00",
       items: [],
       subtotal: 70_000,
       total: 70_000,
+      paymentAmount: 70_000,
       paymentMethod: "qris",
       paymentStatus: "pending",
       paymentConfirmedRevision: null,

@@ -209,14 +209,15 @@ func rawPositiveInt(value json.RawMessage) (int, bool) {
 }
 
 func (s *Server) syncPull(c *gin.Context) {
-	var cursor int64
-	var err error
-	if value := c.Query("cursor"); value != "" {
-		cursor, err = strconv.ParseInt(value, 10, 64)
-		if err != nil || cursor < 0 {
-			writeError(c, domain.Validation("Cursor sinkronisasi tidak valid", map[string]any{"field": "cursor"}))
-			return
-		}
+	current := principal(c)
+	cursor, err := domain.DecodeSyncCursor(
+		current.EffectiveDataMode(),
+		current.SandboxGeneration,
+		c.Query("cursor"),
+	)
+	if err != nil {
+		writeError(c, err)
+		return
 	}
 	limit := 200
 	if value := c.Query("limit"); value != "" {
@@ -226,7 +227,7 @@ func (s *Server) syncPull(c *gin.Context) {
 			return
 		}
 	}
-	changes, next, hasMore, err := s.deps.Sync.Pull(c.Request.Context(), principal(c), cursor, limit)
+	changes, next, hasMore, err := s.deps.Sync.Pull(c.Request.Context(), current, cursor, limit)
 	if err != nil {
 		writeError(c, err)
 		return
@@ -242,13 +243,15 @@ func (s *Server) syncPull(c *gin.Context) {
 			}
 		}
 		mapped = append(mapped, gin.H{
-			"cursor": strconv.FormatInt(change.Cursor, 10), "aggregate": change.Aggregate,
+			"cursor": domain.EncodeSyncCursor(current.EffectiveDataMode(), current.SandboxGeneration, change.Cursor), "aggregate": change.Aggregate,
 			"action": change.Action, "aggregateId": change.AggregateID, "revision": change.Revision,
 			"changedAt": change.CreatedAt, "tombstone": change.Tombstone, "payload": payload,
 		})
 	}
 	writeData(c, http.StatusOK, gin.H{
-		"changes": mapped, "cursor": strconv.FormatInt(next, 10), "hasMore": hasMore,
+		"changes": mapped,
+		"cursor":  domain.EncodeSyncCursor(current.EffectiveDataMode(), current.SandboxGeneration, next),
+		"hasMore": hasMore,
 	})
 }
 
@@ -265,13 +268,18 @@ func (s *Server) syncChangePayload(c *gin.Context, change domain.SyncChange) (an
 		if err != nil {
 			return nil, domain.WrapInternal(err, "parse synced package id")
 		}
-		item, err := s.deps.Repo.GetPackage(c.Request.Context(), id)
+		item, err := s.deps.Repo.GetPackage(c.Request.Context(), principal(c).EffectiveDataSpaceID(), id)
 		if err != nil {
 			return nil, err
 		}
 		return packageView(item), nil
 	case "transaction":
-		item, err := s.deps.Repo.GetTransaction(c.Request.Context(), change.AggregateID, true)
+		item, err := s.deps.Repo.GetTransaction(
+			c.Request.Context(),
+			principal(c).EffectiveDataSpaceID(),
+			change.AggregateID,
+			true,
+		)
 		if err != nil {
 			return nil, err
 		}

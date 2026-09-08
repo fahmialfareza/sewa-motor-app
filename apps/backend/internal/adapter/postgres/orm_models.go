@@ -46,6 +46,9 @@ type packageProjection struct {
 	CreatedAt       time.Time  `gorm:"column:created_at"`
 	UpdatedAt       time.Time  `gorm:"column:updated_at"`
 	DeletedAt       *time.Time `gorm:"column:deleted_at"`
+	DataSpaceID     uuid.UUID  `gorm:"column:data_space_id"`
+	SourcePackageID *uuid.UUID `gorm:"column:source_package_id"`
+	SourceRevision  *int       `gorm:"column:source_revision"`
 }
 
 func (record packageProjection) domainPackage() domain.Package {
@@ -59,6 +62,9 @@ func (record packageProjection) domainPackage() domain.Package {
 		CreatedAt:       record.CreatedAt,
 		UpdatedAt:       record.UpdatedAt,
 		DeletedAt:       record.DeletedAt,
+		DataSpaceID:     record.DataSpaceID,
+		SourcePackageID: record.SourcePackageID,
+		SourceRevision:  record.SourceRevision,
 	}
 }
 

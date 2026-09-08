@@ -28,7 +28,7 @@ func (r Reporting) Dashboard(ctx context.Context, principal domain.Principal, fr
 	default:
 		bucket = "day"
 	}
-	return r.Repo.Dashboard(ctx, from, to, bucket)
+	return r.Repo.Dashboard(ctx, principal.EffectiveDataSpaceID(), from, to, bucket)
 }
 
 func (r Reporting) Export(ctx context.Context, principal domain.Principal, format string, filter domain.TransactionFilter) ([]byte, string, error) {
@@ -51,6 +51,7 @@ func (r Reporting) Export(ctx context.Context, principal domain.Principal, forma
 	if !principal.IsSuperadmin() {
 		filter.IncludeDeleted = false
 	}
+	filter.DataSpaceID = principal.EffectiveDataSpaceID()
 	filter.Limit = 10000
 	rows, err := r.Repo.ExportRows(ctx, filter)
 	if err != nil {
@@ -58,10 +59,10 @@ func (r Reporting) Export(ctx context.Context, principal domain.Principal, forma
 	}
 	switch format {
 	case "xlsx":
-		body, exportErr := r.Exporter.XLSX(rows, filter.From, filter.To)
+		body, exportErr := r.Exporter.XLSX(rows, filter.From, filter.To, principal.EffectiveDataMode())
 		return body, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", exportErr
 	case "pdf":
-		body, exportErr := r.Exporter.PDF(rows, filter.From, filter.To)
+		body, exportErr := r.Exporter.PDF(rows, filter.From, filter.To, principal.EffectiveDataMode())
 		return body, "application/pdf", exportErr
 	default:
 		return nil, "", domain.Validation("Format ekspor harus xlsx atau pdf", map[string]any{"field": "format"})

@@ -37,6 +37,10 @@ func (s *Store) setTransactionPaymentStatusTx(
 	input domain.SetPaymentStatusInput,
 ) (domain.Transaction, error) {
 	defer observability.StartSegment(ctx, "Postgres.setTransactionPaymentStatusTx")()
+	dataSpaceID := input.Identity.EffectiveDataSpaceID()
+	if _, err := lockActiveDataSpace(ctx, tx, dataSpaceID); err != nil {
+		return domain.Transaction{}, err
+	}
 
 	if err := domain.ValidatePaymentOutcome(input.Status); err != nil {
 		return domain.Transaction{}, err
@@ -44,6 +48,7 @@ func (s *Store) setTransactionPaymentStatusTx(
 
 	var currentRevision int
 	var currentMethod domain.PaymentMethod
+	var currentPaymentAmount int64
 	var currentQrisPayloadHash *string
 	var currentStatus domain.PaymentStatus
 	var currentConfirmedRevision *int
@@ -52,19 +57,20 @@ func (s *Store) setTransactionPaymentStatusTx(
 	var ownerID uuid.UUID
 	var actingRole domain.Role
 	err := tx.QueryRow(ctx, `
-		SELECT t.current_revision, t.payment_method, t.payment_status,
+		SELECT t.current_revision, t.payment_method, t.payment_amount, t.payment_status,
 		       t.qris_payload_hash, t.payment_confirmed_revision,
 		       r.after_snapshot, t.deleted_at,
 		       t.origin_actor_id, acting_user.role
 		FROM transactions t
 		JOIN transaction_revisions r
 		  ON r.transaction_id = t.id AND r.revision = t.current_revision
+		 AND r.data_space_id = t.data_space_id
 		JOIN users acting_user ON acting_user.id = $2
-		WHERE t.id = $1
+		WHERE t.id = $1 AND t.data_space_id = $3
 		FOR UPDATE OF t`,
-		input.ID, input.Identity.OriginActorID,
+		input.ID, input.Identity.OriginActorID, dataSpaceID,
 	).Scan(
-		&currentRevision, &currentMethod, &currentStatus, &currentQrisPayloadHash,
+		&currentRevision, &currentMethod, &currentPaymentAmount, &currentStatus, &currentQrisPayloadHash,
 		&currentConfirmedRevision, &currentSnapshot, &deletedAt,
 		&ownerID, &actingRole,
 	)
@@ -90,6 +96,7 @@ func (s *Store) setTransactionPaymentStatusTx(
 			currentConfirmedRevision,
 		)
 		serverSnapshot["paymentMethod"] = currentMethod
+		serverSnapshot["paymentAmount"] = currentPaymentAmount
 		applyQrisPayloadHash(serverSnapshot, currentQrisPayloadHash)
 		return domain.Transaction{}, &domain.Error{
 			Code:    domain.CodePaymentStateConflict,
@@ -117,13 +124,14 @@ func (s *Store) setTransactionPaymentStatusTx(
 			currentSnapshot,
 			currentRevision,
 			currentMethod,
+			currentPaymentAmount,
 			currentQrisPayloadHash,
 			currentStatus,
 			currentConfirmedRevision,
 		)
 	}
 	if !changed {
-		transaction, readErr := getTransactionWith(ctx, tx, input.ID, true)
+		transaction, readErr := getTransactionWith(ctx, tx, dataSpaceID, input.ID, true)
 		if readErr != nil {
 			return domain.Transaction{}, dbError(readErr, "read unchanged transaction payment")
 		}
@@ -138,8 +146,8 @@ func (s *Store) setTransactionPaymentStatusTx(
 		UPDATE transactions
 		SET payment_status = $2, payment_confirmed_revision = $3,
 		    updated_by = $4, updated_at = now()
-		WHERE id = $1`,
-		input.ID, input.Status, confirmedRevision, input.Identity.SubmittedByActorID,
+		WHERE id = $1 AND data_space_id = $5`,
+		input.ID, input.Status, confirmedRevision, input.Identity.SubmittedByActorID, dataSpaceID,
 	); err != nil {
 		return domain.Transaction{}, dbError(err, "update transaction payment")
 	}
@@ -147,6 +155,7 @@ func (s *Store) setTransactionPaymentStatusTx(
 	before := map[string]any{
 		"revision":                 currentRevision,
 		"paymentMethod":            currentMethod,
+		"paymentAmount":            currentPaymentAmount,
 		"paymentStatus":            currentStatus,
 		"paymentConfirmedRevision": currentConfirmedRevision,
 	}
@@ -154,6 +163,7 @@ func (s *Store) setTransactionPaymentStatusTx(
 	after := map[string]any{
 		"revision":                 currentRevision,
 		"paymentMethod":            currentMethod,
+		"paymentAmount":            currentPaymentAmount,
 		"paymentStatus":            input.Status,
 		"paymentConfirmedRevision": confirmedRevision,
 	}
@@ -175,6 +185,7 @@ func (s *Store) setTransactionPaymentStatusTx(
 	if err = addChange(
 		ctx,
 		tx,
+		dataSpaceID,
 		"transaction",
 		input.ID,
 		"updated",
@@ -185,7 +196,7 @@ func (s *Store) setTransactionPaymentStatusTx(
 		return domain.Transaction{}, dbError(err, "sync transaction payment")
 	}
 
-	transaction, err := getTransactionWith(ctx, tx, input.ID, true)
+	transaction, err := getTransactionWith(ctx, tx, dataSpaceID, input.ID, true)
 	if err != nil {
 		return domain.Transaction{}, dbError(err, "read updated transaction payment")
 	}
@@ -197,6 +208,7 @@ func attachPaymentConflictServerSnapshot(
 	currentSnapshot json.RawMessage,
 	currentRevision int,
 	currentMethod domain.PaymentMethod,
+	currentPaymentAmount int64,
 	currentQrisPayloadHash *string,
 	currentStatus domain.PaymentStatus,
 	currentConfirmedRevision *int,
@@ -214,6 +226,7 @@ func attachPaymentConflictServerSnapshot(
 		currentConfirmedRevision,
 	)
 	serverSnapshot["paymentMethod"] = currentMethod
+	serverSnapshot["paymentAmount"] = currentPaymentAmount
 	applyQrisPayloadHash(serverSnapshot, currentQrisPayloadHash)
 	domainErr.Details["serverSnapshot"] = serverSnapshot
 	return err

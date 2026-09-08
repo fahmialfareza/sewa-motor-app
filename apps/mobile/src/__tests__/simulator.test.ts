@@ -17,6 +17,8 @@ const document: ReceiptDocument = {
   ],
   subtotal: 70_000,
   total: 70_000,
+  paymentAmount: 70_000,
+  dataMode: "production",
   isCopy: false,
 };
 

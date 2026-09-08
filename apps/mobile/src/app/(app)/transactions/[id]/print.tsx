@@ -85,7 +85,7 @@ export default function PrintTransactionScreen() {
       });
       await printer.connect(config.address ?? undefined);
       const result = await printer.print(
-        receiptFromTransaction(transaction, printAsCopy),
+        receiptFromTransaction(transaction, printAsCopy, session.dataMode),
       );
       await printer.disconnect().catch(() => undefined);
       await completePrintAttempt({
@@ -144,9 +144,22 @@ export default function PrintTransactionScreen() {
           ? "Penjualan tetap tercatat dan hasil cetak masuk ke antrean sinkron."
           : "Pembayaran sudah dikonfirmasi untuk revisi transaksi ini. Struk siap dicetak."}
       </Text>
+      {session.dataMode === "sandbox" ? (
+        <Card style={styles.testWarning}>
+          <Text style={styles.testWarningTitle}>
+            MODE UJI — BUKAN STRUK RESMI
+          </Text>
+          <Text style={styles.subtitle}>
+            Semua jenis printer akan mencetak watermark Mode Uji dan ID
+            TEST-TRX-.
+          </Text>
+        </Card>
+      ) : null}
       <Card style={styles.summary}>
         <View style={styles.summaryHeader}>
-          <Text style={styles.id}>{displayTransactionId(transaction.id)}</Text>
+          <Text style={styles.id}>
+            {displayTransactionId(transaction.id, session.dataMode)}
+          </Text>
           <PaymentMethodBadge method={transaction.paymentMethod} />
         </View>
         {transaction.items.map((item) => (
@@ -163,6 +176,15 @@ export default function PrintTransactionScreen() {
             {formatRupiah(transaction.total)}
           </Text>
         </View>
+        {session.dataMode === "sandbox" &&
+        transaction.paymentMethod === "qris" ? (
+          <View style={styles.line}>
+            <Text style={styles.lineName}>QRIS nyata</Text>
+            <Text style={styles.lineValue}>
+              {formatRupiah(transaction.paymentAmount)}
+            </Text>
+          </View>
+        ) : null}
       </Card>
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {success ? (
@@ -254,5 +276,15 @@ const styles = StyleSheet.create({
     backgroundColor: colors.errorSoft,
     padding: spacing.md,
     borderRadius: radius.md,
+  },
+  testWarning: {
+    gap: spacing.xs,
+    backgroundColor: colors.warningSoft,
+    borderColor: colors.warning,
+  },
+  testWarningTitle: {
+    ...textStyles.heading,
+    color: colors.warning,
+    textAlign: "center",
   },
 });

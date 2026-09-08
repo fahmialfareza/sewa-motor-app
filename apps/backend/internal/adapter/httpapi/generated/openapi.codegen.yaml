@@ -1,9 +1,7 @@
 openapi: 3.0.3
-jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 info:
   title: Sewa Motor POS API
   version: 1.0.0
-  summary: Local-first point-of-sale API for a single rental store.
   description: |
     The contract used by the Android terminal and the Go backend. Money is integer
     Indonesian rupiah, timestamps are RFC 3339, reporting uses Asia/Jakarta, and
@@ -11,9 +9,6 @@ info:
 
     Unless a response is a downloadable export, successful JSON responses use
     `{data, meta}` and errors use `{error: {code, message, details, requestId}}`.
-  license:
-    name: Proprietary
-    identifier: LicenseRef-Proprietary
 servers:
   - url: /api/v1
     description: Version 1 API
@@ -24,6 +19,8 @@ tags:
     description: Liveness and dependency readiness.
   - name: Authentication
     description: Login, password lifecycle, logout, and current profile.
+  - name: Sandbox
+    description: Production-hosted test data-space status, switching, and lifecycle.
   - name: Users
     description: Superadmin-only user administration.
   - name: Packages
@@ -92,11 +89,42 @@ paths:
         "429":
           $ref: "#/components/responses/TooManyRequests"
 
+  /auth/switch-mode:
+    post:
+      operationId: switchDataMode
+      tags: [Authentication]
+      summary: Rotate the current session into production or Sandbox Mode
+      description: |
+        Online-only. The client must drain its current outbox before calling this
+        endpoint. The replacement session is immutably bound to the selected data
+        space and the previous session is revoked. If a Sandbox reset revoked the
+        current session with `sandbox_generation_retired`, this endpoint alone may
+        consume that credential once to recover into the active Sandbox generation
+        or Production. Other revoked sessions remain invalid.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SwitchModeRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Login"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
   /profile/password:
     post:
       operationId: changeOwnPassword
       tags: [Authentication]
       summary: Change the authenticated user's password
+      description: Production-mode only because credentials are shared across data spaces.
       requestBody:
         required: true
         content:
@@ -137,6 +165,45 @@ paths:
           $ref: "#/components/responses/Profile"
         "401":
           $ref: "#/components/responses/Unauthorized"
+
+  /sandbox/status:
+    get:
+      operationId: getSandboxStatus
+      tags: [Sandbox]
+      summary: Get Sandbox availability and active generation
+      responses:
+        "200":
+          $ref: "#/components/responses/SandboxStatusResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
+  /sandbox/reset:
+    post:
+      operationId: resetSandbox
+      tags: [Sandbox]
+      summary: Retire and replace the shared Sandbox generation
+      description: |
+        Production-mode, superadmin-only operation. The expected generation and
+        typed confirmation prevent stale or accidental resets. Active production
+        packages are cloned into the replacement generation.
+      x-required-role: superadmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetSandboxRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/SandboxResetResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
 
   /users:
     get:
@@ -663,6 +730,7 @@ paths:
         mutations are resolved before requesting the export. The export contains
         every payment state matching `filters`; revenue dashboard aggregation is
         separately restricted to successful payment on the current revision.
+        Sandbox files and document content are permanently marked `TEST`.
       requestBody:
         required: true
         content:
@@ -674,7 +742,7 @@ paths:
           description: Generated workbook or branded PDF.
           headers:
             Content-Disposition:
-              description: Download filename.
+              description: Download filename; Sandbox filenames begin with `TEST-`.
               schema:
                 type: string
             X-Request-Id:
@@ -702,6 +770,7 @@ paths:
       operationId: enrollTerminal
       tags: [Terminals]
       summary: Register a physical installation and Ed25519 public key
+      description: Production-mode only because terminal identities are shared.
       requestBody:
         required: true
         content:
@@ -906,6 +975,24 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ProfileEnvelope"
+    SandboxStatusResponse:
+      description: Sandbox feature and generation status.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SandboxStatusEnvelope"
+    SandboxResetResponse:
+      description: Newly activated Sandbox generation and reset counts.
+      headers:
+        X-Request-Id:
+          $ref: "#/components/headers/RequestId"
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SandboxResetEnvelope"
     UserResponse:
       description: User.
       headers:
@@ -1106,6 +1193,15 @@ components:
     UserRole:
       type: string
       enum: [admin, superadmin]
+
+    DataMode:
+      type: string
+      enum: [production, sandbox]
+      description: Server-authorized business data boundary bound to the session.
+
+    DataSpaceStatus:
+      type: string
+      enum: [active, retired, purged]
 
     PaymentMethod:
       type: string
@@ -1350,10 +1446,27 @@ components:
           format: uuid
           description: Client installation UUID used to look up an existing terminal binding.
 
+    SwitchModeRequest:
+      type: object
+      additionalProperties: false
+      required: [mode]
+      properties:
+        mode:
+          $ref: "#/components/schemas/DataMode"
+
     LoginResult:
       type: object
       additionalProperties: false
-      required: [sessionToken, sessionId, user]
+      required:
+        [
+          sessionToken,
+          sessionId,
+          user,
+          terminal,
+          dataMode,
+          dataSpaceId,
+          sandboxGeneration,
+        ]
       properties:
         sessionToken:
           type: string
@@ -1364,10 +1477,20 @@ components:
         user:
           $ref: "#/components/schemas/User"
         terminal:
+          type: object
           allOf:
             - $ref: "#/components/schemas/Terminal"
-
           nullable: true
+        dataMode:
+          $ref: "#/components/schemas/DataMode"
+        dataSpaceId:
+          $ref: "#/components/schemas/UUID"
+        sandboxGeneration:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Zero in production; the active immutable generation in Sandbox Mode.
+
     LoginEnvelope:
       type: object
       additionalProperties: false
@@ -1448,17 +1571,151 @@ components:
     ProfileResult:
       type: object
       additionalProperties: false
-      required: [user, sessionId, terminal]
+      required:
+        [user, sessionId, terminal, dataMode, dataSpaceId, sandboxGeneration]
       properties:
         user:
           $ref: "#/components/schemas/User"
         sessionId:
           $ref: "#/components/schemas/UUID"
         terminal:
+          type: object
           allOf:
             - $ref: "#/components/schemas/Terminal"
-
           nullable: true
+        dataMode:
+          $ref: "#/components/schemas/DataMode"
+        dataSpaceId:
+          $ref: "#/components/schemas/UUID"
+        sandboxGeneration:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Zero in production; the active immutable generation in Sandbox Mode.
+
+    DataSpace:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          mode,
+          generation,
+          status,
+          activatedAt,
+          retiredAt,
+          purgeAfter,
+          purgedAt,
+        ]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        mode:
+          $ref: "#/components/schemas/DataMode"
+        generation:
+          type: integer
+          format: int64
+          minimum: 0
+        status:
+          $ref: "#/components/schemas/DataSpaceStatus"
+        activatedAt:
+          type: string
+          format: date-time
+        retiredAt:
+          type: string
+          nullable: true
+          format: date-time
+        purgeAfter:
+          type: string
+          nullable: true
+          format: date-time
+        purgedAt:
+          type: string
+          nullable: true
+          format: date-time
+
+    SandboxStatus:
+      type: object
+      additionalProperties: false
+      required:
+        [enabled, dataMode, dataSpaceId, generation, retentionDays, qrisAmount]
+      properties:
+        enabled:
+          type: boolean
+        dataMode:
+          type: string
+          enum: [sandbox]
+        dataSpaceId:
+          type: string
+          nullable: true
+          format: uuid
+          description: Null while Sandbox is disabled and has not been activated.
+        generation:
+          type: integer
+          nullable: true
+          format: int64
+          minimum: 1
+          description: Null while Sandbox is disabled and has not been activated.
+        retentionDays:
+          type: integer
+          minimum: 1
+          maximum: 365
+        qrisAmount:
+          type: integer
+          format: int64
+          enum: [1000]
+          description: Real merchant QRIS charge used by every Sandbox QRIS transaction.
+
+    SandboxStatusEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/SandboxStatus"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    ResetSandboxRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedGeneration, confirmation]
+      properties:
+        expectedGeneration:
+          type: integer
+          format: int64
+          minimum: 1
+        confirmation:
+          type: string
+          enum: [RESET SANDBOX]
+
+    SandboxResetResult:
+      type: object
+      additionalProperties: false
+      required: [previous, current, clonedPackageCount, revokedSessionCount]
+      properties:
+        previous:
+          $ref: "#/components/schemas/DataSpace"
+        current:
+          $ref: "#/components/schemas/DataSpace"
+        clonedPackageCount:
+          type: integer
+          minimum: 0
+        revokedSessionCount:
+          type: integer
+          format: int64
+          minimum: 0
+
+    SandboxResetEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/SandboxResetResult"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
     ProfileEnvelope:
       type: object
       additionalProperties: false
@@ -1753,6 +2010,7 @@ components:
           items,
           subtotal,
           total,
+          paymentAmount,
         ]
       properties:
         occurredAt:
@@ -1781,6 +2039,11 @@ components:
           $ref: "#/components/schemas/Rupiah"
         total:
           $ref: "#/components/schemas/Rupiah"
+        paymentAmount:
+          $ref: "#/components/schemas/Rupiah"
+          description: |
+            Amount presented for payment. It equals `total` except Sandbox QRIS,
+            where the server enforces Rp1.000.
 
     TransactionRevision:
       type: object
@@ -1865,11 +2128,13 @@ components:
       required:
         [
           id,
+          displayId,
           revision,
           occurredAt,
           items,
           subtotal,
           total,
+          paymentAmount,
           paymentMethod,
           paymentStatus,
           paymentConfirmedRevision,
@@ -1884,6 +2149,9 @@ components:
       properties:
         id:
           $ref: "#/components/schemas/ULID"
+        displayId:
+          type: string
+          description: Display identity; Sandbox transactions use a `TEST-` prefix.
         revision:
           type: integer
           minimum: 1
@@ -1899,6 +2167,11 @@ components:
           $ref: "#/components/schemas/Rupiah"
         total:
           $ref: "#/components/schemas/Rupiah"
+        paymentAmount:
+          $ref: "#/components/schemas/Rupiah"
+          description: |
+            Amount actually presented to the payer. Sandbox QRIS is always Rp1.000;
+            cash and production payments equal the transaction total.
         paymentMethod:
           $ref: "#/components/schemas/PaymentMethod"
         qrisPayloadHash:
@@ -1922,6 +2195,7 @@ components:
         print:
           $ref: "#/components/schemas/PrintMetadata"
         deletion:
+          type: object
           allOf:
             - $ref: "#/components/schemas/DeletionMetadata"
           nullable: true
@@ -2199,6 +2473,7 @@ components:
           startsAt,
           endsAt,
           grossRevenue,
+          actualQrisAmount,
           transactionCount,
           packageQuantities,
           trend,
@@ -2215,6 +2490,10 @@ components:
           format: date-time
         grossRevenue:
           $ref: "#/components/schemas/Rupiah"
+          description: Simulated package total for the selected data space.
+        actualQrisAmount:
+          $ref: "#/components/schemas/Rupiah"
+          description: Actual successful QRIS charges for reconciliation; cash is excluded.
         transactionCount:
           type: integer
           minimum: 0
@@ -2591,19 +2870,21 @@ components:
         replayed:
           type: boolean
         data:
+          type: object
           oneOf:
             - $ref: "#/components/schemas/Transaction"
             - $ref: "#/components/schemas/PrintAttempt"
           nullable: true
         conflict:
+          type: object
           oneOf:
             - $ref: "#/components/schemas/RevisionConflictDetails"
             - $ref: "#/components/schemas/PaymentStateConflictDetails"
           nullable: true
         error:
+          type: object
           allOf:
             - $ref: "#/components/schemas/ApiError"
-
           nullable: true
     SyncPushResult:
       type: object
@@ -2642,7 +2923,9 @@ components:
       properties:
         cursor:
           type: string
-          description: Durable opaque cursor after this individual change.
+          description: |
+            Durable cursor after this individual change. Production retains the
+            legacy decimal form; Sandbox uses `sandbox:<generation>:<position>`.
         aggregate:
           type: string
           enum: [user, package, transaction, print_attempt, terminal]
@@ -2661,13 +2944,13 @@ components:
         tombstone:
           type: boolean
         payload:
+          type: object
           oneOf:
             - $ref: "#/components/schemas/User"
             - $ref: "#/components/schemas/Package"
             - $ref: "#/components/schemas/Transaction"
             - $ref: "#/components/schemas/PrintAttempt"
             - $ref: "#/components/schemas/Terminal"
-
           nullable: true
     SyncPullResult:
       type: object
@@ -2680,6 +2963,9 @@ components:
             $ref: "#/components/schemas/SyncChange"
         cursor:
           type: string
+          description: |
+            Production decimal cursor or generation-bound Sandbox cursor in the
+            form `sandbox:<generation>:<position>`.
         hasMore:
           type: boolean
 

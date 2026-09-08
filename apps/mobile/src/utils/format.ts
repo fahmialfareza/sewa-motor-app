@@ -1,3 +1,5 @@
+import type { DataMode } from "@/domain/types";
+
 const idrFormatter = new Intl.NumberFormat("id-ID", {
   style: "currency",
   currency: "IDR",
@@ -24,14 +26,21 @@ export function formatJakartaDateTime(value: string | Date): string {
   );
 }
 
-export function compactTransactionId(id: string): string {
-  const displayed = displayTransactionId(id);
+export function compactTransactionId(
+  id: string,
+  dataMode: DataMode = "production",
+): string {
+  const displayed = displayTransactionId(id, dataMode);
   if (displayed.length <= 22) return displayed;
   return `${displayed.slice(0, 13)}…${displayed.slice(-6)}`;
 }
 
-export function displayTransactionId(id: string): string {
-  return id.startsWith("TRX-") ? id : `TRX-${id}`;
+export function displayTransactionId(
+  id: string,
+  dataMode: DataMode = "production",
+): string {
+  const rawId = id.replace(/^(?:TEST-)?TRX-/i, "");
+  return `${dataMode === "sandbox" ? "TEST-TRX" : "TRX"}-${rawId}`;
 }
 
 export function initials(fullName: string): string {

@@ -61,6 +61,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/switch-mode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rotate the current session into production or Sandbox Mode
+         * @description Online-only. The client must drain its current outbox before calling this
+         *     endpoint. The replacement session is immutably bound to the selected data
+         *     space and the previous session is revoked. If a Sandbox reset revoked the
+         *     current session with `sandbox_generation_retired`, this endpoint alone may
+         *     consume that credential once to recover into the active Sandbox generation
+         *     or Production. Other revoked sessions remain invalid.
+         */
+        post: operations["switchDataMode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/profile/password": {
         parameters: {
             query?: never;
@@ -70,7 +95,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Change the authenticated user's password */
+        /**
+         * Change the authenticated user's password
+         * @description Production-mode only because credentials are shared across data spaces.
+         */
         post: operations["changeOwnPassword"];
         delete?: never;
         options?: never;
@@ -109,6 +137,45 @@ export interface paths {
         get: operations["getProfile"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sandbox/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Sandbox availability and active generation */
+        get: operations["getSandboxStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sandbox/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retire and replace the shared Sandbox generation
+         * @description Production-mode, superadmin-only operation. The expected generation and
+         *     typed confirmation prevent stale or accidental resets. Active production
+         *     packages are cloned into the replacement generation.
+         */
+        post: operations["resetSandbox"];
         delete?: never;
         options?: never;
         head?: never;
@@ -366,6 +433,7 @@ export interface paths {
          *     mutations are resolved before requesting the export. The export contains
          *     every payment state matching `filters`; revenue dashboard aggregation is
          *     separately restricted to successful payment on the current revision.
+         *     Sandbox files and document content are permanently marked `TEST`.
          */
         post: operations["exportTransactions"];
         delete?: never;
@@ -383,7 +451,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Register a physical installation and Ed25519 public key */
+        /**
+         * Register a physical installation and Ed25519 public key
+         * @description Production-mode only because terminal identities are shared.
+         */
         post: operations["enrollTerminal"];
         delete?: never;
         options?: never;
@@ -485,6 +556,13 @@ export interface components {
         Rupiah: number;
         /** @enum {string} */
         UserRole: "admin" | "superadmin";
+        /**
+         * @description Server-authorized business data boundary bound to the session.
+         * @enum {string}
+         */
+        DataMode: "production" | "sandbox";
+        /** @enum {string} */
+        DataSpaceStatus: "active" | "retired" | "purged";
         /**
          * @description Stored payment method. `legacy` is read-only compatibility for
          *     transactions created before payment selection was introduced.
@@ -597,11 +675,21 @@ export interface components {
              */
             installationId?: string | null;
         };
+        SwitchModeRequest: {
+            mode: components["schemas"]["DataMode"];
+        };
         LoginResult: {
             sessionToken: string;
             sessionId: components["schemas"]["UUID"];
             user: components["schemas"]["User"];
-            terminal?: components["schemas"]["Terminal"] | null;
+            terminal: components["schemas"]["Terminal"] | null;
+            dataMode: components["schemas"]["DataMode"];
+            dataSpaceId: components["schemas"]["UUID"];
+            /**
+             * Format: int64
+             * @description Zero in production; the active immutable generation in Sandbox Mode.
+             */
+            sandboxGeneration: number;
         };
         LoginEnvelope: {
             data: components["schemas"]["LoginResult"];
@@ -635,6 +723,71 @@ export interface components {
             user: components["schemas"]["User"];
             sessionId: components["schemas"]["UUID"];
             terminal: components["schemas"]["Terminal"] | null;
+            dataMode: components["schemas"]["DataMode"];
+            dataSpaceId: components["schemas"]["UUID"];
+            /**
+             * Format: int64
+             * @description Zero in production; the active immutable generation in Sandbox Mode.
+             */
+            sandboxGeneration: number;
+        };
+        DataSpace: {
+            id: components["schemas"]["UUID"];
+            mode: components["schemas"]["DataMode"];
+            /** Format: int64 */
+            generation: number;
+            status: components["schemas"]["DataSpaceStatus"];
+            /** Format: date-time */
+            activatedAt: string;
+            /** Format: date-time */
+            retiredAt: string | null;
+            /** Format: date-time */
+            purgeAfter: string | null;
+            /** Format: date-time */
+            purgedAt: string | null;
+        };
+        SandboxStatus: {
+            enabled: boolean;
+            /** @constant */
+            dataMode: "sandbox";
+            /**
+             * Format: uuid
+             * @description Null while Sandbox is disabled and has not been activated.
+             */
+            dataSpaceId: string | null;
+            /**
+             * Format: int64
+             * @description Null while Sandbox is disabled and has not been activated.
+             */
+            generation: number | null;
+            retentionDays: number;
+            /**
+             * Format: int64
+             * @description Real merchant QRIS charge used by every Sandbox QRIS transaction.
+             * @constant
+             */
+            qrisAmount: 1000;
+        };
+        SandboxStatusEnvelope: {
+            data: components["schemas"]["SandboxStatus"];
+            meta: components["schemas"]["Meta"];
+        };
+        ResetSandboxRequest: {
+            /** Format: int64 */
+            expectedGeneration: number;
+            /** @constant */
+            confirmation: "RESET SANDBOX";
+        };
+        SandboxResetResult: {
+            previous: components["schemas"]["DataSpace"];
+            current: components["schemas"]["DataSpace"];
+            clonedPackageCount: number;
+            /** Format: int64 */
+            revokedSessionCount: number;
+        };
+        SandboxResetEnvelope: {
+            data: components["schemas"]["SandboxResetResult"];
+            meta: components["schemas"]["Meta"];
         };
         ProfileEnvelope: {
             data: components["schemas"]["ProfileResult"];
@@ -743,6 +896,11 @@ export interface components {
             items: components["schemas"]["TransactionItemSnapshot"][];
             subtotal: components["schemas"]["Rupiah"];
             total: components["schemas"]["Rupiah"];
+            /**
+             * @description Amount presented for payment. It equals `total` except Sandbox QRIS,
+             *     where the server enforces Rp1.000.
+             */
+            paymentAmount: components["schemas"]["Rupiah"];
         };
         TransactionRevision: {
             id: components["schemas"]["UUID"];
@@ -775,12 +933,19 @@ export interface components {
         };
         Transaction: {
             id: components["schemas"]["ULID"];
+            /** @description Display identity; Sandbox transactions use a `TEST-` prefix. */
+            displayId: string;
             revision: number;
             /** Format: date-time */
             occurredAt: string;
             items: components["schemas"]["TransactionItem"][];
             subtotal: components["schemas"]["Rupiah"];
             total: components["schemas"]["Rupiah"];
+            /**
+             * @description Amount actually presented to the payer. Sandbox QRIS is always Rp1.000;
+             *     cash and production payments equal the transaction total.
+             */
+            paymentAmount: components["schemas"]["Rupiah"];
             paymentMethod: components["schemas"]["PaymentMethod"];
             /** @description Present only for a QRIS revision created after payload binding was introduced. */
             qrisPayloadHash?: components["schemas"]["QrisPayloadHash"];
@@ -907,7 +1072,10 @@ export interface components {
             startsAt: string;
             /** Format: date-time */
             endsAt: string;
+            /** @description Simulated package total for the selected data space. */
             grossRevenue: components["schemas"]["Rupiah"];
+            /** @description Actual successful QRIS charges for reconciliation; cash is excluded. */
+            actualQrisAmount: components["schemas"]["Rupiah"];
             transactionCount: number;
             packageQuantities: components["schemas"]["PackageQuantity"][];
             trend: components["schemas"]["TrendBucket"][];
@@ -1081,7 +1249,10 @@ export interface components {
             meta: components["schemas"]["Meta"];
         };
         SyncChange: {
-            /** @description Durable opaque cursor after this individual change. */
+            /**
+             * @description Durable cursor after this individual change. Production retains the
+             *     legacy decimal form; Sandbox uses `sandbox:<generation>:<position>`.
+             */
             cursor: string;
             /** @enum {string} */
             aggregate: "user" | "package" | "transaction" | "print_attempt" | "terminal";
@@ -1096,6 +1267,10 @@ export interface components {
         };
         SyncPullResult: {
             changes: components["schemas"]["SyncChange"][];
+            /**
+             * @description Production decimal cursor or generation-bound Sandbox cursor in the
+             *     form `sandbox:<generation>:<position>`.
+             */
             cursor: string;
             hasMore: boolean;
         };
@@ -1143,6 +1318,26 @@ export interface components {
             };
             content: {
                 "application/json": components["schemas"]["ProfileEnvelope"];
+            };
+        };
+        /** @description Sandbox feature and generation status. */
+        SandboxStatusResponse: {
+            headers: {
+                "X-Request-Id": components["headers"]["RequestId"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["SandboxStatusEnvelope"];
+            };
+        };
+        /** @description Newly activated Sandbox generation and reset counts. */
+        SandboxResetResponse: {
+            headers: {
+                "X-Request-Id": components["headers"]["RequestId"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["SandboxResetEnvelope"];
             };
         };
         /** @description User. */
@@ -1441,6 +1636,26 @@ export interface operations {
             429: components["responses"]["TooManyRequests"];
         };
     };
+    switchDataMode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SwitchModeRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["Login"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
+        };
+    };
     changeOwnPassword: {
         parameters: {
             query?: never;
@@ -1485,6 +1700,39 @@ export interface operations {
         responses: {
             200: components["responses"]["Profile"];
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    getSandboxStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["SandboxStatusResponse"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    resetSandbox: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResetSandboxRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["SandboxResetResponse"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
         };
     };
     listUsers: {
@@ -1940,7 +2188,7 @@ export interface operations {
             /** @description Generated workbook or branded PDF. */
             200: {
                 headers: {
-                    /** @description Download filename. */
+                    /** @description Download filename; Sandbox filenames begin with `TEST-`. */
                     "Content-Disposition"?: string;
                     "X-Request-Id": components["headers"]["RequestId"];
                     [name: string]: unknown;

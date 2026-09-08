@@ -2,7 +2,6 @@ package port
 
 import (
 	"context"
-	"encoding/json"
 	"time"
 
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/domain"
@@ -40,7 +39,9 @@ type Repository interface {
 
 	UserForLogin(ctx context.Context, username string) (domain.UserAuth, error)
 	TerminalIDByInstallation(ctx context.Context, installationID uuid.UUID) (*uuid.UUID, error)
-	CreateSession(ctx context.Context, userID uuid.UUID, terminalID *uuid.UUID, tokenHash []byte) (domain.Principal, error)
+	CreateSession(ctx context.Context, userID uuid.UUID, terminalID *uuid.UUID, tokenHash []byte, dataSpaceID uuid.UUID) (domain.Principal, error)
+	SwitchSession(ctx context.Context, current domain.Principal, currentTokenHash, replacementTokenHash []byte, dataSpaceID uuid.UUID) (domain.Principal, error)
+	RecoverRetiredSandboxSession(ctx context.Context, current domain.Principal, currentTokenHash, replacementTokenHash []byte, dataSpaceID uuid.UUID) (domain.Principal, error)
 	PrincipalByTokenHash(ctx context.Context, tokenHash []byte) (domain.Principal, error)
 	PrincipalBySession(ctx context.Context, sessionID uuid.UUID, tokenHash []byte) (domain.Principal, error)
 	RevokeSession(ctx context.Context, sessionID, actorID uuid.UUID, reason string) error
@@ -53,8 +54,8 @@ type Repository interface {
 	ResetUserPassword(ctx context.Context, actor domain.Principal, targetID uuid.UUID, passwordHash string) (domain.User, error)
 	DeleteUser(ctx context.Context, actor domain.Principal, targetID uuid.UUID, reason string) error
 
-	ListPackages(ctx context.Context, includeDeleted bool) ([]domain.Package, error)
-	GetPackage(ctx context.Context, id uuid.UUID) (domain.Package, error)
+	ListPackages(ctx context.Context, dataSpaceID uuid.UUID, includeDeleted bool) ([]domain.Package, error)
+	GetPackage(ctx context.Context, dataSpaceID, id uuid.UUID) (domain.Package, error)
 	CreatePackage(ctx context.Context, actor domain.Principal, input domain.CreatePackageInput) (domain.Package, error)
 	UpdatePackage(ctx context.Context, actor domain.Principal, id uuid.UUID, input domain.UpdatePackageInput) (domain.Package, error)
 	DeletePackage(ctx context.Context, actor domain.Principal, id uuid.UUID, reason string) error
@@ -62,28 +63,32 @@ type Repository interface {
 	CreateTransaction(ctx context.Context, input domain.CreateTransactionInput) (domain.Transaction, error)
 	CorrectTransaction(ctx context.Context, input domain.CorrectTransactionInput) (domain.Transaction, error)
 	SetTransactionPaymentStatus(ctx context.Context, input domain.SetPaymentStatusInput) (domain.Transaction, error)
-	GetTransaction(ctx context.Context, id string, includeDeleted bool) (domain.Transaction, error)
+	GetTransaction(ctx context.Context, dataSpaceID uuid.UUID, id string, includeDeleted bool) (domain.Transaction, error)
 	ListTransactions(ctx context.Context, filter domain.TransactionFilter) (domain.TransactionPage, error)
 	DeleteTransaction(ctx context.Context, actor domain.Principal, id, reason string) error
 	RecordPrintAttempt(ctx context.Context, input domain.PrintAttemptInput) (domain.PrintAttempt, error)
-	ListTransactionRevisions(ctx context.Context, id string) ([]domain.TransactionRevision, error)
-	ListPrintAttempts(ctx context.Context, id string) ([]domain.PrintAttempt, error)
+	ListTransactionRevisions(ctx context.Context, dataSpaceID uuid.UUID, id string) ([]domain.TransactionRevision, error)
+	ListPrintAttempts(ctx context.Context, dataSpaceID uuid.UUID, id string) ([]domain.PrintAttempt, error)
 
-	Dashboard(ctx context.Context, from, to time.Time, bucket string) (domain.Dashboard, error)
+	Dashboard(ctx context.Context, dataSpaceID uuid.UUID, from, to time.Time, bucket string) (domain.Dashboard, error)
 	ExportRows(ctx context.Context, filter domain.TransactionFilter) ([]domain.ExportRow, error)
 
 	EnrollTerminal(ctx context.Context, principal domain.Principal, input domain.EnrollTerminalInput) (domain.Terminal, error)
 	GetTerminal(ctx context.Context, id uuid.UUID) (domain.Terminal, error)
 	RevokeTerminal(ctx context.Context, principal domain.Principal, id uuid.UUID) (domain.Terminal, error)
 	TerminalPublicKey(ctx context.Context, terminalID uuid.UUID) ([]byte, error)
-	OriginSessionMatches(ctx context.Context, sessionID, actorID, terminalID uuid.UUID) (bool, error)
-	PullChanges(ctx context.Context, cursor int64, limit int) ([]domain.SyncChange, error)
-	GetOperationResult(ctx context.Context, terminalID uuid.UUID, operationID string) (*domain.StoredOperationResult, error)
-	StoreOperationResult(ctx context.Context, terminalID uuid.UUID, operationID string, requestHash []byte, status int, response json.RawMessage) error
+	OriginSessionMatches(ctx context.Context, sessionID, actorID, terminalID, dataSpaceID uuid.UUID) (bool, error)
+	PullChanges(ctx context.Context, dataSpaceID uuid.UUID, cursor int64, limit int) ([]domain.SyncChange, error)
 	ApplySyncMutation(ctx context.Context, submitter domain.Principal, operation domain.SyncMutation, requestHash []byte) (result domain.StoredOperationResult, replayed bool, operationErr error)
+
+	ActiveDataSpace(ctx context.Context, mode domain.DataMode) (domain.DataSpace, error)
+	DataSpaceByID(ctx context.Context, id uuid.UUID) (domain.DataSpace, error)
+	EnsureSandbox(ctx context.Context) (domain.DataSpace, error)
+	ResetSandbox(ctx context.Context, actor domain.Principal, expectedGeneration int64, retention time.Duration) (domain.SandboxResetResult, error)
+	CleanupExpiredSandboxes(ctx context.Context, now time.Time) (domain.SandboxCleanupResult, error)
 }
 
 type Exporter interface {
-	XLSX(rows []domain.ExportRow, from, to *time.Time) ([]byte, error)
-	PDF(rows []domain.ExportRow, from, to *time.Time) ([]byte, error)
+	XLSX(rows []domain.ExportRow, from, to *time.Time, mode domain.DataMode) ([]byte, error)
+	PDF(rows []domain.ExportRow, from, to *time.Time, mode domain.DataMode) ([]byte, error)
 }

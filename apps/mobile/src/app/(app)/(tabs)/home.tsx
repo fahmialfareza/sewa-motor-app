@@ -29,6 +29,7 @@ import {
 
 const emptyStats: DashboardStats = {
   gross: 0,
+  actualQrisAmount: 0,
   transactionCount: 0,
   quantities: [],
   buckets: Array(24).fill(0),
@@ -171,6 +172,18 @@ export default function HomeScreen() {
         </View>
       </Card>
 
+      {session?.dataMode === "sandbox" ? (
+        <Card style={styles.sandboxReconciliation}>
+          <Text style={textStyles.label}>QRIS NYATA UNTUK REKONSILIASI</Text>
+          <Text style={styles.sandboxAmount}>
+            {loaded ? formatRupiah(stats.actualQrisAmount) : "—"}
+          </Text>
+          <Text style={styles.revenueNote}>
+            Pendapatan kotor di atas tetap memakai total simulasi paket.
+          </Text>
+        </Card>
+      ) : null}
+
       <View style={styles.metricGrid}>
         {!loaded ? (
           <Card style={styles.smallMetric}>
@@ -232,6 +245,7 @@ export default function HomeScreen() {
       ) : (
         recent.map((transaction) => (
           <TransactionRow
+            dataMode={session?.dataMode ?? "production"}
             key={transaction.id}
             onPress={() =>
               router.push({
@@ -304,4 +318,14 @@ const styles = StyleSheet.create({
   },
   link: { ...textStyles.body, color: colors.primary },
   empty: { ...textStyles.body, color: colors.textMuted },
+  sandboxReconciliation: {
+    gap: spacing.xs,
+    backgroundColor: colors.warningSoft,
+    borderColor: colors.warning,
+  },
+  sandboxAmount: {
+    fontFamily: typography.heading,
+    fontSize: 22,
+    color: colors.warning,
+  },
 });

@@ -1,6 +1,7 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { StyleSheet, Text } from "react-native";
 
+import { useAuth } from "@/auth/AuthProvider";
 import { AppScreen } from "@/components/layout/AppScreen";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Button } from "@/components/ui/Button";
@@ -15,6 +16,7 @@ export default function PrintFailureScreen() {
     message?: string;
   }>();
   const router = useRouter();
+  const { session } = useAuth();
   const uncertain = status === "unknown";
 
   return (
@@ -29,8 +31,8 @@ export default function PrintFailureScreen() {
           : "Struk gagal dicetak"}
       </Text>
       <Text style={styles.subtitle}>
-        Penjualan {displayTransactionId(id)} tetap tersimpan. Kegagalan printer
-        tidak pernah membatalkan transaksi.
+        Penjualan {displayTransactionId(id, session?.dataMode ?? "production")}{" "}
+        tetap tersimpan. Kegagalan printer tidak pernah membatalkan transaksi.
       </Text>
       <Card style={styles.card}>
         <Text style={textStyles.label}>DETAIL PRINTER</Text>

@@ -6,12 +6,26 @@ import { UserForm, type UserFormValue } from "@/components/forms/UserForm";
 import { AppScreen } from "@/components/layout/AppScreen";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card } from "@/components/ui/Card";
+import { StateView } from "@/components/ui/StateView";
 import { spacing } from "@/theme/tokens";
 import { StyleSheet } from "react-native";
 
 export default function NewUserScreen() {
   const router = useRouter();
   const { session } = useAuth();
+
+  if (session?.dataMode === "sandbox") {
+    return (
+      <AppScreen>
+        <PageHeader back title="Tambah Pengguna" />
+        <StateView
+          icon="shield-lock-outline"
+          message="Pengguna hanya dapat dikelola dari Mode Produksi."
+          title="Tidak tersedia di Mode Uji"
+        />
+      </AppScreen>
+    );
+  }
 
   const save = async (value: UserFormValue) => {
     if (!session) return;
