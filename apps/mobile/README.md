@@ -1,7 +1,12 @@
-# Sewa Motor POS Mobile
+# Telomoyo POS Mobile
 
 Expo SDK 57 / React Native 0.86 Android client for local-first operation on
 phones and MPOS terminals.
+
+The public app name is Telomoyo POS. The legacy application ID, Expo slug and
+scheme, encrypted SQLite filenames, SecureStore keys, background task ID, and
+printer module namespace are intentionally retained so version `0.2.0` can be
+installed over an existing build without losing device-local state.
 
 ## State and persistence
 

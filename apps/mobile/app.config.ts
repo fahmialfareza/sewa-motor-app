@@ -4,15 +4,16 @@ const ANDROID_APPLICATION_ID = "com.fahmialfareza.sewamotorpos";
 
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
-  name: "Sewa Motor POS",
+  name: "Telomoyo POS",
   slug: "sewa-motor-pos",
-  version: "0.1.0",
+  version: "0.2.0",
   icon: "./assets/branding/app-icon.png",
   orientation: "portrait",
   userInterfaceStyle: "light",
   scheme: "sewamotor",
   android: {
     package: ANDROID_APPLICATION_ID,
+    versionCode: 2,
     adaptiveIcon: {
       backgroundColor: "#003D9B",
       foregroundImage: "./assets/branding/adaptive-icon.png",
@@ -32,6 +33,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   },
   ios: {
     bundleIdentifier: "com.fahmialfareza.sewamotorpos",
+    buildNumber: "2",
   },
   plugins: [
     "expo-router",
@@ -55,14 +57,14 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       "expo-secure-store",
       {
         configureAndroidBackup: true,
-        faceIDPermission: "Izinkan Sewa Motor POS mengakses kredensial aman.",
+        faceIDPermission: "Izinkan Telomoyo POS mengakses kredensial aman.",
       },
     ],
     [
       "expo-camera",
       {
         cameraPermission:
-          "Izinkan Sewa Motor POS menggunakan kamera untuk membaca QRIS merchant.",
+          "Izinkan Telomoyo POS menggunakan kamera untuk membaca QRIS merchant.",
         microphonePermission: false,
         recordAudioAndroid: false,
         barcodeScannerEnabled: true,
@@ -71,10 +73,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     [
       "expo-image-picker",
       {
-        photosPermission:
-          "Izinkan Sewa Motor POS memilih gambar QRIS merchant.",
-        cameraPermission:
-          "Izinkan Sewa Motor POS mengambil foto QRIS merchant.",
+        photosPermission: "Izinkan Telomoyo POS memilih gambar QRIS merchant.",
+        cameraPermission: "Izinkan Telomoyo POS mengambil foto QRIS merchant.",
         microphonePermission: false,
       },
     ],

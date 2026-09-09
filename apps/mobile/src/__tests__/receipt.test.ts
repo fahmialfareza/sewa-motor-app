@@ -29,6 +29,9 @@ describe("thermal receipt", () => {
     expect(output).toContain("TOTAL");
     expect(output).toContain("Metode: QRIS");
     expect(output).toContain("Status: LUNAS");
+    expect(output).toContain("TELOMOYO POS");
+    expect(output).not.toContain("SEWA MOTOR POS");
+    expect(output).not.toContain("SEWA MOTOR\n");
     expect(output).not.toContain("SALINAN");
     for (const line of output.trimEnd().split("\n")) {
       expect(line.length).toBeLessThanOrEqual(32);

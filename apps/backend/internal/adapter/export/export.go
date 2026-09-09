@@ -197,7 +197,7 @@ func (Generator) PDF(rows []domain.ExportRow, from, to *time.Time, mode domain.D
 	if mode == domain.DataModeSandbox {
 		lines = append(lines, "*** TEST - MODE UJI - BUKAN LAPORAN RESMI ***")
 	}
-	lines = append(lines, "SEWA MOTOR POS - LAPORAN TRANSAKSI")
+	lines = append(lines, "TELOMOYO POS - LAPORAN TRANSAKSI")
 	if from != nil && to != nil {
 		lines = append(lines, fmt.Sprintf("Periode: %s s.d. %s",
 			from.In(location).Format("02-01-2006"),

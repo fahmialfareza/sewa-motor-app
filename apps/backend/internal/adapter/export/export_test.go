@@ -72,6 +72,12 @@ func TestPDFHasValidEnvelopeAndTotals(t *testing.T) {
 	if !bytes.Contains(body, []byte("QRIS payload hash: "+*sampleRows()[0].QrisPayloadHash)) {
 		t.Fatal("QRIS payload binding missing")
 	}
+	if !bytes.Contains(body, []byte("TELOMOYO POS - LAPORAN TRANSAKSI")) {
+		t.Fatal("Telomoyo report title missing")
+	}
+	if bytes.Contains(body, []byte("SEWA MOTOR POS")) {
+		t.Fatal("legacy report title remains in production PDF")
+	}
 }
 
 func TestPDFGrossRevenueExcludesPendingAndFailedTransactions(t *testing.T) {
@@ -154,11 +160,15 @@ func TestSandboxExportsAreWatermarkedAndExposeActualPayment(t *testing.T) {
 	for _, expected := range [][]byte{
 		[]byte("TEST - MODE UJI - BUKAN LAPORAN RESMI"),
 		[]byte("MODE UJI - BUKAN LAPORAN RESMI"),
+		[]byte("TELOMOYO POS - LAPORAN TRANSAKSI"),
 		[]byte("TEST-TRX-01ARZ3NDEKTSV4RRFFQ69G5FAV"),
 		[]byte("Pembayaran uji nyata: Rp1.000"),
 	} {
 		if !bytes.Contains(pdf, expected) {
 			t.Fatalf("sandbox PDF missing %q", expected)
 		}
+	}
+	if bytes.Contains(pdf, []byte("SEWA MOTOR POS")) {
+		t.Fatal("legacy report title remains in sandbox PDF")
 	}
 }

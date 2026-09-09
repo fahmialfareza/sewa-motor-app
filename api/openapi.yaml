@@ -1,7 +1,7 @@
 openapi: 3.1.0
 jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 info:
-  title: Sewa Motor POS API
+  title: Telomoyo POS API
   version: 1.0.0
   summary: Local-first point-of-sale API for a single rental store.
   description: |

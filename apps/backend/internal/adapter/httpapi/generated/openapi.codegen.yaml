@@ -1,6 +1,6 @@
 openapi: 3.0.3
 info:
-  title: Sewa Motor POS API
+  title: Telomoyo POS API
   version: 1.0.0
   description: |
     The contract used by the Android terminal and the Go backend. Money is integer

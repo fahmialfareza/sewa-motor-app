@@ -1,3 +1,4 @@
+import Constants from "expo-constants";
 import { useRouter } from "expo-router";
 import { useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
@@ -16,6 +17,8 @@ import {
   typography,
 } from "@/theme/tokens";
 import { initials } from "@/utils/format";
+
+const appVersion = Constants.expoConfig?.version ?? "0.2.0";
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -107,7 +110,7 @@ export default function SettingsScreen() {
         />
       </Card>
       {error ? <Text style={styles.error}>{error}</Text> : null}
-      <Text style={styles.version}>SEWA MOTOR POS • v0.1.0</Text>
+      <Text style={styles.version}>TELOMOYO POS • v{appVersion}</Text>
     </AppScreen>
   );
 }

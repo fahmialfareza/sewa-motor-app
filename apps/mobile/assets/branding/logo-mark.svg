@@ -1,36 +1,36 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <defs>
-    <mask id="wheel-gap">
-      <rect width="1024" height="1024" fill="#fff" />
-      <rect x="448" y="680" width="128" height="170" rx="64" fill="#000" />
-    </mask>
-  </defs>
   <g id="logo-mark">
-    <g fill="#fff">
-      <circle cx="310" cy="235" r="40" />
-      <circle cx="714" cy="235" r="40" />
-      <path
-        d="M338 263l28 29c8 8 12 18 12 29v30h-24v-30c0-5-2-9-5-12l-28-29 17-17z"
-      />
-      <path
-        d="M686 263l-28 29c-8 8-12 18-12 29v30h24v-30c0-5 2-9 5-12l28-29-17-17z"
-      />
-      <rect x="260" y="330" width="504" height="42" rx="21" />
-      <circle cx="512" cy="350" r="95" />
-      <path
-        d="M390 430c60-20 184-20 244 0 36 15 56 60 50 105l-18 95c-9 54-46 86-94 112l-24 13c-23 13-49 13-72 0l-24-13c-48-26-85-58-94-112l-18-95c-6-45 14-90 50-105z"
-        mask="url(#wheel-gap)"
-      />
-      <rect x="474" y="700" width="76" height="132" rx="38" />
-    </g>
-    <circle cx="512" cy="350" r="43" fill="#ff8b00" />
+    <!-- Telomoyo ridge and its winding road to the summit. -->
     <path
-      d="M412 585l78 72 144-166"
+      d="M176 548 374 292l126 142 148-218 200 332"
       fill="none"
-      stroke="#ff8b00"
+      stroke="#fff"
       stroke-linecap="round"
       stroke-linejoin="round"
       stroke-width="58"
     />
+    <circle cx="770" cy="258" r="42" fill="#ff8b00" />
+    <path
+      d="M650 286c-74 76 40 116-44 184-60 48-154 66-232 142"
+      fill="none"
+      stroke="#ff8b00"
+      stroke-linecap="round"
+      stroke-width="58"
+    />
+
+    <!-- A compact side-view scooter climbing the mountain road. -->
+    <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="360" cy="724" r="70" stroke-width="34" />
+      <circle cx="690" cy="724" r="70" stroke-width="34" />
+      <path
+        d="M414 700h86c30 0 54-13 70-38l42-67h70l24 102"
+        stroke-width="54"
+      />
+      <path d="m606 595-38-84h-54" stroke-width="38" />
+      <path d="M548 510h112" stroke-width="34" />
+      <path d="M424 675 474 570h110" stroke-width="54" />
+      <path d="M456 552h126" stroke-width="42" />
+    </g>
+    <circle cx="670" cy="498" r="25" fill="#fff" />
   </g>
 </svg>

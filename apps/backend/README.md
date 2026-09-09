@@ -1,6 +1,6 @@
-# Sewa Motor POS Backend
+# Telomoyo POS Backend
 
-Go 1.26 and Gin service for the local-first Sewa Motor point-of-sale app.
+Go 1.26 and Gin service for the local-first Telomoyo POS app.
 PostgreSQL is the source of truth. GORM provides typed, context-aware repository
 reads. Explicit pgx transactions remain in the atomic mutation paths that need
 serializable isolation, advisory locks, append-only revisions, audit events, and
@@ -84,6 +84,10 @@ NEW_RELIC_LICENSE_KEY=...
 NEW_RELIC_DISTRIBUTED_TRACING_ENABLED=true
 NEW_RELIC_LOG_FORWARDING_ENABLED=true
 ```
+
+The `sewa-motor-backend-production` application name is intentionally retained
+as a stable operational identifier so the Telomoyo POS rebrand does not split
+APM history, dashboards, or alerts.
 
 The Gin middleware creates a New Relic web transaction for every route. The
 request context is propagated through use cases, GORM, pgx, and Redis, with

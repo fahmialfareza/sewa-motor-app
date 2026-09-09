@@ -59,12 +59,12 @@ export default function LoginScreen() {
         <View style={styles.logo}>
           <Image
             accessibilityIgnoresInvertColors
-            accessibilityLabel="Logo Sewa Motor POS"
+            accessibilityLabel="Logo Telomoyo POS"
             source={require("../../../assets/branding/logo-mark.png")}
             style={styles.logoMark}
           />
         </View>
-        <Text style={styles.brandName}>Sewa Motor</Text>
+        <Text style={styles.brandName}>Telomoyo POS</Text>
         <Text style={styles.tagline}>Sistem Point of Sale</Text>
       </View>
 

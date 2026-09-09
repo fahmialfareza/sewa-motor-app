@@ -1,4 +1,4 @@
-# Sewa Motor POS
+# Telomoyo POS
 
 Android-first, local-first point of sale for one motorcycle-rental store with
 multiple physical terminals. The mobile app remains usable through connectivity
@@ -59,6 +59,20 @@ Server-owned data spaces and generations keep test transactions out of
 production history, revenue, exports, audit streams, and sync cursors. Sandbox
 is disabled by default; every signed-in staff member can switch modes, while
 only a production-mode superadmin can reset the shared sandbox generation.
+
+## Rebrand compatibility
+
+`Telomoyo POS` is the public product name. Existing technical identifiers keep
+their original `sewa-motor` values so this release upgrades the installed app
+without losing encrypted databases, sessions, terminal enrollment, Docker
+volumes, Redis keys, migration locks, or New Relic history. This includes the
+application ID, Expo slug and scheme, workspace package names, Go module path,
+SQLite filenames, SecureStore keys, Compose project name, and infrastructure
+names.
+
+The merchant name shown in QRIS is signed into the uploaded acquirer-issued
+payload and is not application branding. Changing that name requires a newly
+issued QRIS payload; the app never rewrites it.
 
 ## Prerequisites
 
