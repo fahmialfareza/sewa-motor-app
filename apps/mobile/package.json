@@ -4,8 +4,8 @@
   "private": true,
   "main": "index.js",
   "scripts": {
-    "start": "expo start --dev-client",
-    "dev": "expo start --dev-client",
+    "start": "expo start --dev-client --clear",
+    "dev": "expo start --dev-client --clear",
     "android": "expo run:android",
     "native:prebuild": "expo prebuild --clean --platform android",
     "build": "expo export --platform android",

@@ -89,7 +89,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     apiUrl:
       process.env.EXPO_PUBLIC_API_BASE_URL ??
       process.env.EXPO_PUBLIC_API_URL ??
-      "http://10.0.2.2:8080/api/v1",
+      "http://10.0.2.2:8000/api/v1",
     enableDemoLogin: process.env.EXPO_PUBLIC_ENABLE_DEMO_LOGIN === "true",
     eas: {
       projectId: process.env.EAS_PROJECT_ID,

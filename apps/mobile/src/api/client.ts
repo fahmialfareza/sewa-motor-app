@@ -52,10 +52,17 @@ export class ApiError extends Error {
 }
 
 export function getApiBaseUrl(): string {
-  const configured = Constants.expoConfig?.extra?.apiUrl;
-  if (typeof configured !== "string" || configured.length === 0) {
-    return "http://10.0.2.2:8080/api/v1";
-  }
+  // Expo supplies these values in the JS bundle. Prefer them over the native
+  // manifest, which can still contain the URL from the last Android build.
+  // Keep dotted process.env access so Expo can statically transform it.
+  const environmentUrl =
+    process.env.EXPO_PUBLIC_API_BASE_URL?.trim() ||
+    process.env.EXPO_PUBLIC_API_URL?.trim();
+  const manifestUrl = Constants.expoConfig?.extra?.apiUrl;
+  const configured =
+    environmentUrl ||
+    (typeof manifestUrl === "string" ? manifestUrl.trim() : "") ||
+    "http://10.0.2.2:8000/api/v1";
   return configured.replace(/\/$/, "");
 }
 
