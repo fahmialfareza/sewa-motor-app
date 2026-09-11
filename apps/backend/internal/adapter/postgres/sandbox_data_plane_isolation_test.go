@@ -61,7 +61,7 @@ func TestSandboxDataPlaneIsolationMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create production package: %v", err)
 	}
-	sandbox, err := store.EnsureSandbox(ctx)
+	sandbox, err := store.EnsureSandbox(ctx, domain.InitialTenantID())
 	if err != nil {
 		t.Fatalf("activate Sandbox: %v", err)
 	}
@@ -128,6 +128,9 @@ func TestSandboxDataPlaneIsolationMatrix(t *testing.T) {
 
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	qrisHash := strings.Repeat("a", 64)
+	if _, err := store.Pool.Exec(ctx, `INSERT INTO tenant_qris_revisions (tenant_id,revision,payload_hash,static_payload,created_by) VALUES ($1,1,$2,'fixture merchant payload',$3)`, productionActor.TenantID, qrisHash, productionActor.UserID); err != nil {
+		t.Fatalf("seed merchant QRIS binding: %v", err)
+	}
 	productionID := "01ARZ3NDEKTSV4RRFFQ69G5FB1"
 	sandboxID := "01ARZ3NDEKTSV4RRFFQ69G5FB2"
 

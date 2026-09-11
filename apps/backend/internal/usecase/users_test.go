@@ -25,7 +25,7 @@ func TestUsersRejectSelfDemotionBeforeRepository(t *testing.T) {
 	service := Users{Repo: repo}
 	id := uuid.New()
 	adminRole := domain.RoleAdmin
-	_, err := service.Update(context.Background(), domain.Principal{
+	_, err := service.Update(context.Background(), domain.Principal{ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(), DataSpaceID: domain.LiveDataSpaceID(),
 		UserID: id, Role: domain.RoleSuperadmin,
 	}, id, domain.UpdateUserInput{Role: &adminRole})
 	if !domain.IsCode(err, domain.CodeSelfMutation) {
@@ -42,7 +42,7 @@ func TestUsersPropagateFinalSuperadminGuard(t *testing.T) {
 	}
 	service := Users{Repo: repo}
 	adminRole := domain.RoleAdmin
-	_, err := service.Update(context.Background(), domain.Principal{
+	_, err := service.Update(context.Background(), domain.Principal{ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(), DataSpaceID: domain.LiveDataSpaceID(),
 		UserID: uuid.New(), Role: domain.RoleSuperadmin,
 	}, uuid.New(), domain.UpdateUserInput{Role: &adminRole})
 	if !domain.IsCode(err, domain.CodeFinalSuperadmin) {
@@ -54,10 +54,10 @@ func TestUsersPropagateFinalSuperadminGuard(t *testing.T) {
 }
 
 func TestRequireSuperadminEnforcesRoleAndForcedPasswordChange(t *testing.T) {
-	if err := RequireSuperadmin(domain.Principal{Role: domain.RoleAdmin}); !domain.IsCode(err, domain.CodeForbidden) {
+	if err := RequireSuperadmin(domain.Principal{ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(), DataSpaceID: domain.LiveDataSpaceID(), Role: domain.RoleAdmin}); !domain.IsCode(err, domain.CodeForbidden) {
 		t.Fatalf("expected forbidden for admin, got %v", err)
 	}
-	if err := RequireSuperadmin(domain.Principal{
+	if err := RequireSuperadmin(domain.Principal{ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(), DataSpaceID: domain.LiveDataSpaceID(),
 		Role: domain.RoleSuperadmin, MustChangePassword: true,
 	}); !domain.IsCode(err, domain.CodePasswordChange) {
 		t.Fatalf("expected forced-password error, got %v", err)

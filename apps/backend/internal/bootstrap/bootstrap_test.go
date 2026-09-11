@@ -166,14 +166,17 @@ func TestApplyRefreshesActiveSpacesAfterSeparateGenerationLock(t *testing.T) {
 	if inserted != 1 || !tx.committed {
 		t.Fatalf("inserted = %d, committed = %v", inserted, tx.committed)
 	}
-	if len(tx.execs) != 4 {
-		t.Fatalf("exec count = %d, want insert, audit, generation lock, and sync", len(tx.execs))
+	if len(tx.execs) != 5 {
+		t.Fatalf("exec count = %d, want account, membership, audit, generation lock, and sync", len(tx.execs))
 	}
-	if !strings.Contains(tx.execs[2].statement, "pg_advisory_xact_lock_shared") {
+	if !strings.Contains(tx.execs[1].statement, "INSERT INTO tenant_memberships") {
+		t.Fatal("initial tenant membership missing")
+	}
+	if !strings.Contains(tx.execs[3].statement, "pg_advisory_xact_lock_shared") {
 		t.Fatal("Sandbox generation lock was not acquired before sync fanout")
 	}
-	if strings.Contains(tx.execs[3].statement, "pg_advisory_xact_lock_shared") ||
-		!strings.Contains(tx.execs[3].statement, "FROM data_spaces") {
+	if strings.Contains(tx.execs[4].statement, "pg_advisory_xact_lock_shared") ||
+		!strings.Contains(tx.execs[4].statement, "FROM data_spaces") {
 		t.Fatal("sync fanout did not use a fresh statement snapshot after the generation lock")
 	}
 }

@@ -32,6 +32,33 @@ function withCrc(payloadWithoutCrc: string): string {
 }
 
 describe("QRIS conversion", () => {
+  it("retains each merchant's identity in both Production and fixed-amount Sandbox QRIS", () => {
+    const secondMerchant = withCrc(
+      STATIC_QRIS.slice(0, -8)
+        .replace("1234567890", "0987654321")
+        .replace("SEWA MOTOR", "MERBABU123"),
+    );
+    for (const [payload, merchantName, account] of [
+      [STATIC_QRIS, "SEWA MOTOR", "1234567890"],
+      [secondMerchant, "MERBABU123", "0987654321"],
+    ] as const) {
+      for (const mode of ["production", "sandbox"] as const) {
+        const dynamic = createDynamicQris(
+          payload,
+          resolvePaymentAmount(mode, "qris", 75000),
+        );
+        expect(parseQris(dynamic.payload)).toMatchObject({
+          merchantName,
+          amount: mode === "sandbox" ? "1000" : "75000",
+        });
+        expect(dynamic.payload).toContain(account);
+        expect(dynamic.payload.slice(-4)).toBe(
+          calculateQrisCrc(dynamic.payload.slice(0, -4)),
+        );
+      }
+    }
+  });
+
   it("parses and validates a static merchant payload", () => {
     expect(parseQris(`\n${STATIC_QRIS}\n`)).toEqual({
       payload: STATIC_QRIS,

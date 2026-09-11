@@ -150,26 +150,30 @@ func apply(
 			"id": id, "fullName": user.FullName, "username": user.Username,
 			"role": user.Role, "active": true, "mustChangePassword": true,
 		})
+		if _, err = tx.Exec(ctx, `INSERT INTO tenant_memberships(tenant_id,user_id,role)
+			VALUES ($1,$2,$3)`, domain.InitialTenantID(), id, user.Role); err != nil {
+			return 0, fmt.Errorf("create bootstrap membership: %w", err)
+		}
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO audit_events (
-				event_type, aggregate_type, aggregate_id, after_values, metadata, occurred_at
-			) VALUES ('user.bootstrapped','user',$1,$2,'{"command":"bootstrap"}',now())`,
-			id.String(), payload,
+				data_space_id, event_type, aggregate_type, aggregate_id, after_values, metadata, occurred_at
+			) VALUES ($3,'user.bootstrapped','user',$1,$2,'{"command":"bootstrap"}',now())`,
+			id.String(), payload, domain.LiveDataSpaceID(),
 		); err != nil {
 			return 0, fmt.Errorf("audit bootstrap user %q: %w", user.Username, err)
 		}
 		if _, err = tx.Exec(ctx, `
 			SELECT pg_advisory_xact_lock_shared(
-				hashtextextended('sewa-motor-sandbox-generation', 0)
-			)`); err != nil {
+				hashtextextended($1, 0)
+			)`, "sewa-motor-sandbox-generation:"+domain.InitialTenantIDString); err != nil {
 			return 0, fmt.Errorf("lock Sandbox generation for bootstrap user %q: %w", user.Username, err)
 		}
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO sync_changes (data_space_id, aggregate, aggregate_id, action, payload)
 			SELECT ds.id, 'user', $1, 'created', $2
 			FROM data_spaces ds
-			WHERE ds.status = 'active'`,
-			id.String(), payload,
+			WHERE ds.status = 'active' AND ds.tenant_id=$3`,
+			id.String(), payload, domain.InitialTenantID(),
 		); err != nil {
 			return 0, fmt.Errorf("sync bootstrap user %q: %w", user.Username, err)
 		}
@@ -293,25 +297,25 @@ func resetSampleSuperadminPassword(
 	}
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO audit_events (
-			event_type, aggregate_type, aggregate_id,
+			data_space_id, event_type, aggregate_type, aggregate_id,
 			before_values, after_values, metadata, occurred_at
-		) VALUES ('user.password_reset','user',$1,$2,$3,$4,now())`,
-		before.ID.String(), beforeJSON, afterJSON, metadataJSON,
+		) VALUES ($5,'user.password_reset','user',$1,$2,$3,$4,now())`,
+		before.ID.String(), beforeJSON, afterJSON, metadataJSON, domain.LiveDataSpaceID(),
 	); err != nil {
 		return fmt.Errorf("audit sample superadmin password reset: %w", err)
 	}
 	if _, err = tx.Exec(ctx, `
 		SELECT pg_advisory_xact_lock_shared(
-			hashtextextended('sewa-motor-sandbox-generation', 0)
-		)`); err != nil {
+			hashtextextended($1, 0)
+		)`, "sewa-motor-sandbox-generation:"+domain.InitialTenantIDString); err != nil {
 		return fmt.Errorf("lock Sandbox generation for sample superadmin reset: %w", err)
 	}
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO sync_changes (data_space_id, aggregate, aggregate_id, action, payload)
 		SELECT ds.id, 'user', $1, 'updated', $2
 		FROM data_spaces ds
-		WHERE ds.status = 'active'`,
-		after.ID.String(), afterJSON,
+		WHERE ds.status = 'active' AND ds.tenant_id=$3`,
+		after.ID.String(), afterJSON, domain.InitialTenantID(),
 	); err != nil {
 		return fmt.Errorf("sync sample superadmin password reset: %w", err)
 	}

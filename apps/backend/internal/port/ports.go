@@ -38,7 +38,7 @@ type Repository interface {
 	Ping(ctx context.Context) error
 
 	UserForLogin(ctx context.Context, username string) (domain.UserAuth, error)
-	TerminalIDByInstallation(ctx context.Context, installationID uuid.UUID) (*uuid.UUID, error)
+	TerminalIDByInstallation(ctx context.Context, tenantID, installationID uuid.UUID) (*uuid.UUID, error)
 	CreateSession(ctx context.Context, userID uuid.UUID, terminalID *uuid.UUID, tokenHash []byte, dataSpaceID uuid.UUID) (domain.Principal, error)
 	SwitchSession(ctx context.Context, current domain.Principal, currentTokenHash, replacementTokenHash []byte, dataSpaceID uuid.UUID) (domain.Principal, error)
 	RecoverRetiredSandboxSession(ctx context.Context, current domain.Principal, currentTokenHash, replacementTokenHash []byte, dataSpaceID uuid.UUID) (domain.Principal, error)
@@ -47,8 +47,8 @@ type Repository interface {
 	RevokeSession(ctx context.Context, sessionID, actorID uuid.UUID, reason string) error
 	ChangeOwnPassword(ctx context.Context, principal domain.Principal, passwordHash string) error
 
-	ListUsers(ctx context.Context, includeDeleted bool) ([]domain.User, error)
-	GetUser(ctx context.Context, id uuid.UUID) (domain.User, error)
+	ListUsers(ctx context.Context, tenantID uuid.UUID, includeDeleted bool) ([]domain.User, error)
+	GetUser(ctx context.Context, tenantID, id uuid.UUID) (domain.User, error)
 	CreateUser(ctx context.Context, actor domain.Principal, input domain.CreateUserInput, passwordHash string) (domain.User, error)
 	UpdateUser(ctx context.Context, actor domain.Principal, targetID uuid.UUID, input domain.UpdateUserInput) (domain.User, error)
 	ResetUserPassword(ctx context.Context, actor domain.Principal, targetID uuid.UUID, passwordHash string) (domain.User, error)
@@ -74,21 +74,21 @@ type Repository interface {
 	ExportRows(ctx context.Context, filter domain.TransactionFilter) ([]domain.ExportRow, error)
 
 	EnrollTerminal(ctx context.Context, principal domain.Principal, input domain.EnrollTerminalInput) (domain.Terminal, error)
-	GetTerminal(ctx context.Context, id uuid.UUID) (domain.Terminal, error)
+	GetTerminal(ctx context.Context, tenantID, id uuid.UUID) (domain.Terminal, error)
 	RevokeTerminal(ctx context.Context, principal domain.Principal, id uuid.UUID) (domain.Terminal, error)
-	TerminalPublicKey(ctx context.Context, terminalID uuid.UUID) ([]byte, error)
+	TerminalPublicKey(ctx context.Context, tenantID, terminalID uuid.UUID) ([]byte, error)
 	OriginSessionMatches(ctx context.Context, sessionID, actorID, terminalID, dataSpaceID uuid.UUID) (bool, error)
 	PullChanges(ctx context.Context, dataSpaceID uuid.UUID, cursor int64, limit int) ([]domain.SyncChange, error)
 	ApplySyncMutation(ctx context.Context, submitter domain.Principal, operation domain.SyncMutation, requestHash []byte) (result domain.StoredOperationResult, replayed bool, operationErr error)
 
-	ActiveDataSpace(ctx context.Context, mode domain.DataMode) (domain.DataSpace, error)
-	DataSpaceByID(ctx context.Context, id uuid.UUID) (domain.DataSpace, error)
-	EnsureSandbox(ctx context.Context) (domain.DataSpace, error)
+	ActiveDataSpace(ctx context.Context, tenantID uuid.UUID, mode domain.DataMode) (domain.DataSpace, error)
+	DataSpaceByID(ctx context.Context, tenantID, id uuid.UUID) (domain.DataSpace, error)
+	EnsureSandbox(ctx context.Context, tenantID uuid.UUID) (domain.DataSpace, error)
 	ResetSandbox(ctx context.Context, actor domain.Principal, expectedGeneration int64, retention time.Duration) (domain.SandboxResetResult, error)
 	CleanupExpiredSandboxes(ctx context.Context, now time.Time) (domain.SandboxCleanupResult, error)
 }
 
 type Exporter interface {
-	XLSX(rows []domain.ExportRow, from, to *time.Time, mode domain.DataMode) ([]byte, error)
-	PDF(rows []domain.ExportRow, from, to *time.Time, mode domain.DataMode) ([]byte, error)
+	XLSX(rows []domain.ExportRow, from, to *time.Time, mode domain.DataMode, profile domain.TenantProfile) ([]byte, error)
+	PDF(rows []domain.ExportRow, from, to *time.Time, mode domain.DataMode, profile domain.TenantProfile) ([]byte, error)
 }

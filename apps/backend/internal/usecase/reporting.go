@@ -8,6 +8,7 @@ import (
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/domain"
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/observability"
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/port"
+	"github.com/google/uuid"
 )
 
 type Reporting struct {
@@ -17,7 +18,7 @@ type Reporting struct {
 
 func (r Reporting) Dashboard(ctx context.Context, principal domain.Principal, from, to time.Time, bucket string) (domain.Dashboard, error) {
 	defer observability.StartSegment(ctx, "Usecase.Reporting.Dashboard")()
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return domain.Dashboard{}, err
 	}
 	if !from.Before(to) || to.Sub(from) > 370*24*time.Hour {
@@ -33,7 +34,7 @@ func (r Reporting) Dashboard(ctx context.Context, principal domain.Principal, fr
 
 func (r Reporting) Export(ctx context.Context, principal domain.Principal, format string, filter domain.TransactionFilter) ([]byte, string, error) {
 	defer observability.StartSegment(ctx, "Usecase.Reporting.Export")()
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return nil, "", err
 	}
 	if filter.PaymentMethod != nil && !filter.PaymentMethod.Valid() {
@@ -57,12 +58,22 @@ func (r Reporting) Export(ctx context.Context, principal domain.Principal, forma
 	if err != nil {
 		return nil, "", err
 	}
+	tenancy, ok := r.Repo.(interface {
+		GetTenantProfile(context.Context, uuid.UUID) (domain.TenantProfile, error)
+	})
+	if !ok {
+		return nil, "", domain.NewError(domain.CodeInternal, "Profil bisnis belum tersedia untuk laporan")
+	}
+	profile, err := tenancy.GetTenantProfile(ctx, principal.TenantID)
+	if err != nil {
+		return nil, "", err
+	}
 	switch format {
 	case "xlsx":
-		body, exportErr := r.Exporter.XLSX(rows, filter.From, filter.To, principal.EffectiveDataMode())
+		body, exportErr := r.Exporter.XLSX(rows, filter.From, filter.To, principal.EffectiveDataMode(), profile)
 		return body, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", exportErr
 	case "pdf":
-		body, exportErr := r.Exporter.PDF(rows, filter.From, filter.To, principal.EffectiveDataMode())
+		body, exportErr := r.Exporter.PDF(rows, filter.From, filter.To, principal.EffectiveDataMode(), profile)
 		return body, "application/pdf", exportErr
 	default:
 		return nil, "", domain.Validation("Format ekspor harus xlsx atau pdf", map[string]any{"field": "format"})

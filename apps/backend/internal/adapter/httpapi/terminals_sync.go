@@ -210,11 +210,7 @@ func rawPositiveInt(value json.RawMessage) (int, bool) {
 
 func (s *Server) syncPull(c *gin.Context) {
 	current := principal(c)
-	cursor, err := domain.DecodeSyncCursor(
-		current.EffectiveDataMode(),
-		current.SandboxGeneration,
-		c.Query("cursor"),
-	)
+	cursor, err := domain.DecodeTenantSyncCursor(current, c.Query("cursor"))
 	if err != nil {
 		writeError(c, err)
 		return
@@ -243,14 +239,14 @@ func (s *Server) syncPull(c *gin.Context) {
 			}
 		}
 		mapped = append(mapped, gin.H{
-			"cursor": domain.EncodeSyncCursor(current.EffectiveDataMode(), current.SandboxGeneration, change.Cursor), "aggregate": change.Aggregate,
+			"cursor": domain.EncodeTenantSyncCursor(current, change.Cursor), "aggregate": change.Aggregate,
 			"action": change.Action, "aggregateId": change.AggregateID, "revision": change.Revision,
 			"changedAt": change.CreatedAt, "tombstone": change.Tombstone, "payload": payload,
 		})
 	}
 	writeData(c, http.StatusOK, gin.H{
 		"changes": mapped,
-		"cursor":  domain.EncodeSyncCursor(current.EffectiveDataMode(), current.SandboxGeneration, next),
+		"cursor":  domain.EncodeTenantSyncCursor(current, next),
 		"hasMore": hasMore,
 	})
 }
@@ -262,7 +258,7 @@ func (s *Server) syncChangePayload(c *gin.Context, change domain.SyncChange) (an
 		if err != nil {
 			return nil, domain.WrapInternal(err, "parse synced user id")
 		}
-		return s.deps.Repo.GetUser(c.Request.Context(), id)
+		return s.deps.Repo.GetUser(c.Request.Context(), principal(c).TenantID, id)
 	case "package":
 		id, err := uuid.Parse(change.AggregateID)
 		if err != nil {
@@ -295,7 +291,14 @@ func (s *Server) syncChangePayload(c *gin.Context, change domain.SyncChange) (an
 		if err != nil {
 			return nil, domain.WrapInternal(err, "parse synced terminal id")
 		}
-		return s.deps.Repo.GetTerminal(c.Request.Context(), id)
+		return s.deps.Repo.GetTerminal(c.Request.Context(), principal(c).TenantID, id)
+	case "tenant_profile", "tenant_qris":
+		// These events are generated only into this tenant's active spaces.
+		var payload any
+		if err := json.Unmarshal(change.Payload, &payload); err != nil {
+			return nil, domain.WrapInternal(err, "decode synced tenant configuration")
+		}
+		return payload, nil
 	default:
 		return nil, domain.NewError(domain.CodeInternal, "Jenis perubahan sinkronisasi tidak dikenal")
 	}

@@ -1,8 +1,14 @@
 import { drizzle, type ExpoSQLiteDatabase } from "drizzle-orm/expo-sqlite";
 import * as SQLite from "expo-sqlite";
 
-import type { DataMode, Session } from "@/domain/types";
-import { activeDataMode } from "@/mode/mode-store";
+import {
+  INITIAL_TENANT_ID,
+  type DataMode,
+  type LocalScope,
+  type Session,
+  type DataScope,
+} from "@/domain/types";
+import { activeDataMode, activeTenantId } from "@/mode/mode-store";
 import { getOrCreateDatabaseKey } from "@/security/secure-store";
 
 import { runMigrations } from "./migrations";
@@ -18,30 +24,72 @@ export const databaseNames: Record<DataMode, string> = {
   sandbox: "sewa-motor-pos-sandbox.db",
 };
 
-const connectionPromises: Partial<
-  Record<DataMode, Promise<DatabaseConnection>>
+const connectionPromises: Record<
+  string,
+  Promise<DatabaseConnection> | undefined
 > = {};
 
+export function databaseScope(
+  scope: LocalScope = activeDataMode(),
+): DataScope & { tenantId: string } {
+  if (
+    typeof scope !== "string" &&
+    "contextKind" in scope &&
+    scope.contextKind !== undefined &&
+    scope.contextKind !== "tenant"
+  )
+    throw new Error(
+      "Konteks akun dan platform tidak dapat membuka database bisnis.",
+    );
+  if (
+    typeof scope !== "string" &&
+    "contextKind" in scope &&
+    scope.contextKind === "tenant" &&
+    !scope.tenantId
+  )
+    throw new Error("Identitas bisnis pada sesi tidak lengkap.");
+  if (typeof scope !== "string" && !scope.tenantId)
+    throw new Error(
+      "Identitas bisnis wajib disertakan untuk membuka penyimpanan lokal.",
+    );
+  const value =
+    typeof scope === "string"
+      ? { dataMode: scope, tenantId: activeTenantId() }
+      : { ...scope, tenantId: scope.tenantId! };
+  if (!/^[a-f0-9-]{36}$/i.test(value.tenantId))
+    throw new Error("Identitas bisnis tidak valid.");
+  return value;
+}
+
+export function databaseName(scope: LocalScope): string {
+  const value = databaseScope(scope);
+  return value.tenantId === INITIAL_TENANT_ID
+    ? databaseNames[value.dataMode]
+    : `sewa-motor-pos-${value.tenantId}-${value.dataMode}.db`;
+}
+
 export function getDatabase(
-  mode: DataMode = activeDataMode(),
+  scope: LocalScope = activeDataMode(),
 ): Promise<DatabaseConnection> {
-  const existing = connectionPromises[mode];
+  const value = databaseScope(scope);
+  const key = `${value.tenantId}:${value.dataMode}`;
+  const existing = connectionPromises[key];
   if (existing) return existing;
 
   let opening: Promise<DatabaseConnection>;
-  opening = openDatabase(mode).catch((error: unknown) => {
-    if (connectionPromises[mode] === opening) {
-      delete connectionPromises[mode];
+  opening = openDatabase(value).catch((error: unknown) => {
+    if (connectionPromises[key] === opening) {
+      delete connectionPromises[key];
     }
     throw error;
   });
-  connectionPromises[mode] = opening;
+  connectionPromises[key] = opening;
   return opening;
 }
 
-async function openDatabase(mode: DataMode): Promise<DatabaseConnection> {
-  const key = await getOrCreateDatabaseKey(mode);
-  const sqlite = await SQLite.openDatabaseAsync(databaseNames[mode]);
+async function openDatabase(scope: DataScope): Promise<DatabaseConnection> {
+  const key = await getOrCreateDatabaseKey(scope);
+  const sqlite = await SQLite.openDatabaseAsync(databaseName(scope));
   try {
     // The generated key is hexadecimal only, so it cannot escape this pragma.
     await sqlite.execAsync(`
@@ -50,7 +98,10 @@ async function openDatabase(mode: DataMode): Promise<DatabaseConnection> {
       PRAGMA journal_mode = WAL;
       PRAGMA busy_timeout = 5000;
     `);
-    await runMigrations(sqlite);
+    await runMigrations(sqlite, {
+      seedLegacyCatalog:
+        scope.tenantId === INITIAL_TENANT_ID && scope.dataMode === "production",
+    });
 
     return {
       sqlite,
@@ -63,30 +114,32 @@ async function openDatabase(mode: DataMode): Promise<DatabaseConnection> {
 }
 
 export async function initializeDatabase(
-  mode: DataMode = activeDataMode(),
+  mode: LocalScope = activeDataMode(),
 ): Promise<void> {
   await getDatabase(mode);
 }
 
 export async function prepareDatabaseForSession(
-  session: Pick<Session, "dataMode" | "sandboxGeneration">,
+  session: Pick<Session, "dataMode" | "sandboxGeneration"> &
+    Partial<Pick<Session, "tenantId" | "contextKind" | "dataSpaceId">>,
 ): Promise<void> {
+  if (session.contextKind && session.contextKind !== "tenant") return;
   if (session.dataMode === "production") {
-    await initializeDatabase("production");
+    await initializeDatabase(session);
     return;
   }
   if (!session.sandboxGeneration) {
     throw new Error("Generasi Mode Uji pada sesi tidak valid.");
   }
 
-  let connection = await getDatabase("sandbox");
+  let connection = await getDatabase(session);
   const metadata = await connection.sqlite.getFirstAsync<{
     generation: number | null;
   }>("SELECT generation FROM sync_metadata WHERE singleton = 1");
   if (metadata?.generation === session.sandboxGeneration) return;
 
-  await clearLocalDatabase("sandbox");
-  connection = await getDatabase("sandbox");
+  await clearLocalDatabase(session);
+  connection = await getDatabase(session);
   await connection.sqlite.withTransactionAsync(async () => {
     await connection.sqlite.execAsync(`
       DELETE FROM sync_conflicts;
@@ -109,9 +162,11 @@ export async function prepareDatabaseForSession(
   });
 }
 
-export async function clearLocalDatabase(mode: DataMode): Promise<void> {
-  const existing = connectionPromises[mode];
-  delete connectionPromises[mode];
+export async function clearLocalDatabase(scope: LocalScope): Promise<void> {
+  const value = databaseScope(scope);
+  const key = `${value.tenantId}:${value.dataMode}`;
+  const existing = connectionPromises[key];
+  delete connectionPromises[key];
   let failure: unknown;
   if (existing) {
     try {
@@ -122,7 +177,7 @@ export async function clearLocalDatabase(mode: DataMode): Promise<void> {
     }
   }
   try {
-    await SQLite.deleteDatabaseAsync(databaseNames[mode]);
+    await SQLite.deleteDatabaseAsync(databaseName(value));
   } catch (error) {
     failure ??= error;
   }
@@ -130,6 +185,6 @@ export async function clearLocalDatabase(mode: DataMode): Promise<void> {
 }
 
 export function resetDatabaseSingletonForTests(): void {
-  delete connectionPromises.production;
-  delete connectionPromises.sandbox;
+  for (const key of Object.keys(connectionPromises))
+    delete connectionPromises[key];
 }

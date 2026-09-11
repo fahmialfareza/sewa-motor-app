@@ -7,6 +7,7 @@ import (
 
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/domain"
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/port"
+	"github.com/google/uuid"
 )
 
 type reportingRepository struct {
@@ -26,11 +27,16 @@ func (repository *reportingRepository) ExportRows(
 
 type reportingExporter struct{}
 
+func (repository *reportingRepository) GetTenantProfile(context.Context, uuid.UUID) (domain.TenantProfile, error) {
+	return domain.TenantProfile{BusinessName: "Test Business"}, nil
+}
+
 func (reportingExporter) XLSX(
 	[]domain.ExportRow,
 	*time.Time,
 	*time.Time,
 	domain.DataMode,
+	domain.TenantProfile,
 ) ([]byte, error) {
 	return []byte("xlsx"), nil
 }
@@ -40,6 +46,7 @@ func (reportingExporter) PDF(
 	*time.Time,
 	*time.Time,
 	domain.DataMode,
+	domain.TenantProfile,
 ) ([]byte, error) {
 	return []byte("pdf"), nil
 }
@@ -52,7 +59,7 @@ func TestExportRestrictsDeletedRowsAndValidatesPaymentFilters(t *testing.T) {
 	failed := domain.PaymentStatusFailed
 	if _, _, err := service.Export(
 		context.Background(),
-		domain.Principal{Role: domain.RoleAdmin},
+		domain.Principal{ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(), DataSpaceID: domain.LiveDataSpaceID(), Role: domain.RoleAdmin},
 		"xlsx",
 		domain.TransactionFilter{
 			PaymentStatus:  &failed,
@@ -72,7 +79,7 @@ func TestExportRestrictsDeletedRowsAndValidatesPaymentFilters(t *testing.T) {
 	invalid := domain.PaymentMethod("card")
 	if _, _, err := service.Export(
 		context.Background(),
-		domain.Principal{Role: domain.RoleSuperadmin},
+		domain.Principal{ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(), DataSpaceID: domain.LiveDataSpaceID(), Role: domain.RoleSuperadmin},
 		"xlsx",
 		domain.TransactionFilter{PaymentMethod: &invalid},
 	); !domain.IsCode(err, domain.CodeValidation) {

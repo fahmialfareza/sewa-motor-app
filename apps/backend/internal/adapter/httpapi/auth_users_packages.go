@@ -14,9 +14,10 @@ import (
 
 func (s *Server) login(c *gin.Context) {
 	var request struct {
-		Username       string     `json:"username"`
-		Password       string     `json:"password"`
-		InstallationID *uuid.UUID `json:"installationId"`
+		Username        string     `json:"username"`
+		Password        string     `json:"password"`
+		InstallationID  *uuid.UUID `json:"installationId"`
+		ProtocolVersion int        `json:"protocolVersion"`
 	}
 	if err := decodeJSON(c, &request); err != nil {
 		writeError(c, err)
@@ -25,6 +26,7 @@ func (s *Server) login(c *gin.Context) {
 	result, err := s.deps.Auth.Login(c.Request.Context(), domain.LoginInput{
 		Username: request.Username, Password: request.Password,
 		InstallationID: request.InstallationID, IPAddress: c.ClientIP(),
+		ClientProtocolVersion: request.ProtocolVersion,
 	})
 	if err != nil {
 		writeError(c, err)
@@ -80,49 +82,41 @@ func (s *Server) switchMode(c *gin.Context) {
 		return
 	}
 	auth := authentication(c)
-	current := auth.Principal
-	// Resolve shared profile/terminal data before rotating the session. Once
-	// SwitchMode commits, the old token is revoked and the raw replacement token
-	// exists only in this response; no fallible enrichment may happen afterward.
-	data, err := s.sessionView(c, current)
-	if err != nil {
-		writeError(c, err)
-		return
-	}
 	result, err := s.deps.Auth.SwitchMode(c.Request.Context(), auth, request.Mode)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
 	attachDataScope(c, result.Principal)
-	data["sessionId"] = result.Principal.SessionID
-	data["dataMode"] = result.Principal.EffectiveDataMode()
-	data["dataSpaceId"] = result.Principal.EffectiveDataSpaceID()
-	data["sandboxGeneration"] = result.Principal.SandboxGeneration
+	data, _ := s.sessionView(c, result.Principal)
 	data["sessionToken"] = result.Token
 	writeData(c, http.StatusOK, data)
 }
 
 func (s *Server) sessionView(c *gin.Context, current domain.Principal) (gin.H, error) {
-	user, err := s.deps.Repo.GetUser(c.Request.Context(), current.UserID)
-	if err != nil {
-		return nil, err
+	// This projection cannot fail after a session exchange commits. All identity
+	// and terminal fields were loaded inside the issuing transaction.
+	role := current.Role
+	if !role.Valid() {
+		role = domain.RoleAdmin
 	}
-	var terminal any
-	if current.TerminalID != nil {
-		item, terminalErr := s.deps.Repo.GetTerminal(c.Request.Context(), *current.TerminalID)
-		if terminalErr != nil {
-			return nil, terminalErr
-		}
-		terminal = item
+	user := gin.H{"id": current.UserID, "fullName": current.FullName, "username": current.Username,
+		"role": role, "active": true, "mustChangePassword": current.MustChangePassword,
+		"createdAt": current.UserCreatedAt, "updatedAt": current.UserUpdatedAt, "deletedAt": nil,
+		"membershipId": nil}
+	var mode, space, tenantID, membershipID any
+	if current.IsTenantContext() {
+		mode = current.DataMode
+		space = current.DataSpaceID
+		tenantID = current.TenantID
+		membershipID = current.MembershipID
+		user["membershipId"] = current.MembershipID
 	}
 	return gin.H{
-		"sessionId":         current.SessionID,
-		"user":              user,
-		"terminal":          terminal,
-		"dataMode":          current.EffectiveDataMode(),
-		"dataSpaceId":       current.EffectiveDataSpaceID(),
-		"sandboxGeneration": current.SandboxGeneration,
+		"sessionId": current.SessionID, "user": user, "terminal": current.Terminal,
+		"dataMode": mode, "dataSpaceId": space, "sandboxGeneration": current.SandboxGeneration,
+		"contextKind": current.ContextKind, "tenantId": tenantID, "membershipId": membershipID,
+		"tenant": current.Tenant, "isPlatformAdmin": current.IsPlatformAdmin,
 	}, nil
 }
 
@@ -253,7 +247,7 @@ func (s *Server) deleteUser(c *gin.Context) {
 		writeError(c, err)
 		return
 	}
-	user, err := s.deps.Repo.GetUser(c.Request.Context(), id)
+	user, err := s.deps.Repo.GetUser(c.Request.Context(), principal(c).TenantID, id)
 	if err != nil {
 		writeError(c, err)
 		return

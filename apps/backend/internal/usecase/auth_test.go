@@ -21,7 +21,7 @@ type authRecoveryRepository struct {
 	replacementHash    []byte
 }
 
-func (repository *authRecoveryRepository) ActiveDataSpace(context.Context, domain.DataMode) (domain.DataSpace, error) {
+func (repository *authRecoveryRepository) ActiveDataSpace(context.Context, uuid.UUID, domain.DataMode) (domain.DataSpace, error) {
 	return repository.activeSpace, nil
 }
 
@@ -86,7 +86,7 @@ func (index *memorySessionIndex) Delete(_ context.Context, hash []byte) {
 func TestAuthenticatePreservesNarrowRetiredSandboxRecoveryIdentity(t *testing.T) {
 	oldHash := []byte("old-token-hash")
 	retired := domain.Principal{
-		UserID: uuid.New(), SessionID: uuid.New(),
+		UserID: uuid.New(), SessionID: uuid.New(), ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(),
 		DataSpaceID: uuid.New(), DataMode: domain.DataModeSandbox,
 		SandboxGeneration: 3,
 	}
@@ -125,7 +125,7 @@ func TestSwitchModeUsesOneTimeRecoveryAndAllowsProductionRollback(t *testing.T) 
 		Status: domain.DataSpaceStatusActive, Generation: 1,
 	}
 	retired := domain.Principal{
-		UserID: uuid.New(), SessionID: uuid.New(),
+		UserID: uuid.New(), SessionID: uuid.New(), ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(),
 		DataSpaceID: uuid.New(), DataMode: domain.DataModeSandbox,
 		SandboxGeneration: 8,
 	}

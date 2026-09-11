@@ -15,6 +15,7 @@ const (
 	paymentMigrationVersion  = "000002_transaction_payments"
 	qrisBindingVersion       = "000003_qris_payload_binding"
 	sandboxDataSpacesVersion = "000004_sandbox_data_spaces"
+	tenantsVersion           = "000005_tenants"
 )
 
 type migration struct {
@@ -27,6 +28,7 @@ var orderedMigrations = []migration{
 	{version: paymentMigrationVersion, up: migrateTransactionPayments},
 	{version: qrisBindingVersion, up: migrateQrisPayloadBinding},
 	{version: sandboxDataSpacesVersion, up: migrateSandboxDataSpaces},
+	{version: tenantsVersion, up: migrateTenants},
 }
 
 // Apply runs every pending migration through GORM in one PostgreSQL transaction.

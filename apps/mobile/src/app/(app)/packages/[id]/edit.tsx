@@ -22,10 +22,15 @@ export default function EditPackageScreen() {
   const [item, setItem] = useState<RentalPackage | null>(null);
 
   useEffect(() => {
-    void listPackages(true).then((values) =>
-      setItem(values.find((value) => value.id === id) ?? null),
-    );
-  }, [id]);
+    if (!session) return;
+    let active = true;
+    void listPackages(true, session).then((values) => {
+      if (active) setItem(values.find((value) => value.id === id) ?? null);
+    });
+    return () => {
+      active = false;
+    };
+  }, [id, session]);
 
   const save = async (value: PackageFormValue) => {
     if (!session || !item) return;

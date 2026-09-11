@@ -7,6 +7,13 @@ const mockListTransactions = jest.fn();
 const mockListHistoryPackageOptions = jest.fn();
 const mockListHistoryCreatorOptions = jest.fn();
 const mockRouterPush = jest.fn();
+const mockSession = {
+  tenantId: "00000000-0000-4000-8000-000000000200",
+  user: { fullName: "Andi" },
+};
+jest.mock("@/auth/AuthProvider", () => ({
+  useAuth: () => ({ session: mockSession }),
+}));
 
 jest.mock("expo-router", () => {
   const React = jest.requireActual<typeof import("react")>("react");
@@ -18,7 +25,10 @@ jest.mock("expo-router", () => {
 });
 
 jest.mock("@/db/repositories", () => ({
-  listTransactions: (...args: unknown[]) => mockListTransactions(...args),
+  listTransactions: (filter: unknown, scope: unknown) => {
+    expect(scope).toBe(mockSession);
+    return mockListTransactions(filter);
+  },
   listHistoryPackageOptions: () => mockListHistoryPackageOptions(),
   listHistoryCreatorOptions: () => mockListHistoryCreatorOptions(),
 }));

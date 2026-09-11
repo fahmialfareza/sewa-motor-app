@@ -2,8 +2,8 @@ import NetInfo from "@react-native-community/netinfo";
 import Constants from "expo-constants";
 import { create } from "zustand";
 
-import { apiRequest } from "@/api/client";
-import type { LoginResponse } from "@/api/contracts";
+import { apiRequest, registerAccessFailureHandler } from "@/api/client";
+import type { LoginResponse, AuthContextsResponse } from "@/api/contracts";
 import { sessionFromLoginResponse } from "@/auth/session";
 import { prepareDatabaseForSession } from "@/db/client";
 import {
@@ -12,11 +12,13 @@ import {
 } from "@/db/repositories";
 import {
   PRODUCTION_DATA_SPACE_ID,
+  INITIAL_TENANT_ID,
+  type ContextKind,
   type DataMode,
   type Role,
   type Session,
 } from "@/domain/types";
-import { setModeFromSession } from "@/mode/mode-store";
+import { setModeFromSession, useModeStore } from "@/mode/mode-store";
 import {
   beginModeTransition,
   beginModeSafeLocalAccess,
@@ -36,6 +38,7 @@ import {
   readAuthNotice,
   readSession,
   writeSession,
+  getOrCreateInstallationId,
 } from "@/security/secure-store";
 import {
   getOrCreateTerminalIdentity,
@@ -48,6 +51,12 @@ import {
   hydrateSyncStateForSession,
   resetSyncStateForSession,
 } from "@/sync/state-handoff";
+import {
+  blockedScopeReason,
+  markScopeRevalidated,
+  quarantineScope,
+  SCOPE_ACCESS_CODES,
+} from "@/tenant/quarantine";
 
 export interface AuthStore {
   session: Session | null;
@@ -57,11 +66,20 @@ export interface AuthStore {
   demoEnabled: boolean;
   terminalEnrolled: boolean;
   switchingMode: boolean;
+  scopeLocked: boolean;
+  switchContext: (kind: ContextKind, tenantId?: string) => Promise<void>;
+  registerInvitation: (
+    code: string,
+    username: string,
+    fullName: string,
+    password: string,
+  ) => Promise<void>;
   dismissNotice: () => Promise<void>;
   hydrate: () => Promise<void>;
   login: (username: string, password: string) => Promise<void>;
   demoLogin: (role: Role) => Promise<void>;
   switchMode: (mode: DataMode) => Promise<void>;
+  updateProfile: (fullName: string) => Promise<void>;
   changePassword: (
     currentPassword: string,
     newPassword: string,
@@ -190,6 +208,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   demoEnabled,
   terminalEnrolled: false,
   switchingMode: false,
+  scopeLocked: false,
 
   dismissNotice: async () => {
     await clearAuthNotice();
@@ -200,22 +219,29 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     hydration ??= beginModeSafeLocalAccess()
       .then(async (releaseLocalAccess) => {
         try {
-          const [storedSession, terminal, notice] = await Promise.all([
+          const [storedSession, notice] = await Promise.all([
             readSession(),
-            getOrCreateTerminalIdentity(),
             readAuthNotice(),
           ]);
+          const isTenant =
+            storedSession &&
+            (!storedSession.contextKind ||
+              storedSession.contextKind === "tenant");
+          const terminal = isTenant
+            ? await getOrCreateTerminalIdentity(
+                storedSession.tenantId ?? INITIAL_TENANT_ID,
+              )
+            : null;
           setModeFromSession(storedSession);
           resetSyncStateForSession(storedSession);
           if (storedSession) {
             await prepareDatabaseForSession(storedSession);
-          } else {
-            await prepareDatabaseForSession({
-              dataMode: "production",
-              sandboxGeneration: null,
-            });
           }
-          if (storedSession) {
+          const locked = isTenant
+            ? Boolean(await blockedScopeReason(storedSession))
+            : false;
+          useModeStore.setState({ accessBlocked: locked });
+          if (isTenant && !locked) {
             await recoverInterruptedPrintAttempts(storedSession).catch(
               () => undefined,
             );
@@ -227,7 +253,8 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
           if (!get().switchingMode) {
             set({
               session: storedSession,
-              terminalEnrolled: Boolean(terminal.enrolledAt),
+              terminalEnrolled: Boolean(terminal?.enrolledAt),
+              scopeLocked: locked,
               notice,
               bootError: null,
             });
@@ -250,27 +277,140 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   },
 
   login: async (username, password) => {
-    const terminal = await getOrCreateTerminalIdentity();
+    const installationId = await getOrCreateInstallationId();
     const result = await apiRequest<LoginResponse>("/auth/login", {
       method: "POST",
       body: {
         username: username.trim(),
         password,
-        installationId: terminal.installationId,
+        installationId,
+        protocolVersion: 2,
       },
     });
-    await persistSession(sessionFromLoginResponse(result), set);
+    const session = sessionFromLoginResponse(result);
+    await persistSession(session, set);
     await clearAuthNotice();
-    set({ notice: null });
+    set({ notice: null, scopeLocked: false, terminalEnrolled: false });
+    if (session.contextKind === "account" && !session.user.mustChangePassword) {
+      const contexts = await apiRequest<AuthContextsResponse>(
+        "/auth/contexts",
+        { token: session.token },
+      );
+      const active = contexts.tenants.filter(
+        (item) => item.tenant.status === "active",
+      );
+      if (active.length === 1 && !contexts.platformAdmin)
+        await get().switchContext("tenant", active[0]!.tenant.id);
+      return;
+    }
+    if (session.contextKind === "platform" || session.contextKind === "account")
+      return;
+    const terminal = await getOrCreateTerminalIdentity(
+      session.tenantId ?? INITIAL_TENANT_ID,
+    );
     if (result.terminal) {
-      await markTerminalEnrolled(result.terminal.id);
+      await markTerminalEnrolled(
+        result.terminal.id,
+        session.tenantId ?? INITIAL_TENANT_ID,
+      );
       set({ terminalEnrolled: true });
       return;
     }
     if (terminal.serverTerminalId) {
-      await markTerminalRevoked(terminal.serverTerminalId);
+      await markTerminalRevoked(
+        terminal.serverTerminalId,
+        session.tenantId ?? INITIAL_TENANT_ID,
+      );
     }
     set({ terminalEnrolled: false });
+  },
+
+  registerInvitation: async (code, username, fullName, password) => {
+    const result = await apiRequest<LoginResponse>(
+      "/auth/register-invitation",
+      {
+        method: "POST",
+        body: {
+          code: code.trim(),
+          username: username.trim(),
+          fullName: fullName.trim(),
+          password,
+        },
+      },
+    );
+    await persistSession(sessionFromLoginResponse(result), set);
+    set({ scopeLocked: false, terminalEnrolled: false, notice: null });
+  },
+
+  switchContext: async (kind, tenantId) => {
+    const session = get().session;
+    if (!session)
+      throw new Error("Masuk terlebih dahulu untuk memilih bisnis.");
+    if (get().switchingMode) throw new Error(MODE_TRANSITION_BUSY_MESSAGE);
+    set({ switchingMode: true });
+    let lease: ModeTransitionLease | null = null;
+    let replacement: Session | null = null;
+    try {
+      lease = await beginModeTransition();
+      const network = await NetInfo.fetch();
+      if (!network.isConnected || network.isInternetReachable === false)
+        throw new Error(
+          "Pergantian bisnis memerlukan internet agar data tetap aman.",
+        );
+      if (
+        (!session.contextKind || session.contextKind === "tenant") &&
+        !get().scopeLocked
+      ) {
+        await runSync(session);
+        if (await countPendingOutbox(session))
+          throw new Error(
+            "Selesaikan perubahan dan konflik di Pusat Sinkron sebelum berpindah bisnis.",
+          );
+      }
+      const result = await apiRequest<LoginResponse>("/auth/switch-context", {
+        method: "POST",
+        token: session.token,
+        body: {
+          kind,
+          ...(tenantId ? { tenantId } : {}),
+          installationId: await getOrCreateInstallationId(),
+        },
+      });
+      replacement = sessionFromLoginResponse(result);
+      await persistSession(replacement, set);
+      set({ scopeLocked: false, terminalEnrolled: false });
+      if (!replacement.contextKind || replacement.contextKind === "tenant") {
+        await markScopeRevalidated(replacement);
+        if (result.terminal) {
+          await markTerminalEnrolled(
+            result.terminal.id,
+            replacement.tenantId ?? INITIAL_TENANT_ID,
+          );
+          set({ terminalEnrolled: true });
+          const summary = await runSync(replacement);
+          await hydrateSyncStateForSession(replacement, summary);
+        } else {
+          const terminal = await getOrCreateTerminalIdentity(
+            replacement.tenantId ?? INITIAL_TENANT_ID,
+          );
+          if (terminal.serverTerminalId)
+            await markTerminalRevoked(
+              terminal.serverTerminalId,
+              replacement.tenantId ?? INITIAL_TENANT_ID,
+            );
+        }
+      }
+    } catch (error) {
+      if (replacement)
+        set({
+          notice:
+            "Konteks sudah berganti. Jika sinkronisasi awal belum selesai, periksa koneksi lalu coba lagi.",
+        });
+      throw error;
+    } finally {
+      lease?.release();
+      set({ switchingMode: false });
+    }
   },
 
   demoLogin: async (role) => {
@@ -280,6 +420,14 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     await persistSession(
       {
         token: `dev-only-${role}`,
+        contextKind: "tenant",
+        tenantId: INITIAL_TENANT_ID,
+        tenant: {
+          id: INITIAL_TENANT_ID,
+          name: "Telomoyo",
+          slug: "telomoyo",
+          status: "active",
+        },
         sessionId: `DEV-SESSION-${role}`,
         user: {
           id: `DEV-${role.toUpperCase()}`,
@@ -296,7 +444,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       },
       set,
     );
-    const terminal = await getOrCreateTerminalIdentity();
+    const terminal = await getOrCreateTerminalIdentity(INITIAL_TENANT_ID);
     if (!terminal.enrolledAt) {
       await markTerminalEnrolled("00000000-0000-4000-8000-000000000099");
     }
@@ -306,6 +454,11 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   switchMode: async (mode) => {
     const session = get().session;
     if (!session) throw new Error("Sesi tidak tersedia.");
+    if (
+      (session.contextKind && session.contextKind !== "tenant") ||
+      get().scopeLocked
+    )
+      throw new Error("Pilih bisnis yang aktif sebelum mengganti mode.");
     if (session.dataMode === mode) return;
     if (session.token.startsWith("dev-only-")) {
       throw new Error("Mode Uji server tidak tersedia pada sesi demo lokal.");
@@ -330,7 +483,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       }
 
       await runSync(session);
-      if ((await countPendingOutbox(session.dataMode)) > 0) {
+      if ((await countPendingOutbox(session)) > 0) {
         throw new Error(
           "Masih ada perubahan, konflik, atau operasi ditolak yang belum diselesaikan di Pusat Sinkron.",
         );
@@ -418,42 +571,80 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     }
   },
 
-  changePassword: async (currentPassword, newPassword) => {
-    const session = get().session;
-    if (!session) throw new Error("Sesi tidak tersedia.");
-    if (session.dataMode === "sandbox") {
-      throw new Error(
-        "Kata sandi tidak dapat diubah dari Mode Uji. Kembali ke Mode Produksi terlebih dahulu.",
-      );
-    }
-    if (!session.token.startsWith("dev-only-")) {
-      await apiRequest("/profile/password", {
-        method: "POST",
+  updateProfile: async (fullName) => {
+    const release = await beginModeSafeLocalAccess();
+    try {
+      const session = get().session;
+      if (!session || get().scopeLocked)
+        throw new Error(
+          "Pilih konteks akun yang aktif sebelum mengubah profil.",
+        );
+      if (session.dataMode === "sandbox")
+        throw new Error(
+          "Profil hanya dapat diubah dari Mode Produksi atau konteks akun.",
+        );
+      const result = await apiRequest<Session["user"]>("/profile", {
+        method: "PATCH",
         token: session.token,
-        body: { currentPassword, newPassword },
+        body: { fullName: fullName.trim() },
       });
+      // A global profile response must never replace the independent tenant role.
+      await persistSession(
+        { ...session, user: { ...session.user, fullName: result.fullName } },
+        set,
+      );
+    } finally {
+      release();
     }
-    await persistSession(
-      {
-        ...session,
-        user: { ...session.user, mustChangePassword: false },
-      },
-      set,
-    );
+  },
+
+  changePassword: async (currentPassword, newPassword) => {
+    const release = await beginModeSafeLocalAccess();
+    try {
+      const session = get().session;
+      if (!session) throw new Error("Sesi tidak tersedia.");
+      if (session.dataMode === "sandbox") {
+        throw new Error(
+          "Kata sandi tidak dapat diubah dari Mode Uji. Kembali ke Mode Produksi terlebih dahulu.",
+        );
+      }
+      if (!session.token.startsWith("dev-only-")) {
+        await apiRequest("/profile/password", {
+          method: "POST",
+          token: session.token,
+          body: { currentPassword, newPassword },
+        });
+      }
+      await persistSession(
+        {
+          ...session,
+          user: { ...session.user, mustChangePassword: false },
+        },
+        set,
+      );
+    } finally {
+      release();
+    }
   },
 
   enrollTerminal: async (label) => {
     const session = get().session;
     if (!session) throw new Error("Sesi tidak tersedia.");
+    if (session.contextKind && session.contextKind !== "tenant")
+      throw new Error("Pilih bisnis sebelum mendaftarkan terminal.");
     if (session.dataMode === "sandbox") {
       throw new Error(
         "Terminal tidak dapat didaftarkan dari Mode Uji. Kembali ke Mode Produksi terlebih dahulu.",
       );
     }
-    const terminal = await getOrCreateTerminalIdentity();
+    const terminal = await getOrCreateTerminalIdentity(
+      session.tenantId ?? INITIAL_TENANT_ID,
+    );
     let serverTerminalId = "00000000-0000-4000-8000-000000000099";
     if (!session.token.startsWith("dev-only-")) {
-      const publicKey = await getTerminalPublicKeyBase64();
+      const publicKey = await getTerminalPublicKeyBase64(
+        session.tenantId ?? INITIAL_TENANT_ID,
+      );
       const result = await apiRequest<{ id: string }>("/terminals/enroll", {
         method: "POST",
         token: session.token,
@@ -466,8 +657,12 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       });
       serverTerminalId = result.id;
     }
-    await markTerminalEnrolled(serverTerminalId);
+    await markTerminalEnrolled(
+      serverTerminalId,
+      session.tenantId ?? INITIAL_TENANT_ID,
+    );
     set({ terminalEnrolled: true });
+    if (!session.token.startsWith("dev-only-")) await runSync(session);
   },
 
   logout: async () => {
@@ -488,8 +683,16 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       // Always join any foreground pull before clearing SecureStore. An active
       // sync may refresh the user snapshot even when the outbox is empty; if it
       // finished after logout it could otherwise restore the revoked session.
-      await runSync(session);
-      if ((await countPendingOutbox(session.dataMode)) > 0) {
+      if (
+        (!session.contextKind || session.contextKind === "tenant") &&
+        !get().scopeLocked
+      )
+        await runSync(session);
+      if (
+        (!session.contextKind || session.contextKind === "tenant") &&
+        !get().scopeLocked &&
+        (await countPendingOutbox(session)) > 0
+      ) {
         throw new Error(
           "Masih ada perubahan yang belum tersinkron. Selesaikan sebelum logout.",
         );
@@ -514,7 +717,12 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       }
       setModeFromSession(null);
       resetSyncStateForSession(null);
-      set({ session: null, terminalEnrolled: false, bootError: null });
+      set({
+        session: null,
+        terminalEnrolled: false,
+        bootError: null,
+        scopeLocked: false,
+      });
     } catch (error) {
       if (session.dataMode === "sandbox" && isSandboxGenerationRetired(error)) {
         // Logout never rotates into another authenticated session. Clear only
@@ -531,3 +739,17 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     }
   },
 }));
+
+registerAccessFailureHandler(async (token, code) => {
+  const auth = useAuthStore.getState();
+  if (!SCOPE_ACCESS_CODES.has(code) || auth.session?.token !== token) return;
+  const session = auth.session;
+  if (session.contextKind && session.contextKind !== "tenant") return;
+  useAuthStore.setState({
+    scopeLocked: true,
+    notice:
+      "Akses bisnis ini dihentikan. Data yang belum tersinkron diamankan di perangkat. Pilih bisnis lain atau hubungi pengelola.",
+  });
+  useModeStore.setState({ accessBlocked: true });
+  await quarantineScope(session, code);
+});

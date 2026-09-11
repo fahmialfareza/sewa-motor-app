@@ -46,6 +46,23 @@ export default function SettingsScreen() {
       </Card>
 
       <ModeOperationCard />
+      <Card padded={false}>
+        <MenuRow
+          icon="store-outline"
+          title={session?.tenant?.name ?? "Bisnis aktif"}
+          detail="Pilih bisnis atau terima undangan"
+          onPress={() => router.push("/contexts")}
+        />
+        {session?.user.role === "superadmin" &&
+        session.dataMode === "production" ? (
+          <MenuRow
+            icon="card-account-details-outline"
+            title="Identitas bisnis"
+            detail="Nama, alamat, dan telepon pada struk"
+            onPress={() => router.push("/settings/business")}
+          />
+        ) : null}
+      </Card>
 
       <Text style={styles.section}>AKUN & KEAMANAN</Text>
       <Card padded={false}>

@@ -16,7 +16,7 @@ import (
 
 type Generator struct{}
 
-func (Generator) XLSX(rows []domain.ExportRow, from, to *time.Time, mode domain.DataMode) ([]byte, error) {
+func (Generator) XLSX(rows []domain.ExportRow, from, to *time.Time, mode domain.DataMode, profile domain.TenantProfile) ([]byte, error) {
 	var output bytes.Buffer
 	archive := zip.NewWriter(&output)
 	sheetName := "Transaksi"
@@ -54,7 +54,7 @@ func (Generator) XLSX(rows []domain.ExportRow, from, to *time.Time, mode domain.
   <cellStyleXfs count="1"><xf/></cellStyleXfs>
 	  <cellXfs count="4"><xf fontId="0" fillId="0" borderId="0"/><xf fontId="1" fillId="2" borderId="0" applyFill="1" applyFont="1"/><xf fontId="0" fillId="0" borderId="0" numFmtId="164" applyNumberFormat="1"/><xf fontId="2" fillId="3" borderId="0" applyFill="1" applyFont="1"/></cellXfs>
 </styleSheet>`,
-		"xl/worksheets/sheet1.xml": buildSheet(rows, mode),
+		"xl/worksheets/sheet1.xml": buildSheet(rows, mode, profile),
 	}
 	names := make([]string, 0, len(files))
 	for name := range files {
@@ -76,16 +76,24 @@ func (Generator) XLSX(rows []domain.ExportRow, from, to *time.Time, mode domain.
 	return output.Bytes(), nil
 }
 
-func buildSheet(rows []domain.ExportRow, mode domain.DataMode) string {
+func buildSheet(rows []domain.ExportRow, mode domain.DataMode, profile domain.TenantProfile) string {
 	headers := []string{
 		"ID Transaksi", "Waktu (Asia/Jakarta)", "Revisi", "Kode Paket", "Nama Paket",
 		"Revisi Paket", "Harga Satuan", "Jumlah", "Total Baris", "Total Transaksi",
 		"Nominal Pembayaran Aktual", "Pembuat", "Username", "Metode Pembayaran", "QRIS Payload Hash",
 		"Status Pembayaran", "Status Cetak",
 	}
-	headerRow := 1
+	identityLines := []string{profile.BusinessName + " - LAPORAN TRANSAKSI"}
+	if profile.Address != "" {
+		identityLines = append(identityLines, profile.Address)
+	}
+	if profile.Phone != "" {
+		identityLines = append(identityLines, profile.Phone)
+	}
+	identityLines = append(identityLines, "Telomoyo POS")
+	headerRow := 1 + len(identityLines)
 	if mode == domain.DataModeSandbox {
-		headerRow = 2
+		headerRow++
 	}
 	var body strings.Builder
 	body.WriteString(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`)
@@ -101,6 +109,15 @@ func buildSheet(rows []domain.ExportRow, mode domain.DataMode) string {
 	if mode == domain.DataModeSandbox {
 		body.WriteString(`<row r="1">`)
 		body.WriteString(inlineCell("A1", "TEST - MODE UJI - BUKAN LAPORAN RESMI", 3))
+		body.WriteString(`</row>`)
+	}
+	for i, line := range identityLines {
+		row := i + 1
+		if mode == domain.DataModeSandbox {
+			row++
+		}
+		body.WriteString(fmt.Sprintf(`<row r="%d">`, row))
+		body.WriteString(inlineCell(cellName(1, row), line, 0))
 		body.WriteString(`</row>`)
 	}
 	body.WriteString(fmt.Sprintf(`<row r="%d">`, headerRow))
@@ -191,13 +208,20 @@ func cellName(column, row int) string {
 	return string(letters) + strconv.Itoa(row)
 }
 
-func (Generator) PDF(rows []domain.ExportRow, from, to *time.Time, mode domain.DataMode) ([]byte, error) {
+func (Generator) PDF(rows []domain.ExportRow, from, to *time.Time, mode domain.DataMode, profile domain.TenantProfile) ([]byte, error) {
 	location, _ := time.LoadLocation("Asia/Jakarta")
 	lines := make([]string, 0, len(rows)+8)
 	if mode == domain.DataModeSandbox {
 		lines = append(lines, "*** TEST - MODE UJI - BUKAN LAPORAN RESMI ***")
 	}
-	lines = append(lines, "TELOMOYO POS - LAPORAN TRANSAKSI")
+	lines = append(lines, profile.BusinessName+" - LAPORAN TRANSAKSI")
+	if profile.Address != "" {
+		lines = append(lines, profile.Address)
+	}
+	if profile.Phone != "" {
+		lines = append(lines, profile.Phone)
+	}
+	lines = append(lines, "Telomoyo POS")
 	if from != nil && to != nil {
 		lines = append(lines, fmt.Sprintf("Periode: %s s.d. %s",
 			from.In(location).Format("02-01-2006"),

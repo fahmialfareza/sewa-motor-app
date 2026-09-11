@@ -26,6 +26,7 @@ func identity(principal domain.Principal) domain.MutationIdentity {
 		SubmittedBySessionID: principal.SessionID,
 		DataSpaceID:          principal.EffectiveDataSpaceID(),
 		DataMode:             principal.EffectiveDataMode(),
+		TenantID:             principal.TenantID,
 	}
 }
 
@@ -136,7 +137,7 @@ func (t Transactions) SetPaymentStatus(
 
 func (t Transactions) Get(ctx context.Context, principal domain.Principal, id string) (domain.Transaction, error) {
 	defer observability.StartSegment(ctx, "Usecase.Transactions.Get")()
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return domain.Transaction{}, err
 	}
 	if err := domain.ValidateTransactionID(id); err != nil {
@@ -147,7 +148,7 @@ func (t Transactions) Get(ctx context.Context, principal domain.Principal, id st
 
 func (t Transactions) List(ctx context.Context, principal domain.Principal, filter domain.TransactionFilter) (domain.TransactionPage, error) {
 	defer observability.StartSegment(ctx, "Usecase.Transactions.List")()
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return domain.TransactionPage{}, err
 	}
 	if filter.Limit < 1 || filter.Limit > 100 {
@@ -162,7 +163,7 @@ func (t Transactions) List(ctx context.Context, principal domain.Principal, filt
 
 func (t Transactions) Revisions(ctx context.Context, principal domain.Principal, id string) ([]domain.TransactionRevision, error) {
 	defer observability.StartSegment(ctx, "Usecase.Transactions.Revisions")()
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return nil, err
 	}
 	if err := domain.ValidateTransactionID(id); err != nil {
@@ -173,7 +174,7 @@ func (t Transactions) Revisions(ctx context.Context, principal domain.Principal,
 
 func (t Transactions) PrintAttempts(ctx context.Context, principal domain.Principal, id string) ([]domain.PrintAttempt, error) {
 	defer observability.StartSegment(ctx, "Usecase.Transactions.PrintAttempts")()
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return nil, err
 	}
 	if err := domain.ValidateTransactionID(id); err != nil {

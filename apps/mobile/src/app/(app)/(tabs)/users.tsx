@@ -47,9 +47,12 @@ export default function UsersScreen() {
       const query = search.trim()
         ? `?search=${encodeURIComponent(search.trim())}`
         : "";
-      const response = await apiRequest<UserListResponse>(`/users${query}`, {
-        token: sessionToken,
-      });
+      const response = await apiRequest<UserListResponse>(
+        `/tenant/members${query}`,
+        {
+          token: sessionToken,
+        },
+      );
       if (currentRequestId !== requestId.current) return;
       setUsers(response);
       setError(null);
@@ -93,7 +96,7 @@ export default function UsersScreen() {
         subtitle={
           dataMode === "sandbox"
             ? "Data bersama • hanya dapat dilihat"
-            : "Akun admin dan superadmin"
+            : "Akses staf untuk bisnis ini"
         }
         title="Manajemen Pengguna"
       />
@@ -110,7 +113,7 @@ export default function UsersScreen() {
           icon="account-plus-outline"
           onPress={() => router.push("/users/new")}
         >
-          Tambah pengguna
+          Undang staf
         </Button>
       ) : (
         <Card style={styles.readOnlyCard}>

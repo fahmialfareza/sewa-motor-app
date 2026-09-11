@@ -26,7 +26,7 @@ type syncRepository struct {
 	changes     []domain.SyncChange
 }
 
-func (r *syncRepository) TerminalPublicKey(context.Context, uuid.UUID) ([]byte, error) {
+func (r *syncRepository) TerminalPublicKey(context.Context, uuid.UUID, uuid.UUID) ([]byte, error) {
 	return r.publicKey, nil
 }
 
@@ -84,6 +84,7 @@ func TestSyncDuplicateReplaysStoredResult(t *testing.T) {
 	service := Sync{Repo: repo}
 	terminalID := mutation.TerminalID
 	results, err := service.Push(context.Background(), domain.Principal{
+		ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(), DataSpaceID: domain.LiveDataSpaceID(),
 		UserID: uuid.New(), SessionID: uuid.New(), TerminalID: &terminalID,
 		Role: domain.RoleAdmin,
 	}, []domain.SyncMutation{mutation})
@@ -108,6 +109,7 @@ func TestSyncConflictIsReturnedPerOperation(t *testing.T) {
 	service := Sync{Repo: repo}
 	terminalID := mutation.TerminalID
 	results, err := service.Push(context.Background(), domain.Principal{
+		ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(), DataSpaceID: domain.LiveDataSpaceID(),
 		UserID: uuid.New(), SessionID: uuid.New(), TerminalID: &terminalID,
 		Role: domain.RoleAdmin,
 	}, []domain.SyncMutation{mutation})
@@ -126,6 +128,7 @@ func TestSyncUsesImmutableSessionDataSpace(t *testing.T) {
 	repo := &syncRepository{changes: []domain.SyncChange{{Cursor: 11}}}
 	service := Sync{Repo: repo}
 	principal := domain.Principal{
+		ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(),
 		Role: domain.RoleAdmin, DataMode: domain.DataModeSandbox,
 		DataSpaceID: dataSpaceID, SandboxGeneration: 3,
 	}

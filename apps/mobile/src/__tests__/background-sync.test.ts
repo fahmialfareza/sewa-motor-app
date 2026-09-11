@@ -482,3 +482,16 @@ describe("background sync", () => {
     expect(mockRecoverRetiredSandboxGeneration).not.toHaveBeenCalled();
   });
 });
+jest.mock("@/tenant/quarantine", () => ({
+  blockedScopeReason: async () => null,
+  quarantineScope: jest.fn(),
+  SCOPE_ACCESS_CODES: new Set([
+    "TENANT_SUSPENDED",
+    "MEMBERSHIP_INACTIVE",
+    "MEMBERSHIP_REVOKED",
+    "TERMINAL_REVOKED",
+  ]),
+}));
+jest.mock("@/tenant/configuration", () => ({
+  refreshTenantConfiguration: async () => undefined,
+}));

@@ -42,6 +42,13 @@ export function AppScreen({
   scrollProps,
 }: AppScreenProps) {
   const sandbox = useModeStore((state) => state.dataMode === "sandbox");
+  const tenant = useAuthStore((state) => state.session?.tenant);
+  const tenantContext = useAuthStore((state) =>
+    Boolean(
+      state.session &&
+      (!state.session.contextKind || state.session.contextKind === "tenant"),
+    ),
+  );
   const notice = useAuthStore((state) => state.notice);
   const dismissNotice = useAuthStore((state) => state.dismissNotice);
   const bottomOffset =
@@ -80,7 +87,12 @@ export function AppScreen({
 
   return (
     <SafeAreaView edges={["top"]} style={styles.safe}>
-      {authenticated ? <SyncBar /> : null}
+      {authenticated && tenantContext ? <SyncBar /> : null}
+      {authenticated && tenantContext && tenant ? (
+        <View style={styles.tenantBanner}>
+          <Text style={styles.tenantName}>{tenant.name}</Text>
+        </View>
+      ) : null}
       {authenticated && sandbox ? (
         <View accessibilityRole="alert" style={styles.sandboxBanner}>
           <Text style={styles.sandboxBannerText}>
@@ -115,6 +127,16 @@ const styles = StyleSheet.create({
   safe: {
     flex: 1,
     backgroundColor: colors.surface,
+  },
+  tenantBanner: {
+    backgroundColor: colors.primarySoft,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  tenantName: {
+    fontFamily: typography.bodySemibold,
+    color: colors.primary,
+    fontSize: 12,
   },
   flex: { flex: 1 },
   content: {

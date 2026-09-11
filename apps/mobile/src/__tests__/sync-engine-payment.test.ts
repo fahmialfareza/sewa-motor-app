@@ -21,6 +21,7 @@ jest.mock("@react-native-community/netinfo", () => ({
 }));
 
 jest.mock("@/api/client", () => ({
+  ApiError: jest.requireActual("@/api/client").ApiError,
   apiRequest: (...args: unknown[]) => mockApiRequest(...args),
 }));
 
@@ -204,7 +205,7 @@ describe("payment conflict sync handling", () => {
           ],
         },
       },
-      "production",
+      session,
     );
   });
 
@@ -230,7 +231,20 @@ describe("payment conflict sync handling", () => {
         kind: "rejected",
         message: "Server mengembalikan konflik yang tidak dapat diproses.",
       },
-      "production",
+      session,
     );
   });
 });
+jest.mock("@/tenant/quarantine", () => ({
+  blockedScopeReason: async () => null,
+  quarantineScope: jest.fn(),
+  SCOPE_ACCESS_CODES: new Set([
+    "TENANT_SUSPENDED",
+    "MEMBERSHIP_INACTIVE",
+    "MEMBERSHIP_REVOKED",
+    "TERMINAL_REVOKED",
+  ]),
+}));
+jest.mock("@/tenant/configuration", () => ({
+  refreshTenantConfiguration: async () => undefined,
+}));

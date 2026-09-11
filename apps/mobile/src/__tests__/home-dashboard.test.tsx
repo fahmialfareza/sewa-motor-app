@@ -11,6 +11,10 @@ const mockGetDashboardStats = jest.fn<
 >();
 const mockListTransactions = jest.fn();
 const mockRouterPush = jest.fn();
+const mockSession = {
+  tenantId: "00000000-0000-4000-8000-000000000200",
+  user: { fullName: "Andi" },
+};
 const mockSyncRuntime = {
   lastSyncedAt: null as string | null,
   pendingCount: 0,
@@ -27,9 +31,7 @@ jest.mock("expo-router", () => {
 
 jest.mock("@/auth/AuthProvider", () => ({
   useAuth: () => ({
-    session: {
-      user: { fullName: "Andi" },
-    },
+    session: mockSession,
   }),
 }));
 

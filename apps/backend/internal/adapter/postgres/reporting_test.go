@@ -10,7 +10,7 @@ import (
 func TestExportQueryDoesNotImplicitlyHideUnsuccessfulPayments(t *testing.T) {
 	t.Parallel()
 
-	conditions, args := exportQueryConditions(domain.TransactionFilter{})
+	conditions, args := exportQueryConditions(domain.TransactionFilter{DataSpaceID: domain.LiveDataSpaceID()})
 	query := strings.Join(conditions, " AND ")
 	if strings.Contains(query, "payment_status") ||
 		strings.Contains(query, "payment_confirmed_revision") {
@@ -25,6 +25,7 @@ func TestExportQueryDoesNotImplicitlyHideUnsuccessfulPayments(t *testing.T) {
 
 	failed := domain.PaymentStatusFailed
 	conditions, args = exportQueryConditions(domain.TransactionFilter{
+		DataSpaceID:    domain.LiveDataSpaceID(),
 		PaymentStatus:  &failed,
 		IncludeDeleted: true,
 	})

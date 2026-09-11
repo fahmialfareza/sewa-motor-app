@@ -50,6 +50,7 @@ export default function HomeScreen() {
   const observedSyncAt = useRef(lastSyncedAt);
 
   const load = useCallback(async () => {
+    if (!session) return;
     const currentRequestId = ++requestId.current;
     const range =
       mode === "date"
@@ -59,8 +60,8 @@ export default function HomeScreen() {
     setLoadError(null);
     try {
       const [nextStats, nextRecent] = await Promise.all([
-        getDashboardStats(range),
-        listTransactions({ limit: 5 }),
+        getDashboardStats(range, session),
+        listTransactions({ limit: 5 }, session),
       ]);
       if (currentRequestId !== requestId.current) return;
       setStats(nextStats);
@@ -75,7 +76,7 @@ export default function HomeScreen() {
           : "Ringkasan dasbor tidak dapat dimuat.",
       );
     }
-  }, [mode, selectedDate, selectedMonth]);
+  }, [mode, selectedDate, selectedMonth, session]);
 
   useFocusEffect(
     useCallback(() => {

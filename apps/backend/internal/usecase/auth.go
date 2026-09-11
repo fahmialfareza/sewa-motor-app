@@ -27,6 +27,7 @@ type Authentication struct {
 	Principal                 domain.Principal
 	TokenHash                 []byte
 	RecoverableRetiredSandbox bool
+	RecoverableTenantAccess   bool
 }
 
 func (a Auth) Login(ctx context.Context, input domain.LoginInput) (domain.LoginResult, error) {
@@ -54,13 +55,21 @@ func (a Auth) Login(ctx context.Context, input domain.LoginInput) (domain.LoginR
 		return domain.LoginResult{}, domain.WrapInternal(err, "issue session token")
 	}
 	var terminalID *uuid.UUID
+	if tenancy, ok := a.Repo.(port.TenancyRepository); ok && input.ClientProtocolVersion >= 2 {
+		principal, createErr := tenancy.CreateAccountSession(ctx, user.ID, tokenHash)
+		if createErr != nil {
+			return domain.LoginResult{}, createErr
+		}
+		a.Sessions.Set(ctx, tokenHash, principal.SessionID)
+		return domain.LoginResult{Token: raw, Principal: principal}, nil
+	}
 	if input.InstallationID != nil {
-		terminalID, err = a.Repo.TerminalIDByInstallation(ctx, *input.InstallationID)
+		terminalID, err = a.Repo.TerminalIDByInstallation(ctx, domain.InitialTenantID(), *input.InstallationID)
 		if err != nil {
 			return domain.LoginResult{}, err
 		}
 	}
-	production, err := a.Repo.ActiveDataSpace(ctx, domain.DataModeProduction)
+	production, err := a.Repo.ActiveDataSpace(ctx, domain.InitialTenantID(), domain.DataModeProduction)
 	if err != nil {
 		return domain.LoginResult{}, err
 	}
@@ -83,6 +92,9 @@ func (a Auth) Authenticate(ctx context.Context, rawToken string) (Authentication
 		if repoErr == nil {
 			return Authentication{Principal: principal, TokenHash: tokenHash}, nil
 		}
+		if tenantAccessError(repoErr) && principal.SessionID != uuid.Nil {
+			return Authentication{Principal: principal, TokenHash: tokenHash, RecoverableTenantAccess: true}, repoErr
+		}
 		a.Sessions.Delete(ctx, tokenHash)
 		if domain.IsCode(repoErr, domain.CodeSandboxGenerationRetired) &&
 			principal.SessionID != uuid.Nil {
@@ -94,6 +106,9 @@ func (a Auth) Authenticate(ctx context.Context, rawToken string) (Authentication
 	}
 	principal, err := a.Repo.PrincipalByTokenHash(ctx, tokenHash)
 	if err != nil {
+		if tenantAccessError(err) && principal.SessionID != uuid.Nil {
+			return Authentication{Principal: principal, TokenHash: tokenHash, RecoverableTenantAccess: true}, err
+		}
 		if domain.IsCode(err, domain.CodeSandboxGenerationRetired) &&
 			principal.SessionID != uuid.Nil {
 			return Authentication{
@@ -110,7 +125,7 @@ func (a Auth) Authenticate(ctx context.Context, rawToken string) (Authentication
 func (a Auth) SwitchMode(ctx context.Context, authentication Authentication, mode domain.DataMode) (domain.LoginResult, error) {
 	defer observability.StartSegment(ctx, "Usecase.Auth.SwitchMode")()
 	principal := authentication.Principal
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return domain.LoginResult{}, err
 	}
 	if !mode.Valid() {
@@ -122,7 +137,10 @@ func (a Auth) SwitchMode(ctx context.Context, authentication Authentication, mod
 	if mode == principal.EffectiveDataMode() && !authentication.RecoverableRetiredSandbox {
 		return domain.LoginResult{}, domain.NewError(domain.CodeConflict, "Sesi sudah menggunakan mode yang dipilih")
 	}
-	space, err := a.Repo.ActiveDataSpace(ctx, mode)
+	space, err := a.Repo.ActiveDataSpace(ctx, principal.TenantID, mode)
+	if mode == domain.DataModeSandbox && domain.IsCode(err, domain.CodeNotFound) {
+		space, err = a.Repo.EnsureSandbox(ctx, principal.TenantID)
+	}
 	if err != nil {
 		return domain.LoginResult{}, err
 	}
@@ -166,8 +184,8 @@ func (a Auth) Logout(ctx context.Context, principal domain.Principal) error {
 
 func (a Auth) ChangePassword(ctx context.Context, principal domain.Principal, current, next string) error {
 	defer observability.StartSegment(ctx, "Usecase.Auth.ChangePassword")()
-	if err := RequireProduction(principal); err != nil {
-		return err
+	if principal.ContextKind == domain.ContextTenant && principal.DataMode == domain.DataModeSandbox {
+		return domain.NewError(domain.CodeForbidden, "Ganti kata sandi melalui akun atau mode produksi")
 	}
 	if err := domain.ValidatePassword(next); err != nil {
 		return err
@@ -201,7 +219,7 @@ func RequireReady(principal domain.Principal) error {
 }
 
 func RequireSuperadmin(principal domain.Principal) error {
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return err
 	}
 	if !principal.IsSuperadmin() {
@@ -211,7 +229,7 @@ func RequireSuperadmin(principal domain.Principal) error {
 }
 
 func RequireProduction(principal domain.Principal) error {
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return err
 	}
 	if principal.EffectiveDataMode() != domain.DataModeProduction {
@@ -221,13 +239,49 @@ func RequireProduction(principal domain.Principal) error {
 }
 
 func RequireTerminal(principal domain.Principal) error {
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return err
 	}
 	if principal.TerminalID == nil {
 		return domain.NewError(domain.CodeForbidden, "Daftarkan terminal ini sebelum membuat perubahan lokal")
 	}
 	return nil
+}
+
+func RequireTenant(principal domain.Principal) error {
+	if err := RequireReady(principal); err != nil {
+		return err
+	}
+	if !principal.IsTenantContext() || principal.MembershipID == uuid.Nil {
+		return domain.NewError(domain.CodeContextRequired, "Pilih bisnis yang aktif sebelum melanjutkan")
+	}
+	return nil
+}
+
+func tenantAccessError(err error) bool {
+	return domain.IsCode(err, domain.CodeTenantSuspended) || domain.IsCode(err, domain.CodeMembershipInactive) || domain.IsCode(err, domain.CodeMembershipRevoked)
+}
+
+func (a Auth) SwitchContext(ctx context.Context, authentication Authentication, input domain.SwitchContextInput) (domain.LoginResult, error) {
+	defer observability.StartSegment(ctx, "Usecase.Auth.SwitchContext")()
+	if err := RequireReady(authentication.Principal); err != nil {
+		return domain.LoginResult{}, err
+	}
+	repo, ok := a.Repo.(port.TenancyRepository)
+	if !ok {
+		return domain.LoginResult{}, domain.NewError(domain.CodeInternal, "Konteks belum tersedia")
+	}
+	raw, hash, err := a.Tokens.New()
+	if err != nil {
+		return domain.LoginResult{}, domain.WrapInternal(err, "issue context token")
+	}
+	principal, err := repo.SwitchContextSession(ctx, authentication.Principal, authentication.TokenHash, hash, input)
+	if err != nil {
+		return domain.LoginResult{}, err
+	}
+	a.Sessions.Delete(ctx, authentication.TokenHash)
+	a.Sessions.Set(ctx, hash, principal.SessionID)
+	return domain.LoginResult{Token: raw, Principal: principal}, nil
 }
 
 func BearerToken(header string) (string, error) {

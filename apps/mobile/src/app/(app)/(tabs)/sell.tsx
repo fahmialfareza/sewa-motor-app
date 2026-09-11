@@ -58,10 +58,11 @@ export default function SaleComposerScreen() {
   const [qrisConfigChecked, setQrisConfigChecked] = useState(false);
 
   const loadPackages = useCallback(async () => {
+    if (!session) return;
     setLoadingPackages(true);
     setPackageError(null);
     try {
-      setPackages(await listPackages());
+      setPackages(await listPackages(false, session));
     } catch (reason) {
       setPackageError(
         reason instanceof Error
@@ -71,11 +72,12 @@ export default function SaleComposerScreen() {
     } finally {
       setLoadingPackages(false);
     }
-  }, []);
+  }, [session]);
 
   const loadQrisAvailability = useCallback(async () => {
+    if (!session?.tenantId) return;
     try {
-      const config = await readQrisConfig();
+      const config = await readQrisConfig(session.tenantId);
       const available =
         config !== null && Boolean(validateStaticQris(config.staticPayload));
       setQrisAvailable(available);
@@ -88,7 +90,7 @@ export default function SaleComposerScreen() {
     } finally {
       setQrisConfigChecked(true);
     }
-  }, []);
+  }, [session]);
 
   useFocusEffect(
     useCallback(() => {
@@ -145,7 +147,7 @@ export default function SaleComposerScreen() {
     try {
       let qrisPayloadHash: QrisPayloadHash | null = null;
       if (paymentMethod === "qris") {
-        const qrisConfig = await readQrisConfig();
+        const qrisConfig = await readQrisConfig(session.tenantId ?? undefined);
         if (!qrisConfig) {
           throw new Error(
             "QRIS belum dikonfigurasi. Minta superadmin mengatur QRIS merchant.",

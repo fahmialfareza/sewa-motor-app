@@ -22,7 +22,17 @@ import {
 const QRIS_PAYLOAD_HASH =
   "9185bbfe94bb008d611da515fc94c2f3ad5f0c3fbfe278d8bdb463f9ce1cf500";
 
+jest.mock("@/tenant/configuration", () => ({
+  receiptProfileForSession: async () => ({
+    businessName: "Telomoyo",
+    address: "",
+    phone: "",
+    revision: 1,
+  }),
+}));
+
 const mockGetFirstAsync = jest.fn<Promise<unknown>, unknown[]>();
+const mockHasQuarantine = jest.fn(async () => ({ blocked: 0 }));
 const mockGetAllAsync = jest.fn<Promise<unknown[]>, unknown[]>();
 const mockRunAsync = jest.fn<Promise<unknown>, unknown[]>();
 const mockWithTransactionAsync = jest.fn(
@@ -32,7 +42,12 @@ const mockWithTransactionAsync = jest.fn(
 jest.mock("@/db/client", () => ({
   getDatabase: async () => ({
     sqlite: {
-      getFirstAsync: (...args: unknown[]) => mockGetFirstAsync(...args),
+      getFirstAsync: (...args: unknown[]) =>
+        String(args[0]).startsWith(
+          "SELECT EXISTS(SELECT 1 FROM outbox_operations WHERE dependency_key = ? AND quarantine_reason",
+        )
+          ? mockHasQuarantine()
+          : mockGetFirstAsync(...args),
       getAllAsync: (...args: unknown[]) => mockGetAllAsync(...args),
       runAsync: (...args: unknown[]) => mockRunAsync(...args),
       withTransactionAsync: (callback: () => Promise<void>) =>
@@ -202,6 +217,7 @@ describe("payment-aware transaction repository", () => {
     resetMutationBarrierForTests();
     setModeFromSession(session);
     mockGetFirstAsync.mockReset();
+    mockHasQuarantine.mockResolvedValue({ blocked: 0 });
     mockGetAllAsync.mockReset();
     mockRunAsync.mockReset();
     mockGetFirstAsync.mockResolvedValue(row);
@@ -865,9 +881,9 @@ describe("payment-aware transaction repository", () => {
       has_conflict: 1,
     });
 
-    await expect(discardRejectedOutboxOperation("operation-2")).rejects.toThrow(
-      "Selesaikan konflik revisi",
-    );
+    await expect(
+      discardRejectedOutboxOperation("operation-2", session),
+    ).rejects.toThrow("Selesaikan konflik revisi");
     expect(mockGetAllAsync).not.toHaveBeenCalled();
     expect(mockRunAsync).not.toHaveBeenCalled();
   });
@@ -875,7 +891,7 @@ describe("payment-aware transaction repository", () => {
   it("clears the terminal block after accepting the server conflict snapshot", async () => {
     arrangeConflictResolution();
 
-    await resolveConflict(conflict, "server");
+    await resolveConflict(conflict, "server", session);
 
     const resolutionCall = mockRunAsync.mock.calls.find(([sql]) => {
       const statement = String(sql);
@@ -898,7 +914,7 @@ describe("payment-aware transaction repository", () => {
   it("rebases a retried correction exactly and cleans discarded optimistic artifacts", async () => {
     arrangeConflictResolution();
 
-    await resolveConflict(conflict, "retry-local");
+    await resolveConflict(conflict, "retry-local", session);
 
     const rebasedRevision = conflict.serverSnapshot.revision + 1;
     const artifactDeletes = mockRunAsync.mock.calls.filter(([sql]) =>
@@ -972,7 +988,7 @@ describe("payment-aware transaction repository", () => {
         }),
       });
 
-    await expect(resolveConflict(conflict, "server")).rejects.toThrow(
+    await expect(resolveConflict(conflict, "server", session)).rejects.toThrow(
       "Konflik berubah saat diproses",
     );
     expect(mockRunAsync).not.toHaveBeenCalled();
@@ -988,7 +1004,7 @@ describe("payment-aware transaction repository", () => {
     };
     mockGetFirstAsync.mockResolvedValueOnce(rejectedCreate);
 
-    await discardRejectedOutboxOperation("operation-1");
+    await discardRejectedOutboxOperation("operation-1", session);
 
     const archiveCall = mockRunAsync.mock.calls.find(([sql]) =>
       String(sql).includes("deleted_at = COALESCE"),
@@ -1015,9 +1031,9 @@ describe("payment-aware transaction repository", () => {
         has_print_attempt: 1,
       });
 
-    await expect(discardRejectedOutboxOperation("operation-1")).rejects.toThrow(
-      "tidak boleh diarsipkan otomatis",
-    );
+    await expect(
+      discardRejectedOutboxOperation("operation-1", session),
+    ).rejects.toThrow("tidak boleh diarsipkan otomatis");
 
     expect(mockRunAsync).not.toHaveBeenCalled();
   });
@@ -1038,9 +1054,9 @@ describe("payment-aware transaction repository", () => {
         has_success_audit: 1,
       });
 
-    await expect(discardRejectedOutboxOperation("operation-1")).rejects.toThrow(
-      "tidak boleh diarsipkan otomatis",
-    );
+    await expect(
+      discardRejectedOutboxOperation("operation-1", session),
+    ).rejects.toThrow("tidak boleh diarsipkan otomatis");
 
     expect(mockRunAsync).not.toHaveBeenCalled();
   });
@@ -1093,7 +1109,7 @@ describe("payment-aware transaction repository", () => {
       rejectedPayment,
     ]);
 
-    await discardRejectedOutboxOperation("operation-1");
+    await discardRejectedOutboxOperation("operation-1", session);
 
     const restoreCalls = mockRunAsync.mock.calls.filter(([sql]) =>
       String(sql).includes("ON CONFLICT(id) DO UPDATE"),
@@ -1140,7 +1156,7 @@ describe("payment-aware transaction repository", () => {
       });
     mockGetAllAsync.mockResolvedValueOnce([rejectedPayment]);
 
-    await discardRejectedOutboxOperation("operation-1");
+    await discardRejectedOutboxOperation("operation-1", session);
 
     const restoreCall = mockRunAsync.mock.calls.find(([sql]) =>
       String(sql).includes("ON CONFLICT(id) DO UPDATE"),

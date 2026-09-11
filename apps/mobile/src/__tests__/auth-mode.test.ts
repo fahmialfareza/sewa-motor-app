@@ -29,6 +29,7 @@ jest.mock("@react-native-community/netinfo", () => ({
 }));
 
 jest.mock("@/api/client", () => ({
+  registerAccessFailureHandler: jest.fn(),
   apiRequest: (...args: unknown[]) => mockApiRequest(...args),
 }));
 
@@ -47,6 +48,7 @@ jest.mock("@/mode/mode-store", () => ({
 }));
 
 jest.mock("@/mode/mutation-barrier", () => ({
+  beginModeSafeLocalAccess: async () => () => undefined,
   MODE_TRANSITION_BUSY_MESSAGE:
     "Pergantian mode sedang berlangsung. Tunggu hingga selesai sebelum mengubah data.",
   beginModeTransition: (...args: unknown[]) => mockBeginModeTransition(...args),
@@ -186,7 +188,7 @@ describe("authentication mode switching", () => {
     await useAuthStore.getState().switchMode("sandbox");
 
     expect(mockRunSync).toHaveBeenNthCalledWith(1, productionSession);
-    expect(mockCountPendingOutbox).toHaveBeenCalledWith("production");
+    expect(mockCountPendingOutbox).toHaveBeenCalledWith(productionSession);
     expect(mockApiRequest).toHaveBeenCalledWith("/auth/switch-mode", {
       method: "POST",
       token: productionSession.token,
@@ -472,7 +474,7 @@ describe("authentication mode switching", () => {
     await expect(loggingOut).resolves.toBeUndefined();
 
     expect(mockRunSync).toHaveBeenCalledWith(productionSession);
-    expect(mockCountPendingOutbox).toHaveBeenCalledWith("production");
+    expect(mockCountPendingOutbox).toHaveBeenCalledWith(productionSession);
     expect(mockApiRequest).toHaveBeenCalledWith("/auth/logout", {
       method: "POST",
       token: productionSession.token,

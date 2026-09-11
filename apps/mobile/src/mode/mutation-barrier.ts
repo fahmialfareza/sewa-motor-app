@@ -17,13 +17,19 @@ let activeTransition: ModeTransitionLease | null = null;
 let activeLocalMutations = 0;
 let resolveDrained: (() => void) | null = null;
 const transitionReleaseWaiters = new Set<() => void>();
+const localLeases = new WeakSet<() => void>();
+
+export function isLocalMutationLeaseActive(lease: () => void): boolean {
+  return localLeases.has(lease);
+}
 
 /**
  * Reserves admission for one user-originated local write. The returned lease
  * must be released after the whole mutation (including signing) completes.
  */
 export function beginLocalMutation(
-  session?: Pick<Session, "dataMode" | "dataSpaceId" | "sandboxGeneration">,
+  session?: Pick<Session, "dataMode" | "dataSpaceId" | "sandboxGeneration"> &
+    Partial<Pick<Session, "tenantId">>,
 ): () => void {
   if (activeTransition) {
     throw new Error(MODE_TRANSITION_BUSY_MESSAGE);
@@ -32,6 +38,9 @@ export function beginLocalMutation(
   if (session) {
     const active = useModeStore.getState();
     if (
+      active.accessBlocked ||
+      active.contextKind !== "tenant" ||
+      (session.tenantId != null && active.tenantId !== session.tenantId) ||
       active.dataMode !== session.dataMode ||
       active.dataSpaceId !== session.dataSpaceId ||
       active.sandboxGeneration !== session.sandboxGeneration
@@ -39,12 +48,20 @@ export function beginLocalMutation(
       throw new Error(STALE_DATA_SPACE_MESSAGE);
     }
   }
+  if (useModeStore.getState().accessBlocked)
+    throw new Error(
+      "Akses bisnis dihentikan. Data belum tersinkron telah diamankan.",
+    );
+  return reserveLocalLease();
+}
 
+function reserveLocalLease(): () => void {
   activeLocalMutations += 1;
   let released = false;
-  return () => {
+  const release = () => {
     if (released) return;
     released = true;
+    localLeases.delete(release);
     activeLocalMutations -= 1;
     if (activeTransition && activeLocalMutations === 0) {
       const resolve = resolveDrained;
@@ -52,6 +69,8 @@ export function beginLocalMutation(
       resolve?.();
     }
   };
+  localLeases.add(release);
+  return release;
 }
 
 /**
@@ -99,7 +118,7 @@ export async function beginModeSafeLocalAccess(): Promise<() => void> {
       transitionReleaseWaiters.add(resolve);
     });
   }
-  return beginLocalMutation();
+  return reserveLocalLease();
 }
 
 export function isModeTransitionActive(): boolean {

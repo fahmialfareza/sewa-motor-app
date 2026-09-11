@@ -15,29 +15,32 @@ import (
 
 const sandboxGenerationLock = "sewa-motor-sandbox-generation"
 
-func (s *Store) ActiveDataSpace(ctx context.Context, mode domain.DataMode) (domain.DataSpace, error) {
+func (s *Store) ActiveDataSpace(ctx context.Context, tenantID uuid.UUID, mode domain.DataMode) (domain.DataSpace, error) {
 	defer observability.StartSegment(ctx, "Postgres.ActiveDataSpace")()
 	if !mode.Valid() {
 		return domain.DataSpace{}, domain.Validation("Mode operasi tidak valid", map[string]any{"field": "mode"})
 	}
-	space, err := dataSpaceByQuery(ctx, s.Pool, `mode = $1 AND status = 'active'`, mode)
+	if tenantID == uuid.Nil {
+		return domain.DataSpace{}, domain.NewError(domain.CodeForbidden, "Pilih usaha untuk melanjutkan")
+	}
+	space, err := dataSpaceByQuery(ctx, s.Pool, `tenant_id = $1 AND mode = $2 AND status = 'active'`, tenantID, mode)
 	return space, dbError(err, "find active data space")
 }
 
-func (s *Store) DataSpaceByID(ctx context.Context, id uuid.UUID) (domain.DataSpace, error) {
+func (s *Store) DataSpaceByID(ctx context.Context, tenantID, id uuid.UUID) (domain.DataSpace, error) {
 	defer observability.StartSegment(ctx, "Postgres.DataSpaceByID")()
-	space, err := dataSpaceByQuery(ctx, s.Pool, `id = $1`, domain.EffectiveDataSpaceID(id))
+	space, err := dataSpaceByQuery(ctx, s.Pool, `tenant_id = $1 AND id = $2`, tenantID, id)
 	return space, dbError(err, "find data space")
 }
 
-func dataSpaceByQuery(ctx context.Context, query rowQuerier, predicate string, value any) (domain.DataSpace, error) {
+func dataSpaceByQuery(ctx context.Context, query rowQuerier, predicate string, values ...any) (domain.DataSpace, error) {
 	defer observability.StartSegment(ctx, "Postgres.dataSpaceByQuery")()
 	var space domain.DataSpace
 	err := query.QueryRow(ctx, `
-		SELECT id, mode, generation, status, activated_at, retired_at, purge_after, purged_at
-		FROM data_spaces WHERE `+predicate, value,
+		SELECT id, tenant_id, mode, generation, status, activated_at, retired_at, purge_after, purged_at
+		FROM data_spaces WHERE `+predicate, values...,
 	).Scan(
-		&space.ID, &space.Mode, &space.Generation, &space.Status,
+		&space.ID, &space.TenantID, &space.Mode, &space.Generation, &space.Status,
 		&space.ActivatedAt, &space.RetiredAt, &space.PurgeAfter, &space.PurgedAt,
 	)
 	return space, err
@@ -58,15 +61,17 @@ func (s *Store) SwitchSession(
 		return domain.Principal{}, dbError(err, "begin mode switch")
 	}
 	defer tx.Rollback(ctx)
-
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))`, sandboxGenerationLock); err != nil {
+	if _, err = lockTenantAccess(ctx, tx, current); err != nil {
+		return domain.Principal{}, err
+	}
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))`, sandboxGenerationLock+":"+current.TenantID.String()); err != nil {
 		return domain.Principal{}, dbError(err, "lock mode switch")
 	}
 	var targetMode domain.DataMode
 	var targetStatus domain.DataSpaceStatus
 	if err = tx.QueryRow(ctx, `
-		SELECT mode, status FROM data_spaces WHERE id = $1 FOR SHARE`,
-		dataSpaceID,
+		SELECT mode, status FROM data_spaces WHERE id = $1 AND tenant_id = $2 FOR SHARE`,
+		dataSpaceID, current.TenantID,
 	).Scan(&targetMode, &targetStatus); err != nil {
 		return domain.Principal{}, dbError(err, "validate mode-switch data space")
 	}
@@ -171,19 +176,32 @@ func (s *Store) RecoverRetiredSandboxSession(
 
 	// Reset and purge take the exclusive form. Taking this first prevents the
 	// target generation from changing between validation and session creation.
+	var recoveryAccountActive bool
+	if err = tx.QueryRow(ctx, `SELECT is_active AND deleted_at IS NULL AND NOT must_change_password FROM users WHERE id = $1 FOR SHARE`, current.UserID).Scan(&recoveryAccountActive); err != nil || !recoveryAccountActive {
+		return domain.Principal{}, unauthorized()
+	}
+	var recoveryTenantStatus, recoveryMembershipStatus string
+	if err = tx.QueryRow(ctx, `SELECT status FROM tenants WHERE id = $1 FOR SHARE`, current.TenantID).Scan(&recoveryTenantStatus); err != nil || recoveryTenantStatus != "active" {
+		return domain.Principal{}, unauthorized()
+	}
+	if err = tx.QueryRow(ctx, `SELECT status FROM tenant_memberships WHERE id = $1 AND user_id = $2 AND tenant_id = $3 FOR SHARE`, current.MembershipID, current.UserID, current.TenantID).Scan(&recoveryMembershipStatus); err != nil || recoveryMembershipStatus != "active" {
+		return domain.Principal{}, unauthorized()
+	}
 	if _, err = tx.Exec(ctx,
 		`SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))`,
-		sandboxGenerationLock,
+		sandboxGenerationLock+":"+current.TenantID.String(),
 	); err != nil {
 		return domain.Principal{}, dbError(err, "lock retired Sandbox recovery")
 	}
 
-	dataSpaceID = domain.EffectiveDataSpaceID(dataSpaceID)
+	if current.TenantID == uuid.Nil || dataSpaceID == uuid.Nil {
+		return domain.Principal{}, unauthorized()
+	}
 	var targetMode domain.DataMode
 	var targetStatus domain.DataSpaceStatus
 	if err = tx.QueryRow(ctx, `
-		SELECT mode, status FROM data_spaces WHERE id = $1 FOR SHARE`,
-		dataSpaceID,
+		SELECT mode, status FROM data_spaces WHERE id = $1 AND tenant_id = $2 FOR SHARE`,
+		dataSpaceID, current.TenantID,
 	).Scan(&targetMode, &targetStatus); err != nil {
 		return domain.Principal{}, dbError(err, "validate recovery data space")
 	}
@@ -252,8 +270,8 @@ func (s *Store) RecoverRetiredSandboxSession(
 		var terminalUpdatedAt time.Time
 		if err = tx.QueryRow(ctx, `
 			SELECT is_active, revoked_at, updated_at
-			FROM terminals WHERE id = $1 FOR SHARE`,
-			*oldTerminalID,
+			FROM terminals WHERE id = $1 AND tenant_id = $2 FOR SHARE`,
+			*oldTerminalID, current.TenantID,
 		).Scan(&terminalActive, &terminalRevokedAt, &terminalUpdatedAt); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.Principal{}, unauthorized()
@@ -301,13 +319,16 @@ func (s *Store) RecoverRetiredSandboxSession(
 
 func lockActiveDataSpace(ctx context.Context, tx pgx.Tx, id uuid.UUID) (domain.DataSpace, error) {
 	defer observability.StartSegment(ctx, "Postgres.lockActiveDataSpace")()
-	id = domain.EffectiveDataSpaceID(id)
+	if id == uuid.Nil {
+		return domain.DataSpace{}, domain.NewError(domain.CodeForbidden, "Pilih ruang data usaha untuk melanjutkan")
+	}
 	var mode domain.DataMode
-	if err := tx.QueryRow(ctx, `SELECT mode FROM data_spaces WHERE id = $1`, id).Scan(&mode); err != nil {
+	var tenantID uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT mode, tenant_id FROM data_spaces WHERE id = $1`, id).Scan(&mode, &tenantID); err != nil {
 		return domain.DataSpace{}, dbError(err, "find mutation data space")
 	}
 	if mode == domain.DataModeSandbox {
-		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))`, sandboxGenerationLock); err != nil {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))`, sandboxGenerationLock+":"+tenantID.String()); err != nil {
 			return domain.DataSpace{}, dbError(err, "lock sandbox generation")
 		}
 	}
@@ -330,7 +351,7 @@ func lockActiveDataSpace(ctx context.Context, tx pgx.Tx, id uuid.UUID) (domain.D
 // EnsureSandbox atomically creates and seeds the first shared Sandbox
 // generation. It is intentionally invoked only when SANDBOX_ENABLED is true,
 // after the additive schema rollout and compatible mobile release.
-func (s *Store) EnsureSandbox(ctx context.Context) (domain.DataSpace, error) {
+func (s *Store) EnsureSandbox(ctx context.Context, tenantID uuid.UUID) (domain.DataSpace, error) {
 	defer observability.StartSegment(ctx, "Postgres.EnsureSandbox")()
 	// READ COMMITTED is deliberate here. PostgreSQL establishes a SERIALIZABLE
 	// snapshot before evaluating the advisory-lock statement, so a replica that
@@ -343,15 +364,25 @@ func (s *Store) EnsureSandbox(ctx context.Context) (domain.DataSpace, error) {
 		return domain.DataSpace{}, dbError(err, "begin sandbox activation")
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, sandboxGenerationLock); err != nil {
+	if tenantID == uuid.Nil {
+		return domain.DataSpace{}, domain.NewError(domain.CodeForbidden, "Pilih usaha untuk melanjutkan")
+	}
+	var tenantStatus string
+	if err = tx.QueryRow(ctx, `SELECT status FROM tenants WHERE id = $1 FOR SHARE`, tenantID).Scan(&tenantStatus); err != nil {
+		return domain.DataSpace{}, dbError(err, "lock Sandbox tenant")
+	}
+	if tenantStatus != "active" {
+		return domain.DataSpace{}, domain.NewError(domain.CodeTenantSuspended, "Usaha sedang dinonaktifkan")
+	}
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, sandboxGenerationLock+":"+tenantID.String()); err != nil {
 		return domain.DataSpace{}, dbError(err, "lock sandbox activation")
 	}
 
 	space, err := dataSpaceByQuery(
 		ctx,
 		tx,
-		`mode = $1 AND status = 'active' FOR UPDATE`,
-		domain.DataModeSandbox,
+		`tenant_id = $1 AND mode = $2 AND status = 'active' FOR UPDATE`,
+		tenantID, domain.DataModeSandbox,
 	)
 	if err == nil {
 		if err = tx.Commit(ctx); err != nil {
@@ -367,19 +398,19 @@ func (s *Store) EnsureSandbox(ctx context.Context) (domain.DataSpace, error) {
 	if err = tx.QueryRow(ctx, `
 		SELECT COALESCE(max(generation), 0) + 1
 		FROM data_spaces
-		WHERE mode = 'sandbox'`,
+		WHERE mode = 'sandbox' AND tenant_id = $1`, tenantID,
 	).Scan(&generation); err != nil {
 		return domain.DataSpace{}, dbError(err, "choose initial sandbox generation")
 	}
 	now := s.Now()
 	space = domain.DataSpace{
-		ID: uuid.New(), Mode: domain.DataModeSandbox, Generation: generation,
+		ID: uuid.New(), TenantID: tenantID, Mode: domain.DataModeSandbox, Generation: generation,
 		Status: domain.DataSpaceStatusActive, ActivatedAt: now,
 	}
 	if _, err = tx.Exec(ctx, `
-		INSERT INTO data_spaces (id, mode, generation, status, activated_at)
-		VALUES ($1, 'sandbox', $2, 'active', $3)`,
-		space.ID, space.Generation, space.ActivatedAt,
+		INSERT INTO data_spaces (id, mode, generation, status, activated_at, tenant_id)
+		VALUES ($1, 'sandbox', $2, 'active', $3, $4)`,
+		space.ID, space.Generation, space.ActivatedAt, tenantID,
 	); err != nil {
 		return domain.DataSpace{}, dbError(err, "create initial sandbox generation")
 	}
@@ -390,7 +421,11 @@ func (s *Store) EnsureSandbox(ctx context.Context) (domain.DataSpace, error) {
 	if err = seedSharedSyncChanges(ctx, tx, space.ID); err != nil {
 		return domain.DataSpace{}, dbError(err, "seed initial sandbox shared changes")
 	}
-	activationIdentity := domain.MutationIdentity{DataSpaceID: domain.LiveDataSpaceID()}
+	production, err := dataSpaceByQuery(ctx, tx, `tenant_id = $1 AND mode = 'production' AND status = 'active'`, tenantID)
+	if err != nil {
+		return domain.DataSpace{}, dbError(err, "find Sandbox audit space")
+	}
+	activationIdentity := domain.MutationIdentity{DataSpaceID: production.ID, TenantID: tenantID}
 	if err = audit(
 		ctx,
 		tx,
@@ -429,11 +464,18 @@ func (s *Store) ResetSandbox(
 		return domain.SandboxResetResult{}, dbError(err, "begin sandbox reset")
 	}
 	defer tx.Rollback(ctx)
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, sandboxGenerationLock); err != nil {
+	role, err := lockTenantLifecycleAccess(ctx, tx, actor)
+	if err != nil {
+		return domain.SandboxResetResult{}, err
+	}
+	if role != domain.RoleSuperadmin {
+		return domain.SandboxResetResult{}, domain.NewError(domain.CodeForbidden, "Reset Sandbox hanya tersedia untuk superadmin")
+	}
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, sandboxGenerationLock+":"+actor.TenantID.String()); err != nil {
 		return domain.SandboxResetResult{}, dbError(err, "lock sandbox reset")
 	}
 
-	previous, err := dataSpaceByQuery(ctx, tx, `mode = $1 AND status = 'active' FOR UPDATE`, domain.DataModeSandbox)
+	previous, err := dataSpaceByQuery(ctx, tx, `tenant_id = $1 AND mode = $2 AND status = 'active' FOR UPDATE`, actor.TenantID, domain.DataModeSandbox)
 	if err != nil {
 		return domain.SandboxResetResult{}, dbError(err, "lock active sandbox")
 	}
@@ -460,13 +502,13 @@ func (s *Store) ResetSandbox(
 	previous.PurgeAfter = &purgeAfter
 
 	current := domain.DataSpace{
-		ID: uuid.New(), Mode: domain.DataModeSandbox,
+		ID: uuid.New(), TenantID: actor.TenantID, Mode: domain.DataModeSandbox,
 		Generation: previous.Generation + 1, Status: domain.DataSpaceStatusActive,
 		ActivatedAt: now,
 	}
 	if _, err = tx.Exec(ctx, `
-		INSERT INTO data_spaces (id, mode, generation, status, activated_at)
-		VALUES ($1,'sandbox',$2,'active',$3)`, current.ID, current.Generation, now,
+		INSERT INTO data_spaces (id, mode, generation, status, activated_at, tenant_id)
+		VALUES ($1,'sandbox',$2,'active',$3,$4)`, current.ID, current.Generation, now, actor.TenantID,
 	); err != nil {
 		return domain.SandboxResetResult{}, dbError(err, "activate sandbox generation")
 	}
@@ -534,8 +576,10 @@ func cloneProductionPackages(
 		JOIN package_revisions r
 		  ON r.package_id = p.id AND r.revision = p.current_revision
 		 AND r.data_space_id = p.data_space_id
-		WHERE p.data_space_id = $1 AND p.deleted_at IS NULL`,
-		domain.LiveDataSpaceID(),
+		JOIN data_spaces source_space ON source_space.id = p.data_space_id
+		JOIN data_spaces target_space ON target_space.id = $1 AND target_space.tenant_id = source_space.tenant_id
+		WHERE source_space.mode = 'production' AND source_space.status = 'active' AND p.deleted_at IS NULL`,
+		targetDataSpaceID,
 	); err != nil {
 		return 0, err
 	}
@@ -606,21 +650,22 @@ func (s *Store) CleanupExpiredSandboxes(ctx context.Context, now time.Time) (dom
 		return domain.SandboxCleanupResult{}, dbError(err, "lock sandbox cleanup")
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT id, generation FROM data_spaces
+		SELECT id, tenant_id, generation FROM data_spaces
 		WHERE mode = 'sandbox' AND status = 'retired' AND purge_after <= $1
-		ORDER BY generation FOR UPDATE`, now,
+		ORDER BY tenant_id, generation`, now,
 	)
 	if err != nil {
 		return domain.SandboxCleanupResult{}, dbError(err, "list expired sandbox generations")
 	}
 	type expiredSpace struct {
 		id         uuid.UUID
+		tenantID   uuid.UUID
 		generation int64
 	}
 	spaces := make([]expiredSpace, 0)
 	for rows.Next() {
 		var space expiredSpace
-		if err = rows.Scan(&space.id, &space.generation); err != nil {
+		if err = rows.Scan(&space.id, &space.tenantID, &space.generation); err != nil {
 			rows.Close()
 			return domain.SandboxCleanupResult{}, dbError(err, "scan expired sandbox generation")
 		}
@@ -639,6 +684,23 @@ func (s *Store) CleanupExpiredSandboxes(ctx context.Context, now time.Time) (dom
 		"audit_events", "sessions",
 	}
 	for _, space := range spaces {
+		if _, err = tx.Exec(ctx, `SELECT id FROM tenants WHERE id = $1 FOR SHARE`, space.tenantID); err != nil {
+			return domain.SandboxCleanupResult{}, dbError(err, "lock purge tenant")
+		}
+		if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, sandboxGenerationLock+":"+space.tenantID.String()); err != nil {
+			return domain.SandboxCleanupResult{}, dbError(err, "lock tenant sandbox cleanup")
+		}
+		var stillExpired bool
+		if err = tx.QueryRow(ctx, `SELECT status = 'retired' AND mode = 'sandbox' AND purge_after <= $2 FROM data_spaces WHERE id = $1 FOR UPDATE`, space.id, now).Scan(&stillExpired); err != nil {
+			return domain.SandboxCleanupResult{}, dbError(err, "recheck expired Sandbox")
+		}
+		if !stillExpired {
+			continue
+		}
+		production, queryErr := dataSpaceByQuery(ctx, tx, `tenant_id = $1 AND mode = 'production' AND status = 'active'`, space.tenantID)
+		if queryErr != nil {
+			return domain.SandboxCleanupResult{}, dbError(queryErr, "find purge audit space")
+		}
 		generationRows := int64(0)
 		if _, err = tx.Exec(ctx, `SELECT set_config('app.sandbox_purge_data_space_id', $1, true)`, space.id.String()); err != nil {
 			return domain.SandboxCleanupResult{}, dbError(err, "authorize sandbox purge")
@@ -665,7 +727,7 @@ func (s *Store) CleanupExpiredSandboxes(ctx context.Context, now time.Time) (dom
 				data_space_id, event_type, aggregate_type, aggregate_id,
 				metadata, occurred_at
 			) VALUES ($1,'sandbox.purged','data_space',$2,$3,$4)`,
-			domain.LiveDataSpaceID(), space.id.String(), metadata, now,
+			production.ID, space.id.String(), metadata, now,
 		); err != nil {
 			return domain.SandboxCleanupResult{}, dbError(err, "audit sandbox purge")
 		}
@@ -686,13 +748,16 @@ func seedSharedSyncChanges(ctx context.Context, tx pgx.Tx, dataSpaceID uuid.UUID
 		SELECT $1, 'user', u.id::text, 'created',
 		       jsonb_build_object(
 			'id', u.id, 'fullName', u.full_name, 'username', u.username,
-			'role', u.role, 'active', u.is_active,
+			'role', m.role, 'active', m.status = 'active' AND u.is_active,
+			'membershipId', m.id, 'tenantId', m.tenant_id,
 			'mustChangePassword', u.must_change_password,
 			'createdAt', u.created_at, 'updatedAt', u.updated_at,
 			'deletedAt', u.deleted_at
 		       ), false
 		FROM users u
-		WHERE u.is_active AND u.deleted_at IS NULL
+		JOIN tenant_memberships m ON m.user_id = u.id
+		JOIN data_spaces ds ON ds.tenant_id = m.tenant_id AND ds.id = $1
+		WHERE u.is_active AND u.deleted_at IS NULL AND m.status = 'active'
 		ORDER BY u.id`, dataSpaceID); err != nil {
 		return err
 	}
@@ -710,8 +775,29 @@ func seedSharedSyncChanges(ctx context.Context, tx pgx.Tx, dataSpaceID uuid.UUID
 			'enrolledAt', t.created_at, 'revokedAt', t.revoked_at
 		       ), false
 		FROM terminals t
+		JOIN data_spaces ds ON ds.tenant_id = t.tenant_id AND ds.id = $1
 		WHERE t.is_active AND t.revoked_at IS NULL
 		ORDER BY t.id`, dataSpaceID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO sync_changes (data_space_id,aggregate,aggregate_id,action,revision,payload,tombstone)
+		SELECT ds.id,'tenant_profile',ds.tenant_id::text,'created',p.revision,
+		       jsonb_build_object('tenantId',ds.tenant_id,'revision',p.revision,'businessName',p.business_name,'address',p.address,'phone',p.phone),false
+		FROM data_spaces ds JOIN tenants t ON t.id=ds.tenant_id
+		JOIN tenant_profile_revisions p ON p.tenant_id=t.id AND p.revision=t.profile_revision
+		WHERE ds.id=$1`, dataSpaceID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO sync_changes (data_space_id,aggregate,aggregate_id,action,revision,payload,tombstone)
+		SELECT ds.id,'tenant_qris',ds.tenant_id::text,'created',COALESCE(max(q.revision),0),
+		       jsonb_build_object('revision',COALESCE(max(q.revision),0),'activePayloadHash',max(q.payload_hash) FILTER (WHERE q.revision=t.qris_revision),
+		         'payloads',COALESCE(jsonb_agg(jsonb_build_object('tenantId',q.tenant_id,'revision',q.revision,'payloadHash',q.payload_hash,'staticPayload',q.static_payload) ORDER BY q.revision) FILTER (WHERE q.revision IS NOT NULL),'[]'::jsonb)),false
+		FROM data_spaces ds JOIN tenants t ON t.id=ds.tenant_id
+		LEFT JOIN tenant_qris_revisions q ON q.tenant_id=t.id
+		WHERE ds.id=$1 GROUP BY ds.id,ds.tenant_id,t.qris_revision`, dataSpaceID)
+	if err != nil {
 		return err
 	}
 	return nil

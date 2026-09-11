@@ -1,5 +1,26 @@
 export type Role = "admin" | "superadmin";
 export type DataMode = "production" | "sandbox";
+export type ContextKind = "account" | "tenant" | "platform";
+export const INITIAL_TENANT_ID = "00000000-0000-4000-8000-000000000200";
+export interface TenantSummary {
+  id: string;
+  name: string;
+  slug: string;
+  status: "pending_setup" | "active" | "suspended";
+}
+export interface BusinessProfile {
+  businessName: string;
+  address: string | null;
+  phone: string | null;
+  revision: number;
+}
+export interface DataScope {
+  tenantId?: string | null;
+  dataMode: DataMode;
+  dataSpaceId?: string | null;
+  sandboxGeneration?: number | null;
+}
+export type LocalScope = DataMode | DataScope;
 export type SyncState = "pending" | "synced" | "conflict" | "error";
 export type PrintState =
   "pending" | "success" | "failed" | "unknown" | "needs-reprint";
@@ -17,6 +38,7 @@ export interface UserSummary {
   role: Role;
   active: boolean;
   mustChangePassword: boolean;
+  membershipId?: string | null;
 }
 
 export interface Session {
@@ -25,8 +47,13 @@ export interface Session {
   user: UserSummary;
   establishedAt: string;
   dataMode: DataMode;
-  dataSpaceId: string;
+  dataSpaceId: string | null;
   sandboxGeneration: number | null;
+  contextKind?: ContextKind;
+  tenantId?: string | null;
+  membershipId?: string | null;
+  tenant?: TenantSummary | null;
+  isPlatformAdmin?: boolean;
 }
 
 export interface RentalPackage {
@@ -71,6 +98,7 @@ export interface Transaction {
   qrisPayloadHash: QrisPayloadHash | null;
   deletedAt: string | null;
   items: TransactionItem[];
+  receiptIdentity?: BusinessProfile | undefined;
 }
 
 export interface TransactionDraftLine {

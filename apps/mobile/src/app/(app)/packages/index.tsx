@@ -14,14 +14,18 @@ import { listPackages, upsertPackage } from "@/db/repositories";
 import type { RentalPackage } from "@/domain/types";
 import { colors, spacing, textStyles, typography } from "@/theme/tokens";
 import { formatRupiah } from "@/utils/format";
+import { toUserFacingErrorMessage } from "@/utils/errors";
 
 export default function PackagesScreen() {
   const router = useRouter();
   const { session } = useAuth();
   const [packages, setPackages] = useState<RentalPackage[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    setPackages(await listPackages(true));
+    if (!session) return;
+    setError(null);
+    setPackages(await listPackages(true, session));
     if (session && !session.token.startsWith("dev-only-")) {
       const remote = await apiRequest<PackageListResponse>(
         "/packages?limit=100",
@@ -30,14 +34,21 @@ export default function PackagesScreen() {
         },
       );
       const mapped = remote.map(mapApiPackage);
-      await Promise.all(mapped.map(upsertPackage));
-      setPackages(await listPackages(true));
+      await Promise.all(mapped.map((item) => upsertPackage(item, session)));
+      setPackages(await listPackages(true, session));
     }
   }, [session]);
 
   useFocusEffect(
     useCallback(() => {
-      void load();
+      void load().catch((reason) =>
+        setError(
+          toUserFacingErrorMessage(
+            reason,
+            "Daftar paket belum dapat diperbarui.",
+          ),
+        ),
+      );
     }, [load]),
   );
 
@@ -48,6 +59,11 @@ export default function PackagesScreen() {
         subtitle="Superadmin • online untuk perubahan"
         title="Paket & Harga"
       />
+      {error ? (
+        <Text accessibilityRole="alert" style={textStyles.body}>
+          {error}
+        </Text>
+      ) : null}
       <Button
         icon="tag-plus-outline"
         onPress={() => router.push("/packages/new")}

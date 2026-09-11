@@ -1,4 +1,9 @@
-import type { DataMode, PaymentMethod, Transaction } from "@/domain/types";
+import type {
+  BusinessProfile,
+  DataMode,
+  PaymentMethod,
+  Transaction,
+} from "@/domain/types";
 
 export interface ReceiptLine {
   name: string;
@@ -19,6 +24,7 @@ export interface ReceiptDocument {
   paymentAmount: number;
   dataMode: DataMode;
   isCopy: boolean;
+  receiptIdentity?: BusinessProfile;
 }
 
 export interface PrinterDevice {
@@ -69,5 +75,8 @@ export function receiptFromTransaction(
     paymentAmount: transaction.paymentAmount,
     dataMode,
     isCopy,
+    ...(transaction.receiptIdentity
+      ? { receiptIdentity: { ...transaction.receiptIdentity } }
+      : {}),
   };
 }

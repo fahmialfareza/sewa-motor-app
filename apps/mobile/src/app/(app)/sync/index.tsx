@@ -20,6 +20,11 @@ import { useSyncRuntime } from "@/sync/SyncProvider";
 import { colors, spacing, textStyles, typography } from "@/theme/tokens";
 import { toUserFacingErrorMessage } from "@/utils/errors";
 import { displayTransactionId, formatJakartaDateTime } from "@/utils/format";
+import {
+  countQuarantinedOperations,
+  revalidateQuarantinedOperations,
+} from "@/tenant/quarantine";
+import { beginLocalMutation } from "@/mode/mutation-barrier";
 
 export default function SyncCenterScreen() {
   const router = useRouter();
@@ -31,6 +36,8 @@ export default function SyncCenterScreen() {
   const [rejected, setRejected] = useState<RejectedOutboxOperation[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  const [quarantined, setQuarantined] = useState(0);
+  const [revalidating, setRevalidating] = useState(false);
   const lastErrorMessage = runtime.lastError
     ? toUserFacingErrorMessage(
         runtime.lastError,
@@ -39,16 +46,19 @@ export default function SyncCenterScreen() {
     : null;
 
   const load = useCallback(async () => {
-    const [nextConflicts, nextRejected, metadata] = await Promise.all([
-      listConflicts(),
-      listRejectedOutboxOperations(),
-      getSyncMetadata(),
+    if (!session) return;
+    const [nextConflicts, nextRejected, metadata, count] = await Promise.all([
+      listConflicts(session),
+      listRejectedOutboxOperations(session),
+      getSyncMetadata(session),
+      session ? countQuarantinedOperations(session) : Promise.resolve(0),
     ]);
     setConflicts(nextConflicts);
     setRejected(nextRejected);
     setCursor(metadata.cursor);
+    setQuarantined(count);
     await refreshRuntime();
-  }, [refreshRuntime]);
+  }, [refreshRuntime, session]);
 
   useFocusEffect(
     useCallback(() => {
@@ -98,8 +108,9 @@ export default function SyncCenterScreen() {
         text: isRejectedCreate ? "Arsipkan" : "Pulihkan",
         style: isRejectedCreate ? "destructive" : "default",
         onPress: () => {
+          if (!session) return;
           setRecoveryError(null);
-          void discardRejectedOutboxOperation(operation.operationId)
+          void discardRejectedOutboxOperation(operation.operationId, session)
             .then(load)
             .catch((reason: unknown) => {
               setRecoveryError(
@@ -144,6 +155,62 @@ export default function SyncCenterScreen() {
           Sinkron sekarang
         </Button>
       </Card>
+      {quarantined > 0 ? (
+        <Card style={styles.errorCard}>
+          <Text style={styles.errorTitle}>
+            {quarantined} operasi dikarantina
+          </Text>
+          <Text style={styles.detail}>
+            Identitas dan tanda tangan asli tetap disimpan. Hanya akun asal
+            dengan keanggotaan dan terminal yang kembali diizinkan dapat
+            melanjutkan pengiriman.
+          </Text>
+          <Button
+            disabled={!runtime.online || runtime.syncing}
+            loading={revalidating}
+            onPress={() => {
+              if (!session || revalidating) return;
+              let release: (() => void) | undefined;
+              try {
+                release = beginLocalMutation(session);
+              } catch (reason) {
+                setRecoveryError(
+                  toUserFacingErrorMessage(
+                    reason,
+                    "Pemeriksaan belum tersedia.",
+                  ),
+                );
+                return;
+              }
+              setRevalidating(true);
+              setRecoveryError(null);
+              void revalidateQuarantinedOperations(session)
+                .then(async (released) => {
+                  if (released === 0)
+                    setRecoveryError(
+                      "Belum ada operasi yang dapat dilanjutkan oleh akun dan terminal ini. Bukti asli tetap disimpan.",
+                    );
+                  else await requestSync();
+                  await load();
+                })
+                .catch((reason) =>
+                  setRecoveryError(
+                    toUserFacingErrorMessage(
+                      reason,
+                      "Akses asal belum dapat diperiksa.",
+                    ),
+                  ),
+                )
+                .finally(() => {
+                  release?.();
+                  setRevalidating(false);
+                });
+            }}
+          >
+            Periksa akses dan lanjutkan data saya
+          </Button>
+        </Card>
+      ) : null}
       {lastErrorMessage ? (
         <Card style={styles.errorCard}>
           <Text accessibilityRole="alert" style={styles.errorTitle}>

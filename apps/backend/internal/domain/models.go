@@ -41,6 +41,7 @@ const (
 
 type DataSpace struct {
 	ID          uuid.UUID       `json:"id"`
+	TenantID    uuid.UUID       `json:"tenantId"`
 	Mode        DataMode        `json:"mode"`
 	Generation  int64           `json:"generation"`
 	Status      DataSpaceStatus `json:"status"`
@@ -87,19 +88,36 @@ func (status PaymentStatus) Valid() bool {
 }
 
 type Principal struct {
-	UserID             uuid.UUID  `json:"userId"`
-	SessionID          uuid.UUID  `json:"sessionId"`
-	TerminalID         *uuid.UUID `json:"terminalId,omitempty"`
-	FullName           string     `json:"fullName"`
-	Username           string     `json:"username"`
-	Role               Role       `json:"role"`
-	MustChangePassword bool       `json:"mustChangePassword"`
-	DataSpaceID        uuid.UUID  `json:"dataSpaceId"`
-	DataMode           DataMode   `json:"dataMode"`
-	SandboxGeneration  int64      `json:"sandboxGeneration"`
+	ContextKind        ContextKind `json:"contextKind"`
+	TenantID           uuid.UUID   `json:"tenantId,omitempty"`
+	MembershipID       uuid.UUID   `json:"membershipId,omitempty"`
+	Tenant             *Tenant     `json:"tenant,omitempty"`
+	IsPlatformAdmin    bool        `json:"isPlatformAdmin"`
+	LegacyOrigin       bool        `json:"-"`
+	UserCreatedAt      time.Time   `json:"-"`
+	UserUpdatedAt      time.Time   `json:"-"`
+	Terminal           *Terminal   `json:"-"`
+	UserID             uuid.UUID   `json:"userId"`
+	SessionID          uuid.UUID   `json:"sessionId"`
+	TerminalID         *uuid.UUID  `json:"terminalId,omitempty"`
+	FullName           string      `json:"fullName"`
+	Username           string      `json:"username"`
+	Role               Role        `json:"role"`
+	MustChangePassword bool        `json:"mustChangePassword"`
+	DataSpaceID        uuid.UUID   `json:"dataSpaceId"`
+	DataMode           DataMode    `json:"dataMode"`
+	SandboxGeneration  int64       `json:"sandboxGeneration"`
 }
 
 func (p Principal) IsSuperadmin() bool { return p.Role == RoleSuperadmin }
+
+func (p Principal) EffectiveTenantID() uuid.UUID { return p.TenantID }
+
+func (p Principal) EffectiveContextKind() ContextKind { return p.ContextKind }
+
+func (p Principal) IsTenantContext() bool {
+	return p.ContextKind == ContextTenant && p.TenantID != uuid.Nil && p.DataSpaceID != uuid.Nil
+}
 
 func (p Principal) EffectiveDataSpaceID() uuid.UUID {
 	return EffectiveDataSpaceID(p.DataSpaceID)
@@ -177,6 +195,8 @@ type ActorSummary struct {
 }
 
 type Transaction struct {
+	ReceiptProfileRevision   *int              `json:"receiptProfileRevision,omitempty"`
+	ReceiptIdentity          *ReceiptIdentity  `json:"receiptIdentity,omitempty"`
 	ID                       string            `json:"id"`
 	DisplayID                string            `json:"displayId"`
 	Revision                 int               `json:"revision"`
@@ -203,6 +223,7 @@ type Transaction struct {
 }
 
 type TransactionRevision struct {
+	ReceiptIdentity  *ReceiptIdentity  `json:"receiptIdentity,omitempty"`
 	TransactionID    string            `json:"transactionId"`
 	Revision         int               `json:"revision"`
 	BaseRevision     *int              `json:"baseRevision,omitempty"`

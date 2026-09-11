@@ -20,7 +20,7 @@ func (u Users) List(ctx context.Context, principal domain.Principal, includeDele
 	if err := RequireSuperadmin(principal); err != nil {
 		return nil, err
 	}
-	return u.Repo.ListUsers(ctx, includeDeleted)
+	return u.Repo.ListUsers(ctx, principal.TenantID, includeDeleted)
 }
 
 func (u Users) Create(ctx context.Context, principal domain.Principal, input domain.CreateUserInput) (domain.User, error) {
@@ -90,7 +90,7 @@ func (u Users) Get(ctx context.Context, principal domain.Principal, targetID uui
 	if err := RequireSuperadmin(principal); err != nil {
 		return domain.User{}, err
 	}
-	return u.Repo.GetUser(ctx, targetID)
+	return u.Repo.GetUser(ctx, principal.TenantID, targetID)
 }
 
 func (u Users) ResetPassword(ctx context.Context, principal domain.Principal, targetID uuid.UUID, password string) (domain.User, error) {

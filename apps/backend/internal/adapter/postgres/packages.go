@@ -55,6 +55,13 @@ func (s *Store) CreatePackage(ctx context.Context, actor domain.Principal, input
 		return domain.Package{}, dbError(err, "begin create package")
 	}
 	defer tx.Rollback(ctx)
+	role, err := lockTenantAccess(ctx, tx, actor)
+	if err != nil {
+		return domain.Package{}, err
+	}
+	if role != domain.RoleSuperadmin {
+		return domain.Package{}, domain.NewError(domain.CodeForbidden, "Hanya superadmin usaha yang dapat mengelola paket")
+	}
 	dataSpaceID := actor.EffectiveDataSpaceID()
 	if _, err = lockActiveDataSpace(ctx, tx, dataSpaceID); err != nil {
 		return domain.Package{}, err
@@ -102,6 +109,13 @@ func (s *Store) UpdatePackage(ctx context.Context, actor domain.Principal, id uu
 		return domain.Package{}, dbError(err, "begin update package")
 	}
 	defer tx.Rollback(ctx)
+	role, err := lockTenantAccess(ctx, tx, actor)
+	if err != nil {
+		return domain.Package{}, err
+	}
+	if role != domain.RoleSuperadmin {
+		return domain.Package{}, domain.NewError(domain.CodeForbidden, "Hanya superadmin usaha yang dapat mengelola paket")
+	}
 	dataSpaceID := actor.EffectiveDataSpaceID()
 	if _, err = lockActiveDataSpace(ctx, tx, dataSpaceID); err != nil {
 		return domain.Package{}, err
@@ -157,6 +171,13 @@ func (s *Store) DeletePackage(ctx context.Context, actor domain.Principal, id uu
 		return dbError(err, "begin delete package")
 	}
 	defer tx.Rollback(ctx)
+	role, err := lockTenantAccess(ctx, tx, actor)
+	if err != nil {
+		return err
+	}
+	if role != domain.RoleSuperadmin {
+		return domain.NewError(domain.CodeForbidden, "Hanya superadmin usaha yang dapat mengelola paket")
+	}
 	dataSpaceID := actor.EffectiveDataSpaceID()
 	if _, err = lockActiveDataSpace(ctx, tx, dataSpaceID); err != nil {
 		return err

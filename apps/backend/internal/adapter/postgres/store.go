@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/domain"
@@ -211,29 +212,77 @@ func addChange(ctx context.Context, tx pgx.Tx, dataSpaceID uuid.UUID, aggregate,
 	return err
 }
 
-// addSharedChange fans global identity/terminal changes into each active data
-// plane so independent mobile databases retain the shared control-plane view.
+// addSharedChange projects shared accounts only into their own memberships.
+// Terminal events are restricted to the tenant owning that enrollment.
 func addSharedChange(ctx context.Context, tx pgx.Tx, aggregate, aggregateID, action string, revision *int, payload any, tombstone bool) error {
 	defer observability.StartSegment(ctx, "Postgres.addSharedChange")()
+	if aggregate != "user" && aggregate != "terminal" {
+		return domain.NewError(domain.CodeForbidden, "Perubahan wajib memiliki ruang usaha")
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT tenant_id FROM tenant_memberships WHERE $1 = 'user' AND user_id::text = $2
+		UNION SELECT tenant_id FROM terminals WHERE $1 = 'terminal' AND id::text = $2
+		ORDER BY tenant_id`, aggregate, aggregateID)
+	if err != nil {
+		return err
+	}
+	tenantIDs := make([]uuid.UUID, 0)
+	for rows.Next() {
+		var tenantID uuid.UUID
+		if err = rows.Scan(&tenantID); err != nil {
+			rows.Close()
+			return err
+		}
+		tenantIDs = append(tenantIDs, tenantID)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	for _, tenantID := range tenantIDs {
+		if err = addTenantChange(ctx, tx, tenantID, aggregate, aggregateID, action, revision, payload, tombstone); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// addTenantChange never copies a caller's user projection into another tenant.
+// Membership fields are rebuilt from durable account/membership state. Shared
+// generation locks make the fanout atomic with Sandbox activation and reset.
+func addTenantChange(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, aggregate, aggregateID, action string, revision *int, payload any, tombstone bool) error {
+	defer observability.StartSegment(ctx, "Postgres.addTenantChange")()
+	if tenantID == uuid.Nil {
+		return domain.NewError(domain.CodeContextRequired, "Pilih usaha untuk melanjutkan")
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))`, sandboxGenerationLock+":"+tenantID.String()); err != nil {
+		return err
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	// Reset holds the exclusive form while replacing a Sandbox generation.
-	// This shared lock makes a global change either part of the reset snapshot
-	// or an event in the newly active generation, never lost between both.
-	if _, err = tx.Exec(ctx,
-		`SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))`,
-		sandboxGenerationLock,
-	); err != nil {
-		return err
-	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO sync_changes (data_space_id, aggregate, aggregate_id, action, revision, payload, tombstone)
-		SELECT id, $1, $2, $3, $4, $5, $6
-		FROM data_spaces
-		WHERE status = 'active'`,
-		aggregate, aggregateID, action, revision, body, tombstone,
+		SELECT ds.id, $1, $2,
+		       CASE WHEN $6 OR ($1 = 'user' AND (m.status <> 'active' OR NOT u.is_active OR u.deleted_at IS NOT NULL)) THEN 'deleted' ELSE $3 END,
+		       $4,
+		       CASE WHEN $1 = 'user' THEN jsonb_build_object(
+		         'id',u.id,'fullName',u.full_name,'username',u.username,
+		         'role', m.role, 'active', m.status = 'active' AND u.is_active AND u.deleted_at IS NULL,
+		         'membershipId', m.id, 'tenantId', ds.tenant_id,
+		         'mustChangePassword',u.must_change_password,'createdAt',u.created_at,'updatedAt',u.updated_at,'deletedAt',u.deleted_at)
+		       ELSE $5::jsonb END,
+		       $6 OR ($1 = 'user' AND (m.status <> 'active' OR NOT u.is_active OR u.deleted_at IS NOT NULL))
+		FROM data_spaces ds
+		LEFT JOIN tenant_memberships m ON $1 = 'user' AND m.tenant_id = ds.tenant_id AND m.user_id::text = $2
+		LEFT JOIN users u ON u.id = m.user_id
+		WHERE ds.tenant_id = $7 AND ds.status = 'active' AND (
+		  ($1 = 'user' AND m.id IS NOT NULL) OR
+		  ($1 = 'terminal' AND EXISTS (SELECT 1 FROM terminals t WHERE t.id::text = $2 AND t.tenant_id = ds.tenant_id)) OR
+		  $1 IN ('tenant_profile','tenant_qris'))`,
+		aggregate, aggregateID, action, revision, body, tombstone, tenantID,
 	)
 	return err
 }
@@ -261,5 +310,137 @@ func principalIdentity(principal domain.Principal) domain.MutationIdentity {
 		SubmittedBySessionID: principal.SessionID,
 		DataSpaceID:          principal.EffectiveDataSpaceID(),
 		DataMode:             principal.EffectiveDataMode(),
+		TenantID:             principal.TenantID,
 	}
+}
+
+// lockMutationIdentity is the lifecycle serialization boundary for every
+// business write, including idempotency replays. Identity fields are never
+// rewritten: both the historical author and current submitter must still have
+// access to this tenant and the exact originating enrollment.
+func lockMutationIdentity(ctx context.Context, tx pgx.Tx, identity domain.MutationIdentity) (domain.Role, error) {
+	defer observability.StartSegment(ctx, "Postgres.lockMutationIdentity")()
+	return lockMutationIdentityWithTenantLock(ctx, tx, identity, false)
+}
+
+func lockMutationIdentityWithTenantLock(ctx context.Context, tx pgx.Tx, identity domain.MutationIdentity, exclusive bool) (domain.Role, error) {
+	defer observability.StartSegment(ctx, "Postgres.lockMutationIdentityWithTenantLock")()
+	if identity.TenantID == uuid.Nil || identity.DataSpaceID == uuid.Nil || identity.OriginActorID == uuid.Nil || identity.SubmittedByActorID == uuid.Nil || identity.OriginSessionID == uuid.Nil || identity.SubmittedBySessionID == uuid.Nil {
+		return "", domain.NewError(domain.CodeForbidden, "Pilih usaha yang aktif untuk melanjutkan")
+	}
+	actorIDs := []uuid.UUID{identity.OriginActorID}
+	if identity.SubmittedByActorID != identity.OriginActorID {
+		actorIDs = append(actorIDs, identity.SubmittedByActorID)
+	}
+	sort.Slice(actorIDs, func(i, j int) bool { return actorIDs[i].String() < actorIDs[j].String() })
+	for _, actorID := range actorIDs {
+		var active bool
+		if err := tx.QueryRow(ctx, `SELECT is_active AND deleted_at IS NULL AND NOT must_change_password FROM users WHERE id = $1 FOR SHARE`, actorID).Scan(&active); err != nil {
+			return "", dbError(err, "lock mutation account")
+		}
+		if !active {
+			return "", domain.NewError(domain.CodeForbidden, "Akses akun asal atau pengirim tidak aktif. Data belum terkirim tetap disimpan")
+		}
+	}
+	var tenantStatus string
+	tenantLock := `SELECT status FROM tenants WHERE id = $1 FOR SHARE`
+	if exclusive {
+		tenantLock = `SELECT status FROM tenants WHERE id = $1 FOR UPDATE`
+	}
+	if err := tx.QueryRow(ctx, tenantLock, identity.TenantID).Scan(&tenantStatus); err != nil {
+		return "", dbError(err, "lock mutation tenant")
+	}
+	if tenantStatus != "active" {
+		return "", domain.NewError(domain.CodeTenantSuspended, "Usaha sedang dinonaktifkan. Data belum terkirim tetap disimpan")
+	}
+	var originRole domain.Role
+	for _, actorID := range actorIDs {
+		var role domain.Role
+		var status string
+		if err := tx.QueryRow(ctx, `SELECT role, status FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2 FOR SHARE`, identity.TenantID, actorID).Scan(&role, &status); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return "", domain.NewError(domain.CodeMembershipInactive, "Keanggotaan asal atau pengirim tidak aktif. Data belum terkirim tetap disimpan")
+			}
+			return "", dbError(err, "lock mutation membership")
+		}
+		if status != "active" {
+			return "", domain.NewError(domain.CodeMembershipInactive, "Keanggotaan asal atau pengirim tidak aktif. Data belum terkirim tetap disimpan")
+		}
+		if actorID == identity.OriginActorID {
+			originRole = role
+		}
+	}
+	// Acquire generation before session/terminal locks. Reset revokes sessions
+	// while holding its exclusive generation lock; the inverse order deadlocks.
+	generationLock := `SELECT pg_advisory_xact_lock_shared(hashtextextended($1, 0))`
+	if exclusive {
+		generationLock = `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`
+	}
+	if _, err := tx.Exec(ctx, generationLock, sandboxGenerationLock+":"+identity.TenantID.String()); err != nil {
+		return "", dbError(err, "lock mutation generation")
+	}
+	var mode domain.DataMode
+	var spaceStatus domain.DataSpaceStatus
+	if err := tx.QueryRow(ctx, `SELECT mode,status FROM data_spaces WHERE id=$1 AND tenant_id=$2 FOR SHARE`, identity.DataSpaceID, identity.TenantID).Scan(&mode, &spaceStatus); err != nil {
+		return "", dbError(err, "lock mutation data space")
+	}
+	if spaceStatus != domain.DataSpaceStatusActive {
+		if mode == domain.DataModeSandbox {
+			return "", domain.NewError(domain.CodeSandboxGenerationRetired, "Generasi Sandbox telah diganti. Muat ulang data Sandbox untuk melanjutkan")
+		}
+		return "", domain.NewError(domain.CodeForbidden, "Ruang data tidak aktif")
+	}
+	var matches bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM sessions origin
+		JOIN sessions submitter ON submitter.id = $2
+		JOIN data_spaces ds ON ds.id = origin.data_space_id AND ds.tenant_id = origin.tenant_id
+		JOIN tenant_memberships om ON om.id = origin.membership_id AND om.tenant_id = origin.tenant_id AND om.user_id = origin.user_id
+		JOIN tenant_memberships sm ON sm.id = submitter.membership_id AND sm.tenant_id = submitter.tenant_id AND sm.user_id = submitter.user_id
+		WHERE origin.id = $1 AND origin.user_id = $3 AND submitter.user_id = $4
+		  AND origin.context_kind = 'tenant' AND submitter.context_kind = 'tenant'
+		  AND origin.tenant_id = $5 AND submitter.tenant_id = $5
+		  AND origin.data_space_id = $6 AND submitter.data_space_id = $6
+		  AND origin.terminal_id IS NOT DISTINCT FROM $7::uuid
+		  AND submitter.terminal_id IS NOT DISTINCT FROM $7::uuid
+		  AND submitter.revoked_at IS NULL
+	)`, identity.OriginSessionID, identity.SubmittedBySessionID, identity.OriginActorID, identity.SubmittedByActorID, identity.TenantID, identity.DataSpaceID, identity.TerminalID).Scan(&matches); err != nil {
+		return "", dbError(err, "validate mutation sessions")
+	}
+	if !matches {
+		return "", domain.NewError(domain.CodeForbidden, "Identitas operasi tidak sesuai dengan usaha, sesi, atau terminal aktif")
+	}
+	var submitterActive bool
+	if err := tx.QueryRow(ctx, `SELECT revoked_at IS NULL FROM sessions WHERE id = $1 FOR SHARE`, identity.SubmittedBySessionID).Scan(&submitterActive); err != nil {
+		return "", dbError(err, "lock submitting session")
+	}
+	if !submitterActive {
+		return "", domain.NewError(domain.CodeUnauthorized, "Sesi pengirim sudah berakhir. Masuk kembali untuk melanjutkan")
+	}
+	if identity.TerminalID != nil {
+		var active bool
+		if err := tx.QueryRow(ctx, `SELECT is_active AND revoked_at IS NULL FROM terminals WHERE id = $1 AND tenant_id = $2 FOR SHARE`, *identity.TerminalID, identity.TenantID).Scan(&active); err != nil {
+			return "", dbError(err, "lock mutation terminal")
+		}
+		if !active {
+			return "", domain.NewError(domain.CodeForbidden, "Terminal telah dicabut. Data belum terkirim tetap disimpan")
+		}
+	}
+	return originRole, nil
+}
+
+func lockTenantAccess(ctx context.Context, tx pgx.Tx, principal domain.Principal) (domain.Role, error) {
+	defer observability.StartSegment(ctx, "Postgres.lockTenantAccess")()
+	if principal.ContextKind != domain.ContextTenant || principal.MembershipID == uuid.Nil {
+		return "", domain.NewError(domain.CodeContextRequired, "Pilih usaha yang aktif untuk melanjutkan")
+	}
+	return lockMutationIdentity(ctx, tx, principalIdentity(principal))
+}
+
+func lockTenantLifecycleAccess(ctx context.Context, tx pgx.Tx, principal domain.Principal) (domain.Role, error) {
+	defer observability.StartSegment(ctx, "Postgres.lockTenantLifecycleAccess")()
+	if !principal.IsTenantContext() || principal.MembershipID == uuid.Nil {
+		return "", domain.NewError(domain.CodeContextRequired, "Pilih usaha yang aktif untuk melanjutkan")
+	}
+	return lockMutationIdentityWithTenantLock(ctx, tx, principalIdentity(principal), true)
 }

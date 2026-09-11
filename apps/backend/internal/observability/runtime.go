@@ -32,9 +32,11 @@ type Runtime struct {
 // to an authenticated session. It intentionally contains no domain types so
 // observability can remain below the HTTP and use-case layers.
 type DataScope struct {
-	Mode       string
-	SpaceID    string
-	Generation int64
+	TenantID    string
+	ContextKind string
+	Mode        string
+	SpaceID     string
+	Generation  int64
 }
 
 type dataScopeContextKey struct{}
@@ -100,6 +102,12 @@ func WithDataScope(ctx context.Context, scope DataScope) context.Context {
 		ctx = context.Background()
 	}
 	if transaction := newrelic.FromContext(ctx); transaction != nil {
+		if scope.TenantID != "" {
+			transaction.AddAttribute("tenant.id", scope.TenantID)
+		}
+		if scope.ContextKind != "" {
+			transaction.AddAttribute("auth.context", scope.ContextKind)
+		}
 		if scope.Mode != "" {
 			transaction.AddAttribute("data.mode", scope.Mode)
 		}
@@ -127,6 +135,12 @@ func DataScopeLogFields(ctx context.Context) logrus.Fields {
 		return logrus.Fields{}
 	}
 	fields := logrus.Fields{}
+	if scope.TenantID != "" {
+		fields["tenant.id"] = scope.TenantID
+	}
+	if scope.ContextKind != "" {
+		fields["auth.context"] = scope.ContextKind
+	}
 	if scope.Mode != "" {
 		fields["data.mode"] = scope.Mode
 	}

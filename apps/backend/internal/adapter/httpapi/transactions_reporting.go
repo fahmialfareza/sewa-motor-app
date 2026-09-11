@@ -14,11 +14,12 @@ import (
 
 func (s *Server) createTransaction(c *gin.Context) {
 	var request struct {
-		ID              string               `json:"id"`
-		OccurredAt      time.Time            `json:"occurredAt"`
-		PaymentMethod   domain.PaymentMethod `json:"paymentMethod"`
-		QrisPayloadHash *string              `json:"qrisPayloadHash"`
-		Items           []domain.ItemInput   `json:"items"`
+		ID                     string               `json:"id"`
+		OccurredAt             time.Time            `json:"occurredAt"`
+		PaymentMethod          domain.PaymentMethod `json:"paymentMethod"`
+		QrisPayloadHash        *string              `json:"qrisPayloadHash"`
+		Items                  []domain.ItemInput   `json:"items"`
+		ReceiptProfileRevision *int                 `json:"receiptProfileRevision"`
 	}
 	if err := decodeJSON(c, &request); err != nil {
 		writeError(c, err)
@@ -27,7 +28,7 @@ func (s *Server) createTransaction(c *gin.Context) {
 	item, err := s.deps.Transactions.Create(c.Request.Context(), principal(c), domain.CreateTransactionInput{
 		ID: request.ID, OccurredAt: request.OccurredAt,
 		PaymentMethod: request.PaymentMethod, QrisPayloadHash: request.QrisPayloadHash,
-		Items: request.Items,
+		Items: request.Items, ReceiptProfileRevision: request.ReceiptProfileRevision,
 	})
 	if err != nil {
 		writeError(c, err)
@@ -246,19 +247,19 @@ func (s *Server) listRevisions(c *gin.Context) {
 	}
 	data := make([]gin.H, 0, len(revisions))
 	for _, revision := range revisions {
-		origin, originErr := s.deps.Repo.GetUser(c.Request.Context(), revision.OriginActorID)
+		origin, originErr := s.deps.Repo.GetUser(c.Request.Context(), principal(c).TenantID, revision.OriginActorID)
 		if originErr != nil {
 			writeError(c, originErr)
 			return
 		}
-		submitter, submitErr := s.deps.Repo.GetUser(c.Request.Context(), revision.SubmittedBy)
+		submitter, submitErr := s.deps.Repo.GetUser(c.Request.Context(), principal(c).TenantID, revision.SubmittedBy)
 		if submitErr != nil {
 			writeError(c, submitErr)
 			return
 		}
 		var terminal any
 		if revision.TerminalID != nil {
-			item, terminalErr := s.deps.Repo.GetTerminal(c.Request.Context(), *revision.TerminalID)
+			item, terminalErr := s.deps.Repo.GetTerminal(c.Request.Context(), principal(c).TenantID, *revision.TerminalID)
 			if terminalErr != nil {
 				writeError(c, terminalErr)
 				return
@@ -273,6 +274,7 @@ func (s *Server) listRevisions(c *gin.Context) {
 			"originActor": actorFromUser(origin), "submittedBy": actorFromUser(submitter),
 			"terminal": terminal, "clientOccurredAt": revision.ClientOccurredAt,
 			"serverReceivedAt": revision.ServerReceivedAt,
+			"receiptIdentity":  revision.ReceiptIdentity,
 		}
 		if revision.QrisPayloadHash != nil {
 			view["qrisPayloadHash"] = *revision.QrisPayloadHash
@@ -323,7 +325,7 @@ func (s *Server) listPrintAttempts(c *gin.Context) {
 func (s *Server) transactionView(c *gin.Context, item domain.Transaction) (gin.H, error) {
 	var terminal any
 	if item.TerminalID != nil {
-		value, err := s.deps.Repo.GetTerminal(c.Request.Context(), *item.TerminalID)
+		value, err := s.deps.Repo.GetTerminal(c.Request.Context(), principal(c).TenantID, *item.TerminalID)
 		if err != nil {
 			return nil, err
 		}
@@ -358,7 +360,8 @@ func (s *Server) transactionView(c *gin.Context, item domain.Transaction) (gin.H
 		"id": item.ID, "displayId": item.DisplayID,
 		"revision": item.Revision, "occurredAt": item.OccurredAt.UTC(),
 		"items": lines, "subtotal": item.Subtotal, "total": item.Total,
-		"paymentAmount": item.PaymentAmount,
+		"paymentAmount":          item.PaymentAmount,
+		"receiptProfileRevision": item.ReceiptProfileRevision, "receiptIdentity": item.ReceiptIdentity,
 		"paymentMethod": item.PaymentMethod, "paymentStatus": item.PaymentStatus,
 		"paymentConfirmedRevision": item.PaymentConfirmedRevision,
 		"originActor":              item.OriginActor, "updatedBy": item.UpdatedBy, "terminal": terminal,
@@ -374,13 +377,13 @@ func (s *Server) transactionView(c *gin.Context, item domain.Transaction) (gin.H
 func (s *Server) printAttemptView(c *gin.Context, attempt domain.PrintAttempt) (gin.H, error) {
 	var terminal any
 	if attempt.TerminalID != nil {
-		item, err := s.deps.Repo.GetTerminal(c.Request.Context(), *attempt.TerminalID)
+		item, err := s.deps.Repo.GetTerminal(c.Request.Context(), principal(c).TenantID, *attempt.TerminalID)
 		if err != nil {
 			return nil, err
 		}
 		terminal = terminalSummary(item)
 	}
-	actor, err := s.deps.Repo.GetUser(c.Request.Context(), attempt.ActorID)
+	actor, err := s.deps.Repo.GetUser(c.Request.Context(), principal(c).TenantID, attempt.ActorID)
 	if err != nil {
 		return nil, err
 	}
@@ -515,5 +518,9 @@ func transactionExportFilename(current domain.Principal, format string, now time
 	if current.EffectiveDataMode() == domain.DataModeSandbox {
 		prefix = "TEST-"
 	}
-	return fmt.Sprintf("%stransaksi-%s.%s", prefix, now.Format("20060102-150405"), format)
+	business := ""
+	if current.Tenant != nil {
+		business = current.Tenant.Slug + "-"
+	}
+	return fmt.Sprintf("%s%stransaksi-%s.%s", prefix, business, now.Format("20060102-150405"), format)
 }

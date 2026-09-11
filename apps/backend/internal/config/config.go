@@ -9,6 +9,7 @@ import (
 )
 
 type Config struct {
+	TenantProvisioningEnabled  bool
 	HTTPAddr                   string
 	DatabaseURL                string
 	RedisURL                   string
@@ -53,6 +54,9 @@ func Load() (Config, error) {
 	}
 
 	var err error
+	if cfg.TenantProvisioningEnabled, err = strconv.ParseBool(env("TENANT_PROVISIONING_ENABLED", "false")); err != nil {
+		return Config{}, fmt.Errorf("TENANT_PROVISIONING_ENABLED: %w", err)
+	}
 	if cfg.AutoMigrate, err = strconv.ParseBool(env("AUTO_MIGRATE", "false")); err != nil {
 		return Config{}, fmt.Errorf("AUTO_MIGRATE: %w", err)
 	}

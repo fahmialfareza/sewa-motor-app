@@ -59,10 +59,12 @@ export default function CorrectTransactionScreen() {
   useEffect(() => {
     let active = true;
 
-    if (!id) return;
+    if (!id || !session) return;
 
-    const qrisConfigPromise = readQrisConfig().catch(() => null);
-    void Promise.all([getTransaction(id), qrisConfigPromise])
+    const qrisConfigPromise = readQrisConfig(
+      session.tenantId ?? undefined,
+    ).catch(() => null);
+    void Promise.all([getTransaction(id, session), qrisConfigPromise])
       .then(([value, config]) => {
         if (!active) return;
 
@@ -106,7 +108,7 @@ export default function CorrectTransactionScreen() {
     return () => {
       active = false;
     };
-  }, [id]);
+  }, [id, session]);
 
   const currentLoad = loadResult?.id === id ? loadResult : null;
 

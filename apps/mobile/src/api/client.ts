@@ -7,6 +7,20 @@ import {
 
 import type { ApiEnvelope, ApiErrorEnvelope } from "./contracts";
 
+let accessFailureHandler:
+  ((token: string, code: string) => Promise<void>) | null = null;
+export function registerAccessFailureHandler(
+  handler: (token: string, code: string) => Promise<void>,
+): void {
+  accessFailureHandler = handler;
+}
+export async function noticeAccessFailure(
+  token: string,
+  code: string,
+): Promise<void> {
+  await accessFailureHandler?.(token, code);
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -107,6 +121,8 @@ export async function apiRequest<T>(
             code: `HTTP_${response.status}`,
             message: "Permintaan tidak dapat diproses.",
           };
+    if (options.token && accessFailureHandler)
+      await accessFailureHandler(options.token, error.code);
     throw new ApiError({
       status: response.status,
       code: error.code,

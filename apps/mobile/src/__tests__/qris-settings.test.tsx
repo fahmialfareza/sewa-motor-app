@@ -10,6 +10,17 @@ const STATIC_QRIS =
 const mockAuthState = {
   role: "superadmin" as "superadmin" | "admin",
 };
+// Zustand keeps the session reference stable between unrelated screen renders.
+const mockSession = {
+  token: "tenant-token",
+  dataMode: "production",
+  tenantId: "00000000-0000-4000-8000-000000000200",
+  user: {
+    get role() {
+      return mockAuthState.role;
+    },
+  },
+};
 const mockReadQrisConfig = jest.fn();
 const mockWriteQrisConfig = jest.fn();
 const mockClearQrisConfig = jest.fn();
@@ -18,16 +29,23 @@ const mockRequestCameraPermission = jest.fn();
 const mockLaunchCamera = jest.fn();
 const mockLaunchImageLibrary = jest.fn();
 const mockScanFromURL = jest.fn();
+const mockApiRequest = jest.fn();
+
+jest.mock("@/api/client", () => ({
+  apiRequest: (...args: unknown[]) => mockApiRequest(...args),
+}));
+jest.mock("@/tenant/configuration", () => ({
+  cacheTenantConfiguration: jest.fn(),
+}));
 
 jest.mock("@/auth/AuthProvider", () => ({
   useAuth: () => ({
-    session: {
-      user: { role: mockAuthState.role },
-    },
+    session: mockSession,
   }),
 }));
 
 jest.mock("@/security/secure-store", () => ({
+  readLegacyQrisConfig: async () => null,
   readQrisConfig: () => mockReadQrisConfig(),
   writeQrisConfig: (value: unknown) => mockWriteQrisConfig(value),
   clearQrisConfig: () => mockClearQrisConfig(),
@@ -151,6 +169,34 @@ describe("QRIS settings image flow", () => {
     jest.clearAllMocks();
     mockAuthState.role = "superadmin";
     mockReadQrisConfig.mockResolvedValue(null);
+    mockApiRequest.mockImplementation(
+      async (
+        _path: string,
+        options: {
+          method?: string;
+          body?: { staticPayload: string; activate?: boolean };
+        },
+      ) => {
+        const writing = options.method === "PUT";
+        const config = writing ? options.body : await mockReadQrisConfig();
+        if (writing && config)
+          await mockWriteQrisConfig({ staticPayload: config.staticPayload });
+        return {
+          revision: config ? 1 : 0,
+          activePayloadHash:
+            config && options.body?.activate !== false ? "hash" : null,
+          payloads: config
+            ? [
+                {
+                  payloadHash: "hash",
+                  staticPayload: config.staticPayload,
+                  revision: 1,
+                },
+              ]
+            : [],
+        };
+      },
+    );
     mockWriteQrisConfig.mockResolvedValue(undefined);
     mockClearQrisConfig.mockResolvedValue(undefined);
     mockGetPendingResult.mockResolvedValue(null);
@@ -205,6 +251,11 @@ describe("QRIS settings image flow", () => {
         staticPayload: STATIC_QRIS,
       });
       expect(screen.getByText("QRIS STATIS TERKUNCI")).toBeTruthy();
+    });
+    expect(mockApiRequest).toHaveBeenCalledWith("/tenant/qris", {
+      method: "PUT",
+      token: "tenant-token",
+      body: { expectedRevision: 0, staticPayload: STATIC_QRIS, activate: true },
     });
   });
 

@@ -14,6 +14,7 @@ import {
   SANDBOX_RETIRED_MESSAGE,
 } from "@/mode/recovery";
 import { readSession } from "@/security/secure-store";
+import { blockedScopeReason } from "@/tenant/quarantine";
 
 import { runSync } from "./engine";
 import {
@@ -40,8 +41,15 @@ if (!TaskManager.isTaskDefined(BACKGROUND_SYNC_TASK)) {
       releaseLocalAccess = await beginModeSafeLocalAccess();
       session = await readSession();
       if (!session) return BackgroundTask.BackgroundTaskResult.Success;
+      if (
+        (session.contextKind && session.contextKind !== "tenant") ||
+        useAuthStore.getState().scopeLocked
+      )
+        return BackgroundTask.BackgroundTaskResult.Success;
       setModeFromSession(session);
       await prepareDatabaseForSession(session);
+      if (await blockedScopeReason(session))
+        return BackgroundTask.BackgroundTaskResult.Success;
       await runSync(session);
       return BackgroundTask.BackgroundTaskResult.Success;
     } catch (error) {

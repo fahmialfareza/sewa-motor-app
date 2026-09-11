@@ -28,6 +28,9 @@ func (s *Store) RecordPrintAttempt(ctx context.Context, input domain.PrintAttemp
 
 func (s *Store) recordPrintAttemptTx(ctx context.Context, tx pgx.Tx, input domain.PrintAttemptInput) (domain.PrintAttempt, error) {
 	defer observability.StartSegment(ctx, "Postgres.recordPrintAttemptTx")()
+	if _, err := lockMutationIdentity(ctx, tx, input.Identity); err != nil {
+		return domain.PrintAttempt{}, err
+	}
 	dataSpaceID := input.Identity.EffectiveDataSpaceID()
 	if _, err := lockActiveDataSpace(ctx, tx, dataSpaceID); err != nil {
 		return domain.PrintAttempt{}, err

@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/domain"
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/observability"
@@ -20,7 +21,7 @@ func (s *Store) ListTransactionRevisions(ctx context.Context, dataSpaceID uuid.U
 		       origin_actor_id, submitted_by_actor_id,
 		       terminal_id, client_occurred_at, server_received_at,
 		       COALESCE(payment_amount, (after_snapshot ->> 'paymentAmount')::bigint,
-		                (after_snapshot ->> 'total')::bigint), data_space_id
+		                (after_snapshot ->> 'total')::bigint), data_space_id,receipt_identity
 		FROM transaction_revisions
 		WHERE transaction_id = $1 AND data_space_id = $2 AND revision > 1
 		ORDER BY revision`,
@@ -33,13 +34,14 @@ func (s *Store) ListTransactionRevisions(ctx context.Context, dataSpaceID uuid.U
 	result := make([]domain.TransactionRevision, 0)
 	for rows.Next() {
 		var revision domain.TransactionRevision
+		var receiptJSON []byte
 		if err := rows.Scan(
 			&revision.TransactionID, &revision.Revision, &revision.BaseRevision,
 			&revision.ChangeType, &revision.Reason, &revision.QrisPayloadHash,
 			&revision.BeforeSnapshot,
 			&revision.AfterSnapshot, &revision.OriginActorID, &revision.SubmittedBy,
 			&revision.TerminalID, &revision.ClientOccurredAt, &revision.ServerReceivedAt,
-			&revision.PaymentAmount, &revision.DataSpaceID,
+			&revision.PaymentAmount, &revision.DataSpaceID, &receiptJSON,
 		); err != nil {
 			return nil, dbError(err, "scan transaction revision")
 		}
@@ -55,6 +57,9 @@ func (s *Store) ListTransactionRevisions(ctx context.Context, dataSpaceID uuid.U
 			revision.AfterSnapshot,
 			revision.Revision,
 		)
+		if err := json.Unmarshal(receiptJSON, &revision.ReceiptIdentity); err != nil {
+			return nil, domain.WrapInternal(err, "read historical receipt identity")
+		}
 		itemRows, err := s.Pool.Query(ctx, `
 			SELECT line_number, package_id, package_revision, package_code, package_name,
 			       package_description, unit_price, quantity, line_total

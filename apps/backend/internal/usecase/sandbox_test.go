@@ -24,13 +24,14 @@ type sandboxRepository struct {
 
 func (repository *sandboxRepository) ActiveDataSpace(
 	context.Context,
+	uuid.UUID,
 	domain.DataMode,
 ) (domain.DataSpace, error) {
 	repository.activeCalled = true
 	return repository.active, repository.activeErr
 }
 
-func (repository *sandboxRepository) EnsureSandbox(context.Context) (domain.DataSpace, error) {
+func (repository *sandboxRepository) EnsureSandbox(context.Context, uuid.UUID) (domain.DataSpace, error) {
 	repository.ensureCalled = true
 	return repository.active, nil
 }
@@ -72,6 +73,7 @@ func TestSandboxStatusAndResetEnforceLifecycleContract(t *testing.T) {
 		QRISAmount: 1_000, RetentionDays: 30,
 	}
 	principal := domain.Principal{
+		ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(), DataSpaceID: domain.LiveDataSpaceID(),
 		Role: domain.RoleSuperadmin, DataMode: domain.DataModeProduction,
 	}
 
@@ -105,7 +107,7 @@ func TestSandboxDisabledStatusDoesNotRequireAnActivatedGeneration(t *testing.T) 
 		activeErr: domain.NewError(domain.CodeNotFound, "Data tidak ditemukan"),
 	}
 	service := Sandbox{Repo: repository, Enabled: false}
-	status, err := service.Status(context.Background(), domain.Principal{})
+	status, err := service.Status(context.Background(), sandboxTestPrincipal(domain.RoleAdmin, domain.DataModeProduction))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,7 +130,7 @@ func TestSandboxDisabledStatusStillReportsPreviouslyActivatedGeneration(t *testi
 	}}
 	status, err := (Sandbox{Repo: repository, Enabled: false}).Status(
 		context.Background(),
-		domain.Principal{},
+		sandboxTestPrincipal(domain.RoleAdmin, domain.DataModeProduction),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +141,7 @@ func TestSandboxDisabledStatusStillReportsPreviouslyActivatedGeneration(t *testi
 	}
 }
 
-func TestSandboxInitializeDelegatesOnlyWhenEnabled(t *testing.T) {
+func TestSandboxInitializeNeverDependsOnOriginalTenant(t *testing.T) {
 	t.Parallel()
 
 	repository := &sandboxRepository{active: domain.DataSpace{
@@ -150,7 +152,7 @@ func TestSandboxInitializeDelegatesOnlyWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !repository.ensureCalled || space.ID != repository.active.ID {
+	if repository.ensureCalled || space.ID != uuid.Nil {
 		t.Fatalf("initialization result=%+v repository=%+v", space, repository)
 	}
 }
@@ -168,28 +170,28 @@ func TestSandboxResetRejectsUnsafeRequests(t *testing.T) {
 		{
 			name:      "disabled",
 			service:   Sandbox{Repo: &sandboxRepository{}, Enabled: false},
-			principal: domain.Principal{Role: domain.RoleSuperadmin, DataMode: domain.DataModeProduction},
+			principal: sandboxTestPrincipal(domain.RoleSuperadmin, domain.DataModeProduction),
 			input:     domain.ResetSandboxInput{ExpectedGeneration: 1, Confirmation: "RESET SANDBOX"},
 			code:      domain.CodeForbidden,
 		},
 		{
 			name:      "sandbox session",
 			service:   Sandbox{Repo: &sandboxRepository{}, Enabled: true},
-			principal: domain.Principal{Role: domain.RoleSuperadmin, DataMode: domain.DataModeSandbox},
+			principal: sandboxTestPrincipal(domain.RoleSuperadmin, domain.DataModeSandbox),
 			input:     domain.ResetSandboxInput{ExpectedGeneration: 1, Confirmation: "RESET SANDBOX"},
 			code:      domain.CodeForbidden,
 		},
 		{
 			name:      "admin",
 			service:   Sandbox{Repo: &sandboxRepository{}, Enabled: true},
-			principal: domain.Principal{Role: domain.RoleAdmin, DataMode: domain.DataModeProduction},
+			principal: sandboxTestPrincipal(domain.RoleAdmin, domain.DataModeProduction),
 			input:     domain.ResetSandboxInput{ExpectedGeneration: 1, Confirmation: "RESET SANDBOX"},
 			code:      domain.CodeForbidden,
 		},
 		{
 			name:      "wrong confirmation",
 			service:   Sandbox{Repo: &sandboxRepository{}, Enabled: true},
-			principal: domain.Principal{Role: domain.RoleSuperadmin, DataMode: domain.DataModeProduction},
+			principal: sandboxTestPrincipal(domain.RoleSuperadmin, domain.DataModeProduction),
 			input:     domain.ResetSandboxInput{ExpectedGeneration: 1, Confirmation: "RESET"},
 			code:      domain.CodeValidation,
 		},
@@ -217,4 +219,8 @@ func TestSandboxCleanupUsesClockEvenWhenModeIsDisabled(t *testing.T) {
 	if result.PurgedGenerationCount != 1 || !repository.cleanupAt.Equal(now) {
 		t.Fatalf("cleanup result=%+v at=%v", result, repository.cleanupAt)
 	}
+}
+
+func sandboxTestPrincipal(role domain.Role, mode domain.DataMode) domain.Principal {
+	return domain.Principal{ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(), DataSpaceID: domain.LiveDataSpaceID(), Role: role, DataMode: mode}
 }

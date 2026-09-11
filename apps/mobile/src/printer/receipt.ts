@@ -44,7 +44,13 @@ export function formatReceipt(
     sandbox ? center("MODE UJI", columns) : "",
     sandbox ? center("BUKAN STRUK RESMI", columns) : "",
     sandbox ? rule : "",
-    center("TELOMOYO POS", columns),
+    center(document.receiptIdentity?.businessName ?? "TELOMOYO POS", columns),
+    document.receiptIdentity?.address
+      ? center(document.receiptIdentity.address, columns)
+      : "",
+    document.receiptIdentity?.phone
+      ? center(document.receiptIdentity.phone, columns)
+      : "",
     document.isCopy ? center("*** SALINAN ***", columns) : "",
     rule,
     displayId,
@@ -87,6 +93,7 @@ export function formatReceipt(
         ]
       : []),
     center("Terima kasih", columns),
+    ...(document.receiptIdentity ? [center("Telomoyo POS", columns)] : []),
     "",
     "",
     "",

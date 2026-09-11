@@ -25,7 +25,7 @@ type Sandbox struct {
 
 func (s Sandbox) Status(ctx context.Context, principal domain.Principal) (domain.SandboxStatus, error) {
 	defer observability.StartSegment(ctx, "Usecase.Sandbox.Status")()
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return domain.SandboxStatus{}, err
 	}
 	status := domain.SandboxStatus{
@@ -34,7 +34,10 @@ func (s Sandbox) Status(ctx context.Context, principal domain.Principal) (domain
 		RetentionDays: s.retentionDays(),
 		QrisAmount:    s.qrisAmount(),
 	}
-	space, err := s.Repo.ActiveDataSpace(ctx, domain.DataModeSandbox)
+	space, err := s.Repo.ActiveDataSpace(ctx, principal.TenantID, domain.DataModeSandbox)
+	if s.Enabled && domain.IsCode(err, domain.CodeNotFound) {
+		space, err = s.Repo.EnsureSandbox(ctx, principal.TenantID)
+	}
 	if err != nil {
 		// A disabled feature may legitimately never have been activated. Once a
 		// generation exists, keep returning its identity so clients can detect a
@@ -49,15 +52,12 @@ func (s Sandbox) Status(ctx context.Context, principal domain.Principal) (domain
 	return status, nil
 }
 
-// Initialize creates the first shared Sandbox generation only after the
-// deployment explicitly enables the feature. The repository operation is
-// advisory-locked and idempotent across concurrent API replicas.
+// Initialize intentionally performs no tenant work at process startup. Sandbox
+// spaces are created lazily by Status/SwitchMode so a suspended original tenant
+// cannot affect readiness or another tenant's production service.
 func (s Sandbox) Initialize(ctx context.Context) (domain.DataSpace, error) {
 	defer observability.StartSegment(ctx, "Usecase.Sandbox.Initialize")()
-	if !s.Enabled {
-		return domain.DataSpace{}, nil
-	}
-	return s.Repo.EnsureSandbox(ctx)
+	return domain.DataSpace{}, nil
 }
 
 func (s Sandbox) Reset(

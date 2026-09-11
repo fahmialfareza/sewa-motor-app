@@ -41,6 +41,7 @@ type Dependencies struct {
 	Terminals    usecase.Terminals
 	Sync         usecase.Sync
 	Sandbox      usecase.Sandbox
+	Tenancy      usecase.Tenancy
 	Redis        Pinger
 	Logger       *logrus.Logger
 	NewRelic     *newrelic.Application
@@ -66,6 +67,7 @@ func New(deps Dependencies) *gin.Engine {
 	api.GET("/health/live", server.live)
 	api.GET("/health/ready", server.ready)
 	api.POST("/auth/login", server.login)
+	api.POST("/auth/register-invitation", server.registerInvitation)
 
 	protected := api.Group("")
 	protected.Use(server.authenticate())
@@ -73,21 +75,39 @@ func New(deps Dependencies) *gin.Engine {
 	// Sandbox session after the rollback flag is disabled. That lets the client
 	// identify the state, log out, or rotate safely back into Production.
 	protected.POST("/auth/logout", server.logout)
+	protected.GET("/auth/contexts", server.authContexts)
+	protected.POST("/auth/switch-context", server.switchContext)
+	protected.POST("/auth/invitations/accept", server.acceptInvitation)
+	protected.POST("/profile/password", server.changePassword)
+	protected.PATCH("/profile", server.updateOwnProfile)
+	protected.GET("/platform/tenants", server.platformTenants)
+	protected.POST("/platform/tenants", server.createTenant)
+	protected.POST("/platform/tenants/:tenantId/status", server.setTenantStatus)
+	protected.POST("/platform/tenants/:tenantId/invitation", server.ownerInvitation)
+	protected.GET("/platform/audit", server.platformAudit)
 	protected.POST("/auth/switch-mode", server.switchMode)
 	protected.GET("/profile", server.profile)
 	protected.GET("/sandbox/status", server.sandboxStatus)
 
 	operational := protected.Group("")
-	operational.Use(server.requireSandboxEnabled())
-	operational.POST("/profile/password", server.requireProduction(), server.changePassword)
+	operational.Use(server.requireTenant(), server.requireSandboxEnabled())
+	operational.GET("/tenant/members", server.tenantMembers)
+	operational.PATCH("/tenant/members/:userId", server.updateTenantMember)
+	operational.GET("/tenant/invitations", server.tenantInvitations)
+	operational.POST("/tenant/invitations", server.inviteTenantMember)
+	operational.DELETE("/tenant/invitations/:invitationId", server.revokeInvitation)
+	operational.GET("/tenant/profile", server.tenantProfile)
+	operational.PATCH("/tenant/profile", server.updateTenantProfile)
+	operational.GET("/tenant/qris", server.tenantQRIS)
+	operational.PUT("/tenant/qris", server.updateTenantQRIS)
 	operational.POST("/sandbox/reset", server.requireProduction(), server.sandboxReset)
 
 	operational.GET("/users", server.listUsers)
-	operational.POST("/users", server.requireProduction(), server.createUser)
+	operational.POST("/users", server.clientUpdateRequired)
 	operational.GET("/users/:userId", server.getUser)
-	operational.PATCH("/users/:userId", server.requireProduction(), server.updateUser)
-	operational.DELETE("/users/:userId", server.requireProduction(), server.deleteUser)
-	operational.POST("/users/:userId/reset-password", server.requireProduction(), server.resetPassword)
+	operational.PATCH("/users/:userId", server.clientUpdateRequired)
+	operational.DELETE("/users/:userId", server.clientUpdateRequired)
+	operational.POST("/users/:userId/reset-password", server.clientUpdateRequired)
 
 	operational.GET("/packages", server.listPackages)
 	operational.POST("/packages", server.createPackage)
@@ -113,6 +133,7 @@ func New(deps Dependencies) *gin.Engine {
 	operational.POST("/terminals/:terminalId/revoke", server.requireProduction(), server.revokeTerminal)
 
 	operational.POST("/sync/push", server.syncPush)
+	operational.POST("/sync/revalidate", server.revalidateOrigins)
 	operational.GET("/sync/pull", server.syncPull)
 
 	// Conventional deployment probes remain available outside the versioned API.
@@ -134,10 +155,7 @@ func (s *Server) transactionContext() gin.HandlerFunc {
 		// Production is the fail-closed/default scope for public endpoints and
 		// authentication failures. Successful protected requests overwrite this
 		// with their immutable session-bound scope in authenticate().
-		ctx = observability.WithDataScope(ctx, observability.DataScope{
-			Mode:    string(domain.DataModeProduction),
-			SpaceID: domain.LiveDataSpaceIDString,
-		})
+		ctx = observability.WithDataScope(ctx, observability.DataScope{ContextKind: "public"})
 		c.Request = c.Request.WithContext(ctx)
 		handlerName := c.HandlerName()
 		if index := strings.LastIndex(handlerName, "."); index >= 0 {
@@ -234,10 +252,12 @@ func (s *Server) authenticate() gin.HandlerFunc {
 			// receives a principal for a revoked session.
 			isRecoveryRoute := c.Request.Method == http.MethodPost &&
 				c.FullPath() == "/api/v1/auth/switch-mode"
-			if !isRecoveryRoute ||
+			contextRecovery := auth.RecoverableTenantAccess && auth.Principal.SessionID != uuid.Nil &&
+				(c.FullPath() == "/api/v1/auth/contexts" || c.FullPath() == "/api/v1/auth/switch-context" || c.FullPath() == "/api/v1/auth/logout")
+			if !contextRecovery && (!isRecoveryRoute ||
 				!domain.IsCode(err, domain.CodeSandboxGenerationRetired) ||
 				!auth.RecoverableRetiredSandbox || auth.Principal.SessionID == uuid.Nil ||
-				auth.Principal.EffectiveDataMode() != domain.DataModeSandbox {
+				auth.Principal.EffectiveDataMode() != domain.DataModeSandbox) {
 				writeError(c, err)
 				c.Abort()
 				return
@@ -261,14 +281,32 @@ func (s *Server) authenticate() gin.HandlerFunc {
 }
 
 func attachDataScope(c *gin.Context, current domain.Principal) {
+	scope := observability.DataScope{ContextKind: string(current.ContextKind)}
+	if current.IsTenantContext() {
+		scope.Mode = string(current.DataMode)
+		scope.SpaceID = current.DataSpaceID.String()
+		scope.TenantID = current.TenantID.String()
+		scope.Generation = current.SandboxGeneration
+	}
 	c.Request = c.Request.WithContext(observability.WithDataScope(
 		c.Request.Context(),
-		observability.DataScope{
-			Mode:       string(current.EffectiveDataMode()),
-			SpaceID:    current.EffectiveDataSpaceID().String(),
-			Generation: current.SandboxGeneration,
-		},
+		scope,
 	))
+}
+
+func (s *Server) requireTenant() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := usecase.RequireTenant(principal(c)); err != nil {
+			writeError(c, err)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
+func (s *Server) clientUpdateRequired(c *gin.Context) {
+	writeError(c, domain.NewError(domain.CodeClientUpdateRequired, "Perbarui aplikasi untuk mengelola keanggotaan bisnis melalui undangan"))
 }
 
 func (s *Server) requireProduction() gin.HandlerFunc {
@@ -361,7 +399,7 @@ func errorStatus(code string) int {
 		return http.StatusUnprocessableEntity
 	case domain.CodeUnauthorized, domain.CodeInvalidCredentials:
 		return http.StatusUnauthorized
-	case domain.CodeForbidden, domain.CodePasswordChange, domain.CodeSignatureInvalid:
+	case domain.CodeForbidden, domain.CodePasswordChange, domain.CodeSignatureInvalid, domain.CodeContextRequired, domain.CodeTenantSuspended, domain.CodeMembershipInactive, domain.CodeMembershipRevoked:
 		return http.StatusForbidden
 	case domain.CodeNotFound:
 		return http.StatusNotFound
@@ -372,6 +410,10 @@ func errorStatus(code string) int {
 		return http.StatusConflict
 	case domain.CodeRateLimited:
 		return http.StatusTooManyRequests
+	case domain.CodeClientUpdateRequired:
+		return http.StatusUpgradeRequired
+	case domain.CodeInvitationInvalid:
+		return http.StatusUnprocessableEntity
 	default:
 		return http.StatusInternalServerError
 	}

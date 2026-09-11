@@ -23,6 +23,37 @@ const receipt: ReceiptDocument = {
 };
 
 describe("thermal receipt", () => {
+  it("uses the snapshotted business identity for tenant reprints and keeps the app credit", () => {
+    const snapshot = {
+      businessName: "Penyewaan Merbabu",
+      address: "Jl. Merbabu 12",
+      phone: "08123456789",
+      revision: 3,
+    };
+    const output = formatReceipt(
+      { ...receipt, receiptIdentity: snapshot, isCopy: true },
+      48,
+    );
+    expect(output).toContain(snapshot.businessName);
+    expect(output).toContain(snapshot.address);
+    expect(output).toContain(snapshot.phone);
+    expect(output).toContain("Telomoyo POS");
+    expect(output).toContain("SALINAN");
+    expect(output).not.toContain("MODE UJI");
+    const sandbox = formatReceipt(
+      {
+        ...receipt,
+        receiptIdentity: snapshot,
+        dataMode: "sandbox",
+        paymentAmount: 1000,
+      },
+      48,
+    );
+    expect(sandbox).toContain(snapshot.businessName);
+    expect(sandbox.match(/MODE UJI/g)).toHaveLength(2);
+    expect(sandbox).toContain("Rp 1.000");
+  });
+
   it("adds the display-only transaction prefix and respects paper width", () => {
     const output = formatReceipt(receipt, 32);
     expect(output).toContain("TRX-01ARZ3NDEKTSV4RRFFQ69G5FAV");

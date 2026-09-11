@@ -17,10 +17,11 @@ var (
 )
 
 type LoginInput struct {
-	Username       string
-	Password       string
-	InstallationID *uuid.UUID
-	IPAddress      string
+	ClientProtocolVersion int
+	Username              string
+	Password              string
+	InstallationID        *uuid.UUID
+	IPAddress             string
 }
 
 type LoginResult struct {
@@ -82,6 +83,7 @@ type ItemInput struct {
 }
 
 type MutationIdentity struct {
+	TenantID             uuid.UUID
 	OriginActorID        uuid.UUID
 	OriginSessionID      uuid.UUID
 	TerminalID           *uuid.UUID
@@ -96,6 +98,7 @@ func (identity MutationIdentity) EffectiveDataSpaceID() uuid.UUID {
 }
 
 type CreateTransactionInput struct {
+	ReceiptProfileRevision          *int          `json:"receiptProfileRevision,omitempty"`
 	ID                              string        `json:"id"`
 	OccurredAt                      time.Time     `json:"occurredAt"`
 	PaymentMethod                   PaymentMethod `json:"paymentMethod"`
@@ -158,9 +161,6 @@ type TransactionFilter struct {
 }
 
 func EffectiveDataSpaceID(value uuid.UUID) uuid.UUID {
-	if value == uuid.Nil {
-		return LiveDataSpaceID()
-	}
 	return value
 }
 

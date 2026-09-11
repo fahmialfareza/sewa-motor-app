@@ -18,7 +18,7 @@ type Sync struct {
 
 func (s Sync) Push(ctx context.Context, principal domain.Principal, operations []domain.SyncMutation) ([]domain.SyncOperationResult, error) {
 	defer observability.StartSegment(ctx, "Usecase.Sync.Push")()
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return nil, err
 	}
 	if len(operations) == 0 || len(operations) > 100 {
@@ -33,7 +33,7 @@ func (s Sync) Push(ctx context.Context, principal domain.Principal, operations [
 
 func (s Sync) Pull(ctx context.Context, principal domain.Principal, cursor int64, limit int) ([]domain.SyncChange, int64, bool, error) {
 	defer observability.StartSegment(ctx, "Usecase.Sync.Pull")()
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return nil, cursor, false, err
 	}
 	if cursor < 0 {
@@ -68,7 +68,7 @@ func (s Sync) apply(ctx context.Context, principal domain.Principal, operation d
 	if principal.TerminalID == nil || *principal.TerminalID != operation.TerminalID {
 		return syncError(ctx, result, domain.NewError(domain.CodeForbidden, "Sesi pengirim tidak terikat ke terminal operasi"))
 	}
-	publicKey, err := s.Repo.TerminalPublicKey(ctx, operation.TerminalID)
+	publicKey, err := s.Repo.TerminalPublicKey(ctx, principal.TenantID, operation.TerminalID)
 	if err != nil {
 		return syncError(ctx, result, err)
 	}
@@ -111,7 +111,8 @@ func syncError(ctx context.Context, result domain.SyncOperationResult, err error
 		result.Status = http.StatusUnprocessableEntity
 	case domain.CodeUnauthorized:
 		result.Status = http.StatusUnauthorized
-	case domain.CodeForbidden, domain.CodePasswordChange:
+	case domain.CodeForbidden, domain.CodePasswordChange,
+		domain.CodeTenantSuspended, domain.CodeMembershipInactive, domain.CodeMembershipRevoked, domain.CodeContextRequired:
 		result.Status = http.StatusForbidden
 	case domain.CodeNotFound:
 		result.Status = http.StatusNotFound

@@ -5,6 +5,7 @@
     "build": "go build ./...",
     "dev": "go run ./cmd/api",
     "seed:superadmin": "go run ./cmd/seed-superadmin",
+    "account:admin": "go run ./cmd/account-admin",
     "test": "go test ./...",
     "lint": "go vet ./...",
     "check-types": "go test -run '^$' ./...",

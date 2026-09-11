@@ -6,6 +6,16 @@ import { SERVER_UNREACHABLE_MESSAGE } from "@/utils/errors";
 
 const mockNativeConnectionMessage =
   "fetch failed: java.net.ConnectException: Failed to connect to /192.168.18.254:8080";
+const mockSession = {
+  tenantId: "00000000-0000-4000-8000-000000000200",
+  user: { fullName: "Andi" },
+};
+jest.mock("@/auth/AuthProvider", () => ({
+  useAuth: () => ({ session: mockSession }),
+}));
+jest.mock("@/tenant/quarantine", () => ({
+  countQuarantinedOperations: async () => 0,
+}));
 const mockRefresh = jest.fn(() => Promise.resolve());
 const mockSyncNow = jest.fn(() =>
   Promise.reject(new Error(mockNativeConnectionMessage)),

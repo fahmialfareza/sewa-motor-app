@@ -1,6 +1,6 @@
 import NetInfo from "@react-native-community/netinfo";
 
-import { ApiError, apiRequest } from "@/api/client";
+import { ApiError, apiRequest, noticeAccessFailure } from "@/api/client";
 import type {
   ApiPackage,
   ApiTransaction,
@@ -26,6 +26,12 @@ import {
   markTerminalRevoked,
 } from "@/security/terminal-identity";
 import { toUserFacingErrorMessage } from "@/utils/errors";
+import { refreshTenantConfiguration } from "@/tenant/configuration";
+import {
+  blockedScopeReason,
+  quarantineScope,
+  SCOPE_ACCESS_CODES,
+} from "@/tenant/quarantine";
 
 let activeSync: { sessionId: string; promise: Promise<SyncSummary> } | null =
   null;
@@ -54,6 +60,13 @@ export function runSync(session: Session): Promise<SyncSummary> {
 }
 
 async function runSyncInternal(session: Session): Promise<SyncSummary> {
+  if (session.contextKind && session.contextKind !== "tenant")
+    return {
+      pushed: 0,
+      pulled: 0,
+      conflicts: 0,
+      completedAt: new Date().toISOString(),
+    };
   if (session.token.startsWith("dev-only-")) {
     return {
       pushed: 0,
@@ -73,8 +86,12 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
   let conflicts = 0;
 
   try {
+    if (await blockedScopeReason(session))
+      throw new Error(
+        "Antrean bisnis dikarantina. Pilih ulang bisnis setelah pengelola memulihkan akses.",
+      );
     while (true) {
-      const batch = await getOutboxOperations(25, session.dataMode);
+      const batch = await getOutboxOperations(25, session);
       if (batch.length === 0) break;
       const response = await apiRequest<SyncPushResponse>("/sync/push", {
         method: "POST",
@@ -90,6 +107,17 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
       const retiredGeneration = response.results.find(
         (result) => result.error?.code === "SANDBOX_GENERATION_RETIRED",
       );
+      const accessFailure = response.results.find(
+        (result) => result.error && SCOPE_ACCESS_CODES.has(result.error.code),
+      );
+      if (accessFailure?.error) {
+        await noticeAccessFailure(session.token, accessFailure.error.code);
+        throw new ApiError({
+          status: 403,
+          code: accessFailure.error.code,
+          message: accessFailure.error.message,
+        });
+      }
       if (retiredGeneration?.error) {
         throw new ApiError({
           status: 409,
@@ -112,7 +140,7 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
               kind: "error",
               message: "Server tidak mengembalikan hasil operasi.",
             },
-            session.dataMode,
+            session,
           );
           continue;
         }
@@ -121,17 +149,14 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
             item.operationId,
             item.aggregateId,
             { kind: "success" },
-            session.dataMode,
+            session,
           );
           pushed += 1;
         } else if (
           result.status === "conflict" &&
           isRevisionConflict(result.conflict)
         ) {
-          const current = await getTransaction(
-            item.aggregateId,
-            session.dataMode,
-          );
+          const current = await getTransaction(item.aggregateId, session);
           const local = current
             ? mergeSnapshot(
                 current,
@@ -152,7 +177,7 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
                   result.conflict.currentRevision,
                 ),
               },
-              session.dataMode,
+              session,
             );
             conflicts += 1;
           } else {
@@ -165,17 +190,14 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
                   result.error?.message ??
                   "Konflik revisi tidak dapat dipetakan ke transaksi lokal.",
               },
-              session.dataMode,
+              session,
             );
           }
         } else if (
           result.status === "conflict" &&
           isPaymentStateConflict(result.conflict)
         ) {
-          const current = await getTransaction(
-            item.aggregateId,
-            session.dataMode,
-          );
+          const current = await getTransaction(item.aggregateId, session);
           if (!current) {
             await markOutboxResult(
               item.operationId,
@@ -185,7 +207,7 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
                 message:
                   "Konflik pembayaran tidak dapat dipetakan ke transaksi lokal.",
               },
-              session.dataMode,
+              session,
             );
             conflicts += 1;
             continue;
@@ -214,7 +236,7 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
                   result.conflict.paymentConfirmedRevision,
               },
             },
-            session.dataMode,
+            session,
           );
           conflicts += 1;
         } else if (result.status === "conflict") {
@@ -227,7 +249,7 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
                 result.error?.message ??
                 "Server mengembalikan konflik yang tidak dapat diproses.",
             },
-            session.dataMode,
+            session,
           );
           conflicts += 1;
         } else if (result.status === "rejected") {
@@ -238,7 +260,7 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
               kind: "rejected",
               message: result.error?.message ?? "Operasi ditolak server.",
             },
-            session.dataMode,
+            session,
           );
         } else {
           await markOutboxResult(
@@ -248,13 +270,13 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
               kind: "error",
               message: result.error?.message ?? "Operasi ditolak server.",
             },
-            session.dataMode,
+            session,
           );
         }
       }
     }
 
-    let cursor = (await getSyncMetadata(session.dataMode)).cursor;
+    let cursor = (await getSyncMetadata(session)).cursor;
     const seenCursors = new Set(cursor ? [cursor] : []);
     while (true) {
       const query = new URLSearchParams({
@@ -299,7 +321,10 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
                 : null,
             changedAt: change.changedAt,
           });
-        } else {
+        } else if (
+          change.aggregate !== "tenant_profile" &&
+          change.aggregate !== "tenant_qris"
+        ) {
           localChanges.push({
             cursor: change.cursor,
             aggregate: change.aggregate,
@@ -327,7 +352,9 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
           });
         }
         if (change.aggregate === "terminal") {
-          const identity = await readTerminalIdentity();
+          const identity = await readTerminalIdentity(
+            session.tenantId ?? undefined,
+          );
           if (identity?.serverTerminalId === change.aggregateId) {
             const terminal = change.payload as {
               active: boolean;
@@ -339,20 +366,28 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
               terminal.active === false ||
               terminal.revokedAt !== null
             ) {
-              await markTerminalRevoked(change.aggregateId);
+              await markTerminalRevoked(
+                change.aggregateId,
+                session.tenantId ?? undefined,
+              );
+              await noticeAccessFailure(session.token, "TERMINAL_REVOKED");
             } else {
-              await markTerminalEnrolled(change.aggregateId);
+              await markTerminalEnrolled(
+                change.aggregateId,
+                session.tenantId ?? undefined,
+              );
             }
           }
         }
       }
-      await applyRemoteChanges(localChanges, response.cursor, session.dataMode);
+      await applyRemoteChanges(localChanges, response.cursor, session);
       pulled += response.changes.length;
       cursor = response.cursor;
       if (!response.hasMore) break;
       seenCursors.add(cursor);
     }
 
+    if (session.tenantId) await refreshTenantConfiguration(session);
     return {
       pushed,
       pulled,
@@ -360,11 +395,13 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
       completedAt: new Date().toISOString(),
     };
   } catch (error) {
+    if (error instanceof ApiError && SCOPE_ACCESS_CODES.has(error.code))
+      await quarantineScope(session, error.code);
     const message = toUserFacingErrorMessage(
       error,
       "Sinkronisasi belum berhasil. Coba lagi.",
     );
-    await setSyncError(message, session.dataMode);
+    await setSyncError(message, session);
     throw error;
   }
 }

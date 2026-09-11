@@ -1,4 +1,5 @@
 import { getOrCreateDatabaseKey, readSession } from "@/security/secure-store";
+import { INITIAL_TENANT_ID } from "@/domain/types";
 
 const mockGetItemAsync = jest.fn();
 const mockSetItemAsync = jest.fn();
@@ -49,12 +50,18 @@ describe("mode-aware secure storage", () => {
       .mockResolvedValueOnce("production-key")
       .mockResolvedValueOnce("sandbox-key");
 
-    await expect(getOrCreateDatabaseKey("production")).resolves.toBe(
-      "production-key",
-    );
-    await expect(getOrCreateDatabaseKey("sandbox")).resolves.toBe(
-      "sandbox-key",
-    );
+    await expect(
+      getOrCreateDatabaseKey({
+        tenantId: INITIAL_TENANT_ID,
+        dataMode: "production",
+      }),
+    ).resolves.toBe("production-key");
+    await expect(
+      getOrCreateDatabaseKey({
+        tenantId: INITIAL_TENANT_ID,
+        dataMode: "sandbox",
+      }),
+    ).resolves.toBe("sandbox-key");
 
     expect(mockGetItemAsync).toHaveBeenNthCalledWith(
       1,

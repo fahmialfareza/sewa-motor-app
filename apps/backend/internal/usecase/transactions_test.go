@@ -72,6 +72,7 @@ func correctionInput() domain.CorrectTransactionInput {
 
 func correctionPrincipal(userID, terminalID uuid.UUID, role domain.Role) domain.Principal {
 	return domain.Principal{
+		ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(), DataSpaceID: domain.LiveDataSpaceID(),
 		UserID:     userID,
 		SessionID:  uuid.New(),
 		TerminalID: &terminalID,

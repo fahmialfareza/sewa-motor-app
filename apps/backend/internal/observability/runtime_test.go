@@ -24,6 +24,7 @@ func TestDisabledRuntimeStillProvidesStructuredLogger(t *testing.T) {
 	var output bytes.Buffer
 	runtime.Logger.SetOutput(&output)
 	ctx := WithDataScope(context.Background(), DataScope{
+		TenantID: "00000000-0000-4000-8000-000000000201", ContextKind: "tenant",
 		Mode: "sandbox", SpaceID: "11111111-1111-4111-8111-111111111111", Generation: 7,
 	})
 	defer StartSegment(ctx, "test.segment")()
@@ -37,6 +38,8 @@ func TestDisabledRuntimeStillProvidesStructuredLogger(t *testing.T) {
 		t.Fatalf("log does not contain error: %s", log)
 	}
 	for _, field := range []string{
+		`"tenant.id":"00000000-0000-4000-8000-000000000201"`,
+		`"auth.context":"tenant"`,
 		`"data.mode":"sandbox"`,
 		`"data.space_id":"11111111-1111-4111-8111-111111111111"`,
 		`"data.generation":7`,
@@ -44,6 +47,18 @@ func TestDisabledRuntimeStillProvidesStructuredLogger(t *testing.T) {
 		if !strings.Contains(log, field) {
 			t.Fatalf("log does not contain %s: %s", field, log)
 		}
+	}
+}
+
+func TestAccountAndPlatformLogsDoNotInventBusinessScope(t *testing.T) {
+	for _, kind := range []string{"account", "platform"} {
+		t.Run(kind, func(t *testing.T) {
+			ctx := WithDataScope(context.Background(), DataScope{ContextKind: kind})
+			fields := DataScopeLogFields(ctx)
+			if fields["auth.context"] != kind || len(fields) != 1 {
+				t.Fatalf("non-business log contains an invented tenant/mode: %#v", fields)
+			}
+		})
 	}
 }
 
@@ -63,12 +78,15 @@ func TestLoggerHookAddsAuthorizedDataScopeToEveryContextLog(t *testing.T) {
 	var output bytes.Buffer
 	runtime.Logger.SetOutput(&output)
 	ctx := WithDataScope(context.Background(), DataScope{
+		TenantID: "00000000-0000-4000-8000-000000000200", ContextKind: "tenant",
 		Mode: "production", SpaceID: "00000000-0000-4000-8000-000000000100", Generation: 1,
 	})
 	runtime.Logger.WithContext(ctx).Info("scoped log")
 
 	log := output.String()
 	for _, field := range []string{
+		`"tenant.id":"00000000-0000-4000-8000-000000000200"`,
+		`"auth.context":"tenant"`,
 		`"data.mode":"production"`,
 		`"data.space_id":"00000000-0000-4000-8000-000000000100"`,
 		`"data.generation":1`,

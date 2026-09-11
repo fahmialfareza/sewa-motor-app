@@ -36,6 +36,7 @@ jest.mock("@/auth/AuthProvider", () => ({
   useAuth: () => ({
     session: {
       token: "session-token",
+      dataMode: "production",
       user: sessionUser,
     },
   }),
@@ -175,7 +176,7 @@ describe("user screen connection errors", () => {
   it("shows an understandable edit error and retries", async () => {
     mockApiRequest
       .mockRejectedValueOnce(nativeConnectionError)
-      .mockResolvedValueOnce(loadedUser);
+      .mockResolvedValueOnce([loadedUser]);
     const screen = render(<EditUserScreen />);
 
     await waitFor(() => {

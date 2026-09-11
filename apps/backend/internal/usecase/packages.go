@@ -16,7 +16,7 @@ type Packages struct {
 
 func (p Packages) List(ctx context.Context, principal domain.Principal, includeDeleted bool) ([]domain.Package, error) {
 	defer observability.StartSegment(ctx, "Usecase.Packages.List")()
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return nil, err
 	}
 	if includeDeleted && !principal.IsSuperadmin() {
@@ -27,7 +27,7 @@ func (p Packages) List(ctx context.Context, principal domain.Principal, includeD
 
 func (p Packages) Get(ctx context.Context, principal domain.Principal, id uuid.UUID) (domain.Package, error) {
 	defer observability.StartSegment(ctx, "Usecase.Packages.Get")()
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return domain.Package{}, err
 	}
 	return p.Repo.GetPackage(ctx, principal.EffectiveDataSpaceID(), id)

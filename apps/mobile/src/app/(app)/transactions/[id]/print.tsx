@@ -1,5 +1,5 @@
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import { useAuth } from "@/auth/AuthProvider";
@@ -18,6 +18,8 @@ import type { Transaction } from "@/domain/types";
 import { isPaymentConfirmedForCurrentRevision } from "@/domain/payments";
 import { getConfiguredPrinter } from "@/printer/service";
 import { receiptFromTransaction } from "@/printer/types";
+import { beginLocalMutation } from "@/mode/mutation-barrier";
+import { useModeStore } from "@/mode/mode-store";
 import { useSyncRuntime } from "@/sync/SyncProvider";
 import {
   colors,
@@ -37,11 +39,27 @@ export default function PrintTransactionScreen() {
   const [printing, setPrinting] = useState(false);
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const activeAttempt = useRef(false);
 
   useEffect(() => {
+    let current = true;
     if (id && session) {
-      void getTransaction(id).then(setTransaction);
+      void getTransaction(id, session)
+        .then((value) => {
+          if (current) setTransaction(value);
+        })
+        .catch((reason) => {
+          if (current)
+            setError(
+              reason instanceof Error
+                ? reason.message
+                : "Transaksi belum dapat dibaca.",
+            );
+        });
     }
+    return () => {
+      current = false;
+    };
   }, [id, session]);
 
   if (!transaction || !session) return <AppScreen />;
@@ -70,23 +88,42 @@ export default function PrintTransactionScreen() {
     transaction.printState === "needs-reprint";
 
   const print = async (forceCopy?: boolean) => {
+    if (activeAttempt.current) return;
+    activeAttempt.current = true;
     const printAsCopy = forceCopy ?? isCopy;
     setPrinting(true);
     setError(null);
     let attemptId: string | null = null;
+    let mutationLease: (() => void) | undefined;
+    let connectedPrinter:
+      Awaited<ReturnType<typeof getConfiguredPrinter>>["printer"] | undefined;
     try {
+      mutationLease = beginLocalMutation(session);
+      const document = receiptFromTransaction(
+        transaction,
+        printAsCopy,
+        session.dataMode,
+      );
+      for (const line of document.lines) Object.freeze(line);
+      if (document.receiptIdentity) Object.freeze(document.receiptIdentity);
+      Object.freeze(document.lines);
+      Object.freeze(document);
       const { config, printer } = await getConfiguredPrinter();
+      connectedPrinter = printer;
       attemptId = await beginPrintAttempt({
         transactionId: transaction.id,
         transactionRevision: transaction.revision,
         adapter: config.adapter,
         isCopy: printAsCopy,
         session,
+        mutationLease,
       });
       await printer.connect(config.address ?? undefined);
-      const result = await printer.print(
-        receiptFromTransaction(transaction, printAsCopy, session.dataMode),
-      );
+      if (useModeStore.getState().accessBlocked)
+        throw new Error(
+          "Akses bisnis dihentikan. Pencetakan dibatalkan sebelum struk dikirim.",
+        );
+      const result = await printer.print(document);
       await printer.disconnect().catch(() => undefined);
       await completePrintAttempt({
         attemptId,
@@ -94,6 +131,7 @@ export default function PrintTransactionScreen() {
         result: result.status,
         ...(result.status === "success" ? {} : { error: result.message }),
         session,
+        mutationLease,
       });
       await sync.refresh();
       void sync.syncNow();
@@ -122,10 +160,14 @@ export default function PrintTransactionScreen() {
           result: "failed",
           error: message,
           session,
+          mutationLease,
         }).catch(() => undefined);
       }
       setError(message);
     } finally {
+      await connectedPrinter?.disconnect().catch(() => undefined);
+      mutationLease?.();
+      activeAttempt.current = false;
       setPrinting(false);
     }
   };

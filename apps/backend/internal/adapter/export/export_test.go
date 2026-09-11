@@ -27,7 +27,7 @@ func sampleRows() []domain.ExportRow {
 }
 
 func TestXLSXIsReadableOpenXMLArchive(t *testing.T) {
-	body, err := (Generator{}).XLSX(sampleRows(), nil, nil, domain.DataModeProduction)
+	body, err := (Generator{}).XLSX(sampleRows(), nil, nil, domain.DataModeProduction, domain.TenantProfile{BusinessName: "TELOMOYO POS"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestXLSXIsReadableOpenXMLArchive(t *testing.T) {
 }
 
 func TestPDFHasValidEnvelopeAndTotals(t *testing.T) {
-	body, err := (Generator{}).PDF(sampleRows(), nil, nil, domain.DataModeProduction)
+	body, err := (Generator{}).PDF(sampleRows(), nil, nil, domain.DataModeProduction, domain.TenantProfile{BusinessName: "TELOMOYO POS"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestPDFGrossRevenueExcludesPendingAndFailedTransactions(t *testing.T) {
 	failed.TransactionTotal = 500_000
 	rows = append(rows, pending, failed)
 
-	body, err := (Generator{}).PDF(rows, nil, nil, domain.DataModeProduction)
+	body, err := (Generator{}).PDF(rows, nil, nil, domain.DataModeProduction, domain.TenantProfile{BusinessName: "TELOMOYO POS"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestSandboxExportsAreWatermarkedAndExposeActualPayment(t *testing.T) {
 	secondItem.LineTotal = 100_000
 	rows = append(rows, secondItem)
 
-	xlsx, err := (Generator{}).XLSX(rows, nil, nil, domain.DataModeSandbox)
+	xlsx, err := (Generator{}).XLSX(rows, nil, nil, domain.DataModeSandbox, domain.TenantProfile{BusinessName: "TELOMOYO POS"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestSandboxExportsAreWatermarkedAndExposeActualPayment(t *testing.T) {
 		t.Fatalf("actual QRIS payment appears %d times for one transaction; want once", count)
 	}
 
-	pdf, err := (Generator{}).PDF(rows, nil, nil, domain.DataModeSandbox)
+	pdf, err := (Generator{}).PDF(rows, nil, nil, domain.DataModeSandbox, domain.TenantProfile{BusinessName: "TELOMOYO POS"})
 	if err != nil {
 		t.Fatal(err)
 	}

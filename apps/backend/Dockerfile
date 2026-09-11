@@ -31,6 +31,14 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -mod=readonly -trimpath -ldflags="-s -w -buildid=" -o /out/bootstrap ./cmd/bootstrap
 
+FROM build-base AS build-account-admin
+ARG TARGETOS=linux
+ARG TARGETARCH
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -mod=readonly -trimpath -ldflags="-s -w -buildid=" -o /out/account-admin ./cmd/account-admin
+
 # Multi-platform index digest resolved from the official registry on 2026-07-29.
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6 AS runtime
 WORKDIR /app
@@ -45,6 +53,10 @@ FROM runtime AS bootstrap
 COPY --from=build-bootstrap --chown=65532:65532 --chmod=0555 /out/bootstrap /app/bootstrap
 ENTRYPOINT ["/app/bootstrap"]
 CMD ["-manifest", "/run/secrets/bootstrap-users.json"]
+
+FROM runtime AS account-admin
+COPY --from=build-account-admin --chown=65532:65532 --chmod=0555 /out/account-admin /app/account-admin
+ENTRYPOINT ["/app/account-admin"]
 
 # Keep the API last so a plain `docker build` still produces the serving image.
 FROM runtime AS api

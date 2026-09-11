@@ -23,15 +23,22 @@ export default function ConflictReviewScreen() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (id) void getConflictForTransaction(id).then(setConflict);
-  }, [id]);
+    let active = true;
+    if (id && session)
+      void getConflictForTransaction(id, session).then((value) => {
+        if (active) setConflict(value);
+      });
+    return () => {
+      active = false;
+    };
+  }, [id, session]);
 
   const decide = async (resolution: "server" | "retry-local") => {
-    if (!conflict) return;
+    if (!conflict || !session) return;
     setBusy(true);
     setError(null);
     try {
-      await resolveConflict(conflict, resolution);
+      await resolveConflict(conflict, resolution, session);
       await sync.refresh();
       if (resolution === "retry-local") void sync.syncNow();
       router.replace({
@@ -44,7 +51,9 @@ export default function ConflictReviewScreen() {
           ? reason.message
           : "Konflik tidak dapat diselesaikan.",
       );
-      setConflict(await getConflictForTransaction(conflict.transactionId));
+      setConflict(
+        await getConflictForTransaction(conflict.transactionId, session),
+      );
     } finally {
       setBusy(false);
     }

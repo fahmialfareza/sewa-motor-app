@@ -42,6 +42,22 @@ func (s *Store) ApplySyncMutation(
 	}
 	defer tx.Rollback(ctx)
 	dataSpaceID := submitter.EffectiveDataSpaceID()
+	if submitter.ContextKind != domain.ContextTenant || submitter.MembershipID == uuid.Nil {
+		return domain.StoredOperationResult{}, false, domain.NewError(domain.CodeContextRequired, "Pilih usaha untuk sinkronisasi")
+	}
+	identity := domain.MutationIdentity{
+		OriginActorID:        operation.OriginActorID,
+		OriginSessionID:      operation.OriginSessionID,
+		TerminalID:           &operation.TerminalID,
+		SubmittedByActorID:   submitter.UserID,
+		SubmittedBySessionID: submitter.SessionID,
+		DataSpaceID:          dataSpaceID,
+		DataMode:             submitter.EffectiveDataMode(),
+		TenantID:             submitter.TenantID,
+	}
+	if _, err := lockMutationIdentity(ctx, tx, identity); err != nil {
+		return domain.StoredOperationResult{}, false, err
+	}
 	space, err := lockActiveDataSpace(ctx, tx, dataSpaceID)
 	if err != nil {
 		return domain.StoredOperationResult{}, false, err
@@ -81,15 +97,7 @@ func (s *Store) ApplySyncMutation(
 		return domain.StoredOperationResult{}, false, dbError(err, "savepoint sync mutation")
 	}
 
-	identity := domain.MutationIdentity{
-		OriginActorID:        operation.OriginActorID,
-		OriginSessionID:      operation.OriginSessionID,
-		TerminalID:           &operation.TerminalID,
-		SubmittedByActorID:   submitter.UserID,
-		SubmittedBySessionID: submitter.SessionID,
-		DataSpaceID:          dataSpaceID,
-		DataMode:             space.Mode,
-	}
+	identity.DataMode = space.Mode
 	var data any
 	status := http.StatusOK
 	operationErr := error(nil)
@@ -97,10 +105,11 @@ func (s *Store) ApplySyncMutation(
 	switch operation.Aggregate + "/" + operation.Action {
 	case "transaction/create":
 		var payload struct {
-			ID              string                    `json:"id"`
-			PaymentMethod   syncOptionalPaymentMethod `json:"paymentMethod"`
-			QrisPayloadHash *string                   `json:"qrisPayloadHash"`
-			Items           []domain.ItemInput        `json:"items"`
+			ID                     string                    `json:"id"`
+			PaymentMethod          syncOptionalPaymentMethod `json:"paymentMethod"`
+			QrisPayloadHash        *string                   `json:"qrisPayloadHash"`
+			ReceiptProfileRevision *int                      `json:"receiptProfileRevision"`
+			Items                  []domain.ItemInput        `json:"items"`
 		}
 		if err := json.Unmarshal(operation.Payload, &payload); err != nil || operation.OccurredAt.IsZero() {
 			operationErr = domain.Validation("Payload transaksi tidak valid", nil)
@@ -138,6 +147,7 @@ func (s *Store) ApplySyncMutation(
 		data, operationErr = s.createTransactionTx(ctx, tx, domain.CreateTransactionInput{
 			ID: payload.ID, OccurredAt: operation.OccurredAt,
 			PaymentMethod: paymentMethod, QrisPayloadHash: payload.QrisPayloadHash,
+			ReceiptProfileRevision:          payload.ReceiptProfileRevision,
 			Items:                           payload.Items,
 			InitialPaymentStatus:            paymentStatus,
 			InitialPaymentConfirmedRevision: paymentConfirmedRevision,
@@ -344,20 +354,18 @@ func (s *Store) requireLegacyPaymentCompatibility(
 ) error {
 	defer observability.StartSegment(ctx, "Postgres.requireLegacyPaymentCompatibility")()
 
-	var terminalCreatedAt, serverNow time.Time
+	var terminalCreatedAt time.Time
+	var migratedOrigin bool
 	if err := tx.QueryRow(ctx, `
-		SELECT created_at, CURRENT_TIMESTAMP
-		FROM terminals
-		WHERE id = $1 AND is_active AND revoked_at IS NULL`,
-		operation.TerminalID,
-	).Scan(&terminalCreatedAt, &serverNow); err != nil {
+		SELECT t.created_at, s.legacy_origin AND s.tenant_id = $4
+		FROM terminals t JOIN sessions s ON s.terminal_id = t.id AND s.tenant_id = t.tenant_id
+		WHERE t.id = $1 AND t.is_active AND t.revoked_at IS NULL
+		  AND s.id = $2 AND s.user_id = $3`,
+		operation.TerminalID, operation.OriginSessionID, operation.OriginActorID, domain.InitialTenantID(),
+	).Scan(&terminalCreatedAt, &migratedOrigin); err != nil {
 		return dbError(err, "verify legacy payment compatibility")
 	}
-	if legacyPaymentOperationEligible(
-		operation.OccurredAt,
-		terminalCreatedAt,
-		serverNow,
-	) {
+	if migratedOrigin && terminalCreatedAt.Before(paymentMethodRolloutAt) && operation.OccurredAt.Before(paymentMethodRolloutAt) {
 		return nil
 	}
 	return domain.Validation(
@@ -403,7 +411,8 @@ func operationErrorStatus(err *domain.Error) int {
 		return http.StatusUnprocessableEntity
 	case domain.CodeUnauthorized:
 		return http.StatusUnauthorized
-	case domain.CodeForbidden, domain.CodePasswordChange, domain.CodeSignatureInvalid:
+	case domain.CodeForbidden, domain.CodePasswordChange, domain.CodeSignatureInvalid,
+		domain.CodeTenantSuspended, domain.CodeMembershipInactive, domain.CodeMembershipRevoked, domain.CodeContextRequired:
 		return http.StatusForbidden
 	case domain.CodeNotFound:
 		return http.StatusNotFound

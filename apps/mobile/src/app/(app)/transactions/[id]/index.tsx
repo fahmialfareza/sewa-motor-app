@@ -31,6 +31,7 @@ import {
 } from "@/domain/qris";
 import type { PaymentStatus, Transaction } from "@/domain/types";
 import { readQrisConfig, type QrisConfig } from "@/security/secure-store";
+import { qrisPayloadForTransaction } from "@/tenant/configuration";
 import { useSyncRuntime } from "@/sync/SyncProvider";
 import { colors, spacing, textStyles, typography } from "@/theme/tokens";
 import {
@@ -71,9 +72,9 @@ export default function TransactionDetailScreen() {
   const lastObservedSyncRef = useRef(lastSyncCompletedAt);
 
   const load = useCallback(async () => {
-    if (!id) return;
+    if (!id || !session) return;
     const currentRequestId = ++loadRequestId.current;
-    const qrisConfigPromise = readQrisConfig()
+    const qrisConfigPromise = readQrisConfig(session.tenantId ?? undefined)
       .then(async (config) => ({
         config,
         fingerprint: config
@@ -92,11 +93,23 @@ export default function TransactionDetailScreen() {
     try {
       const [nextTransaction, nextTerminalBlocked, nextQrisConfig] =
         await Promise.all([
-          getTransaction(id),
+          getTransaction(id, session),
           hasTerminalTransactionBlock(id),
           qrisConfigPromise,
         ]);
       if (currentRequestId !== loadRequestId.current) return;
+      // Prefer the exact historical merchant version, never another active QR.
+      if (nextTransaction?.qrisPayloadHash) {
+        const historical = await qrisPayloadForTransaction(
+          nextTransaction.qrisPayloadHash,
+          session,
+        );
+        if (currentRequestId !== loadRequestId.current) return;
+        if (historical) {
+          nextQrisConfig.config = { staticPayload: historical };
+          nextQrisConfig.fingerprint = await fingerprintStaticQris(historical);
+        }
+      }
       setTransaction(nextTransaction);
       setTerminalBlocked(nextTerminalBlocked);
       setQrisConfig(nextQrisConfig.config);
@@ -119,7 +132,7 @@ export default function TransactionDetailScreen() {
       setLoadError(message);
       setLoaded(true);
     }
-  }, [id]);
+  }, [id, session]);
 
   useFocusEffect(
     useCallback(() => {

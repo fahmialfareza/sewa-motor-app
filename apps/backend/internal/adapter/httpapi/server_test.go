@@ -50,7 +50,7 @@ func (repository *retiredRecoveryRepository) PrincipalByTokenHash(context.Contex
 	)
 }
 
-func (repository *retiredRecoveryRepository) ActiveDataSpace(context.Context, domain.DataMode) (domain.DataSpace, error) {
+func (repository *retiredRecoveryRepository) ActiveDataSpace(context.Context, uuid.UUID, domain.DataMode) (domain.DataSpace, error) {
 	return repository.active, nil
 }
 
@@ -65,7 +65,7 @@ func (repository *retiredRecoveryRepository) RecoverRetiredSandboxSession(
 	return repository.recovered, nil
 }
 
-func (repository *retiredRecoveryRepository) GetUser(context.Context, uuid.UUID) (domain.User, error) {
+func (repository *retiredRecoveryRepository) GetUser(context.Context, uuid.UUID, uuid.UUID) (domain.User, error) {
 	return domain.User{
 		ID: repository.retired.UserID, FullName: "Admin Recovery",
 		Username: "admin.recovery", Role: domain.RoleAdmin, IsActive: true,
@@ -113,7 +113,7 @@ func (syncViewRepository) GetPackage(context.Context, uuid.UUID, uuid.UUID) (dom
 	}, nil
 }
 
-func (sessionViewRepository) GetUser(context.Context, uuid.UUID) (domain.User, error) {
+func (sessionViewRepository) GetUser(context.Context, uuid.UUID, uuid.UUID) (domain.User, error) {
 	return domain.User{
 		ID:       uuid.MustParse("00000000-0000-4000-8000-000000000010"),
 		FullName: "Admin Uji", Username: "admin.uji", Role: domain.RoleAdmin, IsActive: true,
@@ -193,6 +193,7 @@ func TestSessionViewIncludesImmutableDataBoundary(t *testing.T) {
 	c.Request = request
 	spaceID := uuid.MustParse("00000000-0000-4000-8000-000000000777")
 	current := domain.Principal{
+		ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(),
 		UserID:      uuid.MustParse("00000000-0000-4000-8000-000000000010"),
 		SessionID:   uuid.MustParse("00000000-0000-4000-8000-000000000020"),
 		DataSpaceID: spaceID, DataMode: domain.DataModeSandbox, SandboxGeneration: 7,
@@ -215,6 +216,7 @@ func TestRetiredSandboxIdentityCanOnlyReachSwitchModeRecovery(t *testing.T) {
 	oldSpaceID := uuid.MustParse("00000000-0000-4000-8000-000000000701")
 	activeSpaceID := uuid.MustParse("00000000-0000-4000-8000-000000000702")
 	retired := domain.Principal{
+		ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(),
 		UserID:    uuid.MustParse("00000000-0000-4000-8000-000000000710"),
 		SessionID: uuid.MustParse("00000000-0000-4000-8000-000000000711"),
 		FullName:  "Admin Recovery", Username: "admin.recovery", Role: domain.RoleAdmin,
@@ -311,7 +313,7 @@ func TestProductionGuardRejectsSharedMutationsFromSandbox(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
 	c.Request = request
-	c.Set(principalKey, domain.Principal{DataMode: domain.DataModeSandbox})
+	c.Set(principalKey, domain.Principal{ContextKind: domain.ContextTenant, TenantID: domain.InitialTenantID(), MembershipID: uuid.New(), DataSpaceID: uuid.New(), DataMode: domain.DataModeSandbox})
 
 	(&Server{}).requireProduction()(c)
 	if !c.IsAborted() || recorder.Code != http.StatusForbidden {
@@ -422,11 +424,13 @@ func TestPublicWebRequestLogHasFailClosedProductionScope(t *testing.T) {
 
 	log := output.String()
 	for _, field := range []string{
-		`"data.mode":"production"`,
-		`"data.space_id":"00000000-0000-4000-8000-000000000100"`,
+		`"auth.context":"public"`,
 	} {
 		if !strings.Contains(log, field) {
 			t.Fatalf("public request log does not contain %s: %s", field, log)
 		}
+	}
+	if strings.Contains(log, `"tenant.id"`) || strings.Contains(log, `"data.space_id"`) {
+		t.Fatalf("public request invented business scope: %s", log)
 	}
 }

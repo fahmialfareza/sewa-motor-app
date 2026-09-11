@@ -61,12 +61,13 @@ export async function hydrateSyncStoreForSession(
   summary: SyncSummary | null = null,
 ): Promise<void> {
   resetSyncStoreForSession(session);
-  if (!session) return;
+  if (!session || (session.contextKind && session.contextKind !== "tenant"))
+    return;
 
   const requestedDataSpaceId = session.dataSpaceId;
   const [pendingCount, metadata] = await Promise.all([
-    countPendingOutbox(session.dataMode),
-    getSyncMetadata(session.dataMode),
+    countPendingOutbox(session),
+    getSyncMetadata(session),
   ]);
   if (useSyncStore.getState().dataSpaceId !== requestedDataSpaceId) return;
 
@@ -98,7 +99,7 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
     const auth = useAuthStore.getState();
     if (auth.switchingMode) return;
     const session = auth.session;
-    if (!session) {
+    if (!session || (session.contextKind && session.contextKind !== "tenant")) {
       resetSyncStoreForSession(null);
       return;
     }
@@ -107,8 +108,8 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
     }
     const requestedDataSpaceId = session.dataSpaceId;
     const [pendingCount, metadata] = await Promise.all([
-      countPendingOutbox(session.dataMode),
-      getSyncMetadata(session.dataMode),
+      countPendingOutbox(session),
+      getSyncMetadata(session),
     ]);
     const currentAuth = useAuthStore.getState();
     if (
@@ -133,7 +134,13 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
   syncNow: () => {
     const auth = useAuthStore.getState();
     const session = auth.session;
-    if (!session || auth.switchingMode || !get().online) {
+    if (
+      !session ||
+      auth.scopeLocked ||
+      (session.contextKind && session.contextKind !== "tenant") ||
+      auth.switchingMode ||
+      !get().online
+    ) {
       return Promise.resolve(null);
     }
     if (get().dataSpaceId !== session.dataSpaceId) {
@@ -163,7 +170,7 @@ export const useSyncStore = create<SyncStore>((set, get) => ({
         if (!capturedSessionIsActive(session)) return summary;
         const [storedSession, terminal] = await Promise.all([
           readSession(),
-          readTerminalIdentity(),
+          readTerminalIdentity(session.tenantId ?? undefined),
         ]);
         const currentAuth = useAuthStore.getState();
         if (

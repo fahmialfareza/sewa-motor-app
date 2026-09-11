@@ -31,8 +31,8 @@ func TestDataModeContract(t *testing.T) {
 	if !DataModeProduction.Valid() || !DataModeSandbox.Valid() || DataMode("live").Valid() {
 		t.Fatal("data mode contract must be production|sandbox")
 	}
-	if EffectiveDataSpaceID([16]byte{}) != LiveDataSpaceID() {
-		t.Fatal("zero data space must remain backward compatible with production")
+	if EffectiveDataSpaceID([16]byte{}) != [16]byte{} {
+		t.Fatal("missing data scope must not acquire production access")
 	}
 }
 

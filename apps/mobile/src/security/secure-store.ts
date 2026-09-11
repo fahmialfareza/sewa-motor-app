@@ -3,9 +3,12 @@ import * as SecureStore from "expo-secure-store";
 
 import {
   PRODUCTION_DATA_SPACE_ID,
+  INITIAL_TENANT_ID,
+  type LocalScope,
   type DataMode,
   type Session,
 } from "@/domain/types";
+import { activeTenantId } from "@/mode/mode-store";
 
 const keys = {
   session: "sewa-motor.session.v1",
@@ -50,17 +53,33 @@ export async function readSession(): Promise<Session | null> {
       }
   >(keys.session);
   if (!session) return null;
+  if (
+    session.contextKind === "tenant" &&
+    (!session.tenantId || !session.dataSpaceId)
+  )
+    throw new Error(
+      "Identitas bisnis pada sesi tersimpan tidak lengkap. Jangan hapus data; hubungi dukungan.",
+    );
   const dataMode: DataMode =
     session.dataMode === "sandbox" || session.mode === "sandbox"
       ? "sandbox"
       : "production";
   return {
     ...session,
+    contextKind: session.contextKind ?? "tenant",
+    tenantId:
+      session.tenantId ??
+      (session.contextKind && session.contextKind !== "tenant"
+        ? null
+        : INITIAL_TENANT_ID),
     dataMode,
     dataSpaceId:
-      typeof session.dataSpaceId === "string" && session.dataSpaceId.length > 0
-        ? session.dataSpaceId
-        : PRODUCTION_DATA_SPACE_ID,
+      session.contextKind && session.contextKind !== "tenant"
+        ? null
+        : typeof session.dataSpaceId === "string" &&
+            session.dataSpaceId.length > 0
+          ? session.dataSpaceId
+          : PRODUCTION_DATA_SPACE_ID,
     sandboxGeneration:
       dataMode === "sandbox" &&
       Number.isInteger(session.sandboxGeneration) &&
@@ -79,9 +98,29 @@ export async function clearSession(): Promise<void> {
 }
 
 export async function getOrCreateDatabaseKey(
-  mode: DataMode = "production",
+  scope: LocalScope = "production",
 ): Promise<string> {
-  const key = mode === "sandbox" ? keys.sandboxDatabase : keys.database;
+  if (
+    typeof scope !== "string" &&
+    "contextKind" in scope &&
+    scope.contextKind &&
+    scope.contextKind !== "tenant"
+  ) {
+    throw new Error(
+      "Konteks akun dan platform tidak memiliki kunci database bisnis.",
+    );
+  }
+  const mode = typeof scope === "string" ? scope : scope.dataMode;
+  const tenantId =
+    typeof scope === "string" ? activeTenantId() : scope.tenantId;
+  if (!tenantId || !/^[a-f0-9-]{36}$/i.test(tenantId))
+    throw new Error("Identitas bisnis wajib disertakan untuk kunci database.");
+  const key =
+    tenantId === INITIAL_TENANT_ID
+      ? mode === "sandbox"
+        ? keys.sandboxDatabase
+        : keys.database
+      : `sewa-motor.database-key.tenant.${tenantId}.${mode}.v1`;
   const existing = await SecureStore.getItemAsync(key);
   if (existing) return existing;
   const generated = bytesToHex(await Crypto.getRandomBytesAsync(32));
@@ -101,10 +140,16 @@ export async function clearAuthNotice(): Promise<void> {
   await SecureStore.deleteItemAsync(keys.authNotice);
 }
 
-export async function readTerminalIdentity(): Promise<TerminalIdentityRecord | null> {
+export async function readTerminalIdentity(
+  tenantId: string = activeTenantId(),
+): Promise<TerminalIdentityRecord | null> {
   const value = await readJson<
     TerminalIdentityRecord & { terminalId?: string }
-  >(keys.terminal);
+  >(
+    tenantId === INITIAL_TENANT_ID
+      ? keys.terminal
+      : `${keys.terminal}.${tenantId}`,
+  );
   if (!value) return null;
   if (value.installationId) return value;
   return {
@@ -118,8 +163,36 @@ export async function readTerminalIdentity(): Promise<TerminalIdentityRecord | n
 
 export async function writeTerminalIdentity(
   identity: TerminalIdentityRecord,
+  tenantId: string = activeTenantId(),
 ): Promise<void> {
-  await writeJson(keys.terminal, identity);
+  await writeJson(
+    tenantId === INITIAL_TENANT_ID
+      ? keys.terminal
+      : `${keys.terminal}.${tenantId}`,
+    identity,
+  );
+}
+
+export async function preserveTerminalIdentity(
+  identity: TerminalIdentityRecord,
+  tenantId: string,
+): Promise<void> {
+  if (identity.serverTerminalId)
+    await writeJson(
+      `${keys.terminal}.${tenantId}.retired.${identity.serverTerminalId}`,
+      identity,
+    );
+}
+
+export async function getOrCreateInstallationId(): Promise<string> {
+  const legacy = await readTerminalIdentity(INITIAL_TENANT_ID);
+  if (legacy) return legacy.installationId;
+  const key = "sewa-motor.installation.v1";
+  const existing = await SecureStore.getItemAsync(key);
+  if (existing) return existing;
+  const generated = Crypto.randomUUID();
+  await SecureStore.setItemAsync(key, generated, secureOptions);
+  return generated;
 }
 
 export async function readPrinterConfig(): Promise<PrinterConfig> {
@@ -137,16 +210,27 @@ export async function writePrinterConfig(config: PrinterConfig): Promise<void> {
   await writeJson(keys.printer, config);
 }
 
-export async function readQrisConfig(): Promise<QrisConfig | null> {
+export async function readQrisConfig(
+  tenantId: string = activeTenantId(),
+): Promise<QrisConfig | null> {
+  return readJson<QrisConfig>(`${keys.qris}.tenant.${tenantId}`);
+}
+
+export async function writeQrisConfig(
+  config: QrisConfig,
+  tenantId: string = activeTenantId(),
+): Promise<void> {
+  await writeJson(`${keys.qris}.tenant.${tenantId}`, config);
+}
+
+export async function clearQrisConfig(
+  tenantId: string = activeTenantId(),
+): Promise<void> {
+  await SecureStore.deleteItemAsync(`${keys.qris}.tenant.${tenantId}`);
+}
+
+export async function readLegacyQrisConfig(): Promise<QrisConfig | null> {
   return readJson<QrisConfig>(keys.qris);
-}
-
-export async function writeQrisConfig(config: QrisConfig): Promise<void> {
-  await writeJson(keys.qris, config);
-}
-
-export async function clearQrisConfig(): Promise<void> {
-  await SecureStore.deleteItemAsync(keys.qris);
 }
 
 async function readJson<T>(key: string): Promise<T | null> {

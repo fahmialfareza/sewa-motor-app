@@ -1,6 +1,6 @@
 # Telomoyo POS
 
-Android-first, local-first point of sale for one motorcycle-rental store with
+Android-first, local-first point of sale for independent businesses with
 multiple physical terminals. The mobile app remains usable through connectivity
 loss; PostgreSQL is the durable source of truth and Redis is disposable cache and
 rate-limit infrastructure.
@@ -27,7 +27,7 @@ customers, rental schedules, tax, shifts, photos, targets, or cancellations.
 - Admins can create/read transactions, correct and confirm payment for their own
   transactions, view statistics/exports, read packages, and change their own
   password.
-- Superadmins additionally manage users/packages and perform online-only
+- Tenant superadmins additionally manage memberships/invitations/packages and perform online-only
   transaction deletion, and may correct or confirm payment for every
   transaction. Self-demotion/deactivation/deletion and removal of the final
   active superadmin are forbidden.
@@ -58,7 +58,30 @@ The production deployment can optionally expose a first-class Sandbox Mode.
 Server-owned data spaces and generations keep test transactions out of
 production history, revenue, exports, audit streams, and sync cursors. Sandbox
 is disabled by default; every signed-in staff member can switch modes, while
-only a production-mode superadmin can reset the shared sandbox generation.
+only a production-mode tenant superadmin can reset that tenant's shared sandbox
+generation.
+
+## Multi-tenant operation
+
+The migrated installation is the **Telomoyo** tenant. Existing accounts, IDs,
+encrypted databases, terminal keys, and already-signed queues are preserved.
+Accounts can belong to several businesses with independent admin/superadmin
+roles. Each business owns its catalog, transactions, terminals, merchant QRIS,
+receipt identity, and Sandbox lifecycle. An account or platform-management
+context has no business-data access; a platform administrator still needs an
+explicit tenant membership to enter a business.
+
+Provisioning is disabled by default (`TENANT_PROVISIONING_ENABLED=false`).
+Do not enable it until the tenant-aware backend and compatible mobile app are
+deployed and every old backend replica has stopped. The rollout, operator
+commands, compatibility boundaries, and release acceptance checklist are in
+[the multi-tenant operations guide](docs/multi-tenant-operations.md).
+
+Platform administrators provision businesses using one-use, seven-day owner
+invitations. Tenant superadmins invite staff rather than create or reset global
+accounts. Global password recovery and the first platform-admin assignment are
+explicit, audited operator actions; existing superadmins are not automatically
+promoted.
 
 ## Rebrand compatibility
 

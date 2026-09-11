@@ -39,6 +39,9 @@ func (s *Store) CreateTransaction(ctx context.Context, input domain.CreateTransa
 
 func (s *Store) createTransactionTx(ctx context.Context, tx pgx.Tx, input domain.CreateTransactionInput) (domain.Transaction, error) {
 	defer observability.StartSegment(ctx, "Postgres.createTransactionTx")()
+	if _, err := lockMutationIdentity(ctx, tx, input.Identity); err != nil {
+		return domain.Transaction{}, err
+	}
 	dataSpaceID := input.Identity.EffectiveDataSpaceID()
 	space, err := lockActiveDataSpace(ctx, tx, dataSpaceID)
 	if err != nil {
@@ -76,17 +79,28 @@ func (s *Store) createTransactionTx(ctx context.Context, tx pgx.Tx, input domain
 		return domain.Transaction{}, err
 	}
 	paymentAmount := domain.ResolvePaymentAmount(space.Mode, input.PaymentMethod, total)
+	if err := validateMerchantBinding(ctx, tx, input.Identity, input.PaymentMethod, input.QrisPayloadHash); err != nil {
+		return domain.Transaction{}, err
+	}
+	receiptIdentity, err := resolveReceiptIdentity(ctx, tx, input.Identity, input.ReceiptProfileRevision)
+	if err != nil {
+		return domain.Transaction{}, err
+	}
+	receiptJSON, err := json.Marshal(receiptIdentity)
+	if err != nil {
+		return domain.Transaction{}, domain.WrapInternal(err, "marshal receipt identity")
+	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO transactions (
 			id, data_space_id, current_revision, occurred_at,
 			origin_actor_id, origin_session_id, terminal_id, updated_by,
 			subtotal, total, payment_amount, payment_method, qris_payload_hash,
-			payment_status, payment_confirmed_revision
-		) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,$12,$13)`,
+			payment_status, payment_confirmed_revision, receipt_profile_revision, receipt_identity
+		) VALUES ($1,$2,1,$3,$4,$5,$6,$7,$8,$8,$9,$10,$11,$12,$13,$14,$15)`,
 		input.ID, dataSpaceID, input.OccurredAt, input.Identity.OriginActorID,
 		input.Identity.OriginSessionID, input.Identity.TerminalID,
 		input.Identity.SubmittedByActorID, total, paymentAmount, input.PaymentMethod,
-		input.QrisPayloadHash, paymentStatus, confirmedRevision,
+		input.QrisPayloadHash, paymentStatus, confirmedRevision, receiptIdentity.Revision, receiptJSON,
 	)
 	if err != nil {
 		return domain.Transaction{}, dbError(err, "insert transaction")
@@ -100,6 +114,8 @@ func (s *Store) createTransactionTx(ctx context.Context, tx pgx.Tx, input domain
 		paymentAmount,
 	)
 	createdState := paymentStateSnapshot(after, paymentStatus, confirmedRevision)
+	createdState["receiptIdentity"] = receiptIdentity
+	createdState["receiptProfileRevision"] = receiptIdentity.Revision
 	afterJSON, err := json.Marshal(createdState)
 	if err != nil {
 		return domain.Transaction{}, domain.WrapInternal(err, "marshal transaction snapshot")
@@ -108,8 +124,8 @@ func (s *Store) createTransactionTx(ctx context.Context, tx pgx.Tx, input domain
 		INSERT INTO transaction_revisions (
 			transaction_id, revision, data_space_id, change_type, qris_payload_hash, payment_amount, after_snapshot,
 			origin_actor_id, origin_session_id, terminal_id,
-			submitted_by_actor_id, submitted_by_session_id, client_occurred_at
-		) VALUES ($1,1,$2,'create',$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+			submitted_by_actor_id, submitted_by_session_id, client_occurred_at,receipt_identity
+		) VALUES ($1,1,$2,'create',$3,$4,$5,$6,$7,$8,$9,$10,$11,$5::jsonb->'receiptIdentity')`,
 		input.ID, dataSpaceID, input.QrisPayloadHash, paymentAmount, afterJSON,
 		input.Identity.OriginActorID, input.Identity.OriginSessionID, input.Identity.TerminalID,
 		input.Identity.SubmittedByActorID, input.Identity.SubmittedBySessionID, input.OccurredAt,
@@ -153,6 +169,12 @@ func (s *Store) CorrectTransaction(ctx context.Context, input domain.CorrectTran
 
 func (s *Store) correctTransactionTx(ctx context.Context, tx pgx.Tx, input domain.CorrectTransactionInput) (domain.Transaction, error) {
 	defer observability.StartSegment(ctx, "Postgres.correctTransactionTx")()
+	if _, err := lockMutationIdentity(ctx, tx, input.Identity); err != nil {
+		return domain.Transaction{}, err
+	}
+	if err := validateMerchantBinding(ctx, tx, input.Identity, input.PaymentMethod, input.QrisPayloadHash); err != nil {
+		return domain.Transaction{}, err
+	}
 	dataSpaceID := input.Identity.EffectiveDataSpaceID()
 	space, err := lockActiveDataSpace(ctx, tx, dataSpaceID)
 	if err != nil {
@@ -182,24 +204,26 @@ func (s *Store) correctTransactionTx(ctx context.Context, tx pgx.Tx, input domai
 	var deletedAt any
 	var ownerID uuid.UUID
 	var correctingActorRole domain.Role
+	var receiptIdentityJSON []byte
+	var receiptProfileRevision int
 	err = tx.QueryRow(ctx, `
 		SELECT t.current_revision, t.occurred_at, r.after_snapshot,
 		       t.latest_printed_revision, t.payment_method,
 		       t.payment_amount, t.qris_payload_hash, t.payment_status, t.payment_confirmed_revision,
 		       t.deleted_at,
-		       t.origin_actor_id, correcting_actor.role
+		       t.origin_actor_id, correcting_actor.role,t.receipt_identity,t.receipt_profile_revision
 		FROM transactions t
 		JOIN transaction_revisions r
 		  ON r.transaction_id = t.id AND r.revision = t.current_revision
 		 AND r.data_space_id = t.data_space_id
-		JOIN users correcting_actor ON correcting_actor.id = $2
+		JOIN tenant_memberships correcting_actor ON correcting_actor.user_id = $2 AND correcting_actor.tenant_id = t.tenant_id AND correcting_actor.status = 'active'
 		WHERE t.id = $1 AND t.data_space_id = $3
 		FOR UPDATE OF t`,
 		input.ID, input.Identity.OriginActorID, dataSpaceID,
 	).Scan(
 		&currentRevision, &transactionOccurredAt, &beforeJSON, &latestPrintedRevision,
 		&currentPaymentMethod, &currentPaymentAmount, &currentQrisPayloadHash, &paymentStatus, &paymentConfirmedRevision,
-		&deletedAt, &ownerID, &correctingActorRole,
+		&deletedAt, &ownerID, &correctingActorRole, &receiptIdentityJSON, &receiptProfileRevision,
 	)
 	if err != nil {
 		return domain.Transaction{}, dbError(err, "lock corrected transaction")
@@ -211,6 +235,8 @@ func (s *Store) correctTransactionTx(ctx context.Context, tx pgx.Tx, input domai
 		paymentConfirmedRevision,
 	)
 	beforeState["paymentAmount"] = currentPaymentAmount
+	beforeState["receiptIdentity"] = json.RawMessage(receiptIdentityJSON)
+	beforeState["receiptProfileRevision"] = receiptProfileRevision
 	applyQrisPayloadHash(beforeState, currentQrisPayloadHash)
 	beforeJSON, err = json.Marshal(beforeState)
 	if err != nil {
@@ -289,6 +315,8 @@ func (s *Store) correctTransactionTx(ctx context.Context, tx pgx.Tx, input domai
 		nextPaymentStatus,
 		nextPaymentConfirmedRevision,
 	)
+	afterState["receiptIdentity"] = beforeState["receiptIdentity"]
+	afterState["receiptProfileRevision"] = beforeState["receiptProfileRevision"]
 	afterJSON, err := json.Marshal(afterState)
 	if err != nil {
 		return domain.Transaction{}, domain.WrapInternal(err, "marshal corrected snapshot")
@@ -298,8 +326,8 @@ func (s *Store) correctTransactionTx(ctx context.Context, tx pgx.Tx, input domai
 			transaction_id, revision, data_space_id, base_revision, change_type, reason,
 			qris_payload_hash, payment_amount, before_snapshot, after_snapshot,
 			origin_actor_id, origin_session_id, terminal_id,
-			submitted_by_actor_id, submitted_by_session_id, client_occurred_at
-		) VALUES ($1,$2,$3,$4,'correction',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+			submitted_by_actor_id, submitted_by_session_id, client_occurred_at,receipt_identity
+		) VALUES ($1,$2,$3,$4,'correction',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$9::jsonb->'receiptIdentity')`,
 		input.ID, nextRevision, dataSpaceID, currentRevision, input.Reason,
 		input.QrisPayloadHash, nextPaymentAmount, beforeJSON, afterJSON,
 		input.Identity.OriginActorID, input.Identity.OriginSessionID, input.Identity.TerminalID,
@@ -528,20 +556,24 @@ func getTransactionWith(ctx context.Context, query queryer, dataSpaceID uuid.UUI
 		       t.qris_payload_hash, t.payment_confirmed_revision,
 		       t.print_state, t.latest_printed_revision,
 		       t.terminal_id, t.deleted_at, t.delete_reason, t.updated_at,
-		       origin.id, origin.full_name, origin.username, origin.role,
-		       updater.id, updater.full_name, updater.username, updater.role,
-		       deleter.id, deleter.full_name, deleter.username, deleter.role,
-		       t.data_space_id, ds.mode
+		       origin.id, origin.full_name, origin.username, origin_membership.role,
+		       updater.id, updater.full_name, updater.username, updater_membership.role,
+		       deleter.id, deleter.full_name, deleter.username, deleter_membership.role,
+		       t.data_space_id, ds.mode, t.receipt_profile_revision, t.receipt_identity
 		FROM transactions t
 		JOIN data_spaces ds ON ds.id = t.data_space_id
 		JOIN users origin ON origin.id = t.origin_actor_id
 		JOIN users updater ON updater.id = t.updated_by
 		LEFT JOIN users deleter ON deleter.id = t.deleted_by
+		JOIN tenant_memberships origin_membership ON origin_membership.user_id = origin.id AND origin_membership.tenant_id = ds.tenant_id
+		JOIN tenant_memberships updater_membership ON updater_membership.user_id = updater.id AND updater_membership.tenant_id = ds.tenant_id
+		LEFT JOIN tenant_memberships deleter_membership ON deleter_membership.user_id = deleter.id AND deleter_membership.tenant_id = ds.tenant_id
 		WHERE t.id = $1 AND t.data_space_id = $2`
 	if !includeDeleted {
 		sql += ` AND t.deleted_at IS NULL`
 	}
 	var mode domain.DataMode
+	var receiptJSON []byte
 	err := query.QueryRow(ctx, sql, id, domain.EffectiveDataSpaceID(dataSpaceID)).Scan(
 		&item.ID, &item.Revision, &item.OccurredAt, &item.ServerReceivedAt,
 		&item.Subtotal, &item.Total, &item.PaymentAmount, &item.PaymentMethod, &item.PaymentStatus,
@@ -551,10 +583,15 @@ func getTransactionWith(ctx context.Context, query queryer, dataSpaceID uuid.UUI
 		&item.OriginActor.ID, &item.OriginActor.FullName, &item.OriginActor.Username, &item.OriginActor.Role,
 		&item.UpdatedBy.ID, &item.UpdatedBy.FullName, &item.UpdatedBy.Username, &item.UpdatedBy.Role,
 		&deletedActorID, &deletedActorName, &deletedActorUsername, &deletedActorRole,
-		&item.DataSpaceID, &mode,
+		&item.DataSpaceID, &mode, &item.ReceiptProfileRevision, &receiptJSON,
 	)
 	if err != nil {
 		return domain.Transaction{}, err
+	}
+	if len(receiptJSON) > 0 {
+		if err := json.Unmarshal(receiptJSON, &item.ReceiptIdentity); err != nil {
+			return domain.Transaction{}, domain.WrapInternal(err, "read receipt identity")
+		}
 	}
 	item.DisplayID = "TRX-" + item.ID
 	if mode == domain.DataModeSandbox {
@@ -695,6 +732,13 @@ func (s *Store) DeleteTransaction(ctx context.Context, actor domain.Principal, i
 		return dbError(err, "begin delete transaction")
 	}
 	defer tx.Rollback(ctx)
+	role, err := lockTenantAccess(ctx, tx, actor)
+	if err != nil {
+		return err
+	}
+	if role != domain.RoleSuperadmin {
+		return domain.NewError(domain.CodeForbidden, "Hanya superadmin usaha dapat menghapus transaksi")
+	}
 	dataSpaceID := actor.EffectiveDataSpaceID()
 	if _, err = lockActiveDataSpace(ctx, tx, dataSpaceID); err != nil {
 		return err

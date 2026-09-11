@@ -106,34 +106,7 @@ func run() error {
 		QRISAmount:    cfg.SandboxQRISAmount,
 		RetentionDays: cfg.SandboxRetentionDays,
 	}
-	if cfg.SandboxEnabled {
-		activationCtx, activationCancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		activationTransaction := telemetry.App.StartTransaction("SandboxInitialize")
-		activationCtx = newrelic.NewContext(activationCtx, activationTransaction)
-		activationCtx = observability.WithDataScope(activationCtx, observability.DataScope{
-			Mode: string(domain.DataModeSandbox),
-		})
-		space, activationErr := sandbox.Initialize(activationCtx)
-		if activationErr == nil {
-			activationCtx = observability.WithDataScope(activationCtx, observability.DataScope{
-				Mode:       string(space.Mode),
-				SpaceID:    space.ID.String(),
-				Generation: space.Generation,
-			})
-			logger.WithContext(activationCtx).WithFields(logrus.Fields{
-				"data.mode":       space.Mode,
-				"data.space_id":   space.ID,
-				"data.generation": space.Generation,
-			}).Info("sandbox generation ready")
-		} else {
-			observability.NoticeError(activationCtx, activationErr, "sandbox.initialize")
-		}
-		activationCancel()
-		activationTransaction.End()
-		if activationErr != nil {
-			return activationErr
-		}
-	}
+	// Tenant Sandbox generations are activated lazily, never as a readiness dependency.
 	router := httpapi.New(httpapi.Dependencies{
 		Repo: store, Auth: auth,
 		Users:        usecase.Users{Repo: store, Passwords: passwords},
@@ -143,6 +116,7 @@ func run() error {
 		Terminals:    usecase.Terminals{Repo: store},
 		Sync:         usecase.Sync{Repo: store, Transactions: transactions},
 		Sandbox:      sandbox,
+		Tenancy:      usecase.Tenancy{Repo: store, Passwords: passwords, ProvisioningEnabled: cfg.TenantProvisioningEnabled},
 		Redis:        redisPinger, Logger: logger, NewRelic: telemetry.App,
 	})
 	if err := router.SetTrustedProxies(cfg.TrustedProxies); err != nil {

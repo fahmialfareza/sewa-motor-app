@@ -17,7 +17,7 @@ type Terminals struct {
 
 func (t Terminals) Enroll(ctx context.Context, principal domain.Principal, input domain.EnrollTerminalInput) (domain.Terminal, error) {
 	defer observability.StartSegment(ctx, "Usecase.Terminals.Enroll")()
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return domain.Terminal{}, err
 	}
 	if err := RequireProduction(principal); err != nil {
@@ -33,13 +33,13 @@ func (t Terminals) Enroll(ctx context.Context, principal domain.Principal, input
 
 func (t Terminals) Current(ctx context.Context, principal domain.Principal) (domain.Terminal, error) {
 	defer observability.StartSegment(ctx, "Usecase.Terminals.Current")()
-	if err := RequireReady(principal); err != nil {
+	if err := RequireTenant(principal); err != nil {
 		return domain.Terminal{}, err
 	}
 	if principal.TerminalID == nil {
 		return domain.Terminal{}, domain.NewError(domain.CodeNotFound, "Sesi belum terikat ke terminal")
 	}
-	return t.Repo.GetTerminal(ctx, *principal.TerminalID)
+	return t.Repo.GetTerminal(ctx, principal.TenantID, *principal.TerminalID)
 }
 
 func (t Terminals) Revoke(ctx context.Context, principal domain.Principal, id uuid.UUID) (domain.Terminal, error) {

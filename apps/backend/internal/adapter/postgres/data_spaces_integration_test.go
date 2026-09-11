@@ -27,7 +27,7 @@ func TestSandboxLifecycleClonesProductionRevokesSessionsAndPurgesOnlyAtExpiry(t 
 	defer cancel()
 
 	actor, terminalID := seedSandboxLifecyclePrincipal(t, ctx, store)
-	if _, err := store.ActiveDataSpace(ctx, domain.DataModeSandbox); !domain.IsCode(err, domain.CodeNotFound) {
+	if _, err := store.ActiveDataSpace(ctx, domain.InitialTenantID(), domain.DataModeSandbox); !domain.IsCode(err, domain.CodeNotFound) {
 		t.Fatalf("migration unexpectedly activated Sandbox: %v", err)
 	}
 	productionPackagesAtActivation, err := store.ListPackages(ctx, domain.LiveDataSpaceID(), false)
@@ -48,7 +48,7 @@ func TestSandboxLifecycleClonesProductionRevokesSessionsAndPurgesOnlyAtExpiry(t 
 	for range replicaCount {
 		go func() {
 			<-start
-			space, activationErr := store.EnsureSandbox(ctx)
+			space, activationErr := store.EnsureSandbox(ctx, domain.InitialTenantID())
 			results <- activationResult{space: space, err: activationErr}
 		}()
 	}
@@ -76,7 +76,7 @@ func TestSandboxLifecycleClonesProductionRevokesSessionsAndPurgesOnlyAtExpiry(t 
 	assertProductionPackageClones(t, productionPackagesAtActivation, initialClones)
 	assertInitialSandboxSeeds(t, ctx, store, initialSandbox.ID, len(initialClones))
 
-	idempotentSandbox, err := store.EnsureSandbox(ctx)
+	idempotentSandbox, err := store.EnsureSandbox(ctx, domain.InitialTenantID())
 	if err != nil || idempotentSandbox.ID != initialSandbox.ID {
 		t.Fatalf("idempotent Sandbox activation = %+v error=%v", idempotentSandbox, err)
 	}
@@ -109,7 +109,7 @@ func TestSandboxLifecycleClonesProductionRevokesSessionsAndPurgesOnlyAtExpiry(t 
 		t.Fatalf("production package count = %d, want the seeds plus lifecycle package", len(productionPackagesBefore))
 	}
 
-	oldSandbox, err := store.ActiveDataSpace(ctx, domain.DataModeSandbox)
+	oldSandbox, err := store.ActiveDataSpace(ctx, domain.InitialTenantID(), domain.DataModeSandbox)
 	if err != nil {
 		t.Fatalf("read initial Sandbox generation: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestSwitchSessionWaitingBehindResetRejectsRetiredTarget(t *testing.T) {
 	defer cancel()
 
 	actor, _ := seedSandboxLifecyclePrincipal(t, ctx, store)
-	sandbox, err := store.EnsureSandbox(ctx)
+	sandbox, err := store.EnsureSandbox(ctx, domain.InitialTenantID())
 	if err != nil {
 		t.Fatalf("activate Sandbox: %v", err)
 	}
@@ -337,7 +337,7 @@ func TestSwitchSessionWaitingBehindResetRejectsRetiredTarget(t *testing.T) {
 	if leakedSessions != 0 {
 		t.Fatalf("failed mode switch left %d target sessions", leakedSessions)
 	}
-	active, err := store.ActiveDataSpace(ctx, domain.DataModeSandbox)
+	active, err := store.ActiveDataSpace(ctx, domain.InitialTenantID(), domain.DataModeSandbox)
 	if err != nil || active.ID != replacement.ID {
 		t.Fatalf("active Sandbox = %+v, error=%v; want %s", active, err, replacement.ID)
 	}
@@ -349,7 +349,7 @@ func TestConcurrentSwitchSessionConsumesCurrentSessionOnce(t *testing.T) {
 	defer cancel()
 
 	actor, _ := seedSandboxLifecyclePrincipal(t, ctx, store)
-	sandbox, err := store.EnsureSandbox(ctx)
+	sandbox, err := store.EnsureSandbox(ctx, domain.InitialTenantID())
 	if err != nil {
 		t.Fatalf("activate Sandbox: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestRetiredSandboxSessionRecoveryIsOneTimeAndSecurityBound(t *testing.T) {
 	securityActor, _ := seedSandboxLifecyclePrincipalWithToken(
 		t, ctx, store, integrationBytes(24),
 	)
-	sandbox, err := store.EnsureSandbox(ctx)
+	sandbox, err := store.EnsureSandbox(ctx, domain.InitialTenantID())
 	if err != nil {
 		t.Fatalf("activate Sandbox: %v", err)
 	}
@@ -484,6 +484,12 @@ func TestRetiredSandboxSessionRecoveryIsOneTimeAndSecurityBound(t *testing.T) {
 			},
 		} {
 			lookedUp, lookupErr := lookup()
+			if revocation.reason == "terminal_revoked" {
+				if !domain.IsCode(lookupErr, domain.CodeMembershipInactive) {
+					t.Fatalf("terminal recovery must be context-only: %v", lookupErr)
+				}
+				continue
+			}
 			if domain.IsCode(lookupErr, domain.CodeSandboxGenerationRetired) ||
 				lookedUp.SessionID != uuid.Nil {
 				t.Fatalf(
@@ -633,7 +639,7 @@ func TestSandboxLifecycleWaitersRefreshAfterGenerationLock(t *testing.T) {
 	actor, _ := seedSandboxLifecyclePrincipal(t, ctx, store)
 	resetAt := time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Microsecond)
 	store.Now = func() time.Time { return resetAt }
-	sandbox, err := store.EnsureSandbox(ctx)
+	sandbox, err := store.EnsureSandbox(ctx, domain.InitialTenantID())
 	if err != nil {
 		t.Fatalf("activate Sandbox: %v", err)
 	}
@@ -651,7 +657,8 @@ func TestSandboxLifecycleWaitersRefreshAfterGenerationLock(t *testing.T) {
 			resetResults <- resetResult{result: result, err: resetErr}
 		}()
 	}
-	waitForSandboxGenerationLockWaiters(t, ctx, resetBlocker, "ExclusiveLock", 2)
+	// Tenant locking serializes lifecycle changes before the generation lock.
+	waitForSandboxGenerationLockWaiters(t, ctx, resetBlocker, "ExclusiveLock", 1)
 	if err = resetBlocker.Commit(ctx); err != nil {
 		t.Fatalf("release reset blocker: %v", err)
 	}
@@ -693,7 +700,8 @@ func TestSandboxLifecycleWaitersRefreshAfterGenerationLock(t *testing.T) {
 			cleanupResults <- cleanupResult{result: result, err: cleanupErr}
 		}()
 	}
-	waitForSandboxGenerationLockWaiters(t, ctx, cleanupBlocker, "ExclusiveLock", 2)
+	// Cleanup contenders serialize on the tenant row before this lock as well.
+	waitForSandboxGenerationLockWaiters(t, ctx, cleanupBlocker, "ExclusiveLock", 1)
 	if err = cleanupBlocker.Commit(ctx); err != nil {
 		t.Fatalf("release cleanup blocker: %v", err)
 	}
@@ -720,22 +728,12 @@ func TestUserSharedChangesFollowGenerationThatWinsLock(t *testing.T) {
 	defer cancel()
 
 	actor, _ := seedSandboxLifecyclePrincipal(t, ctx, store)
-	current, err := store.EnsureSandbox(ctx)
+	current, err := store.EnsureSandbox(ctx, domain.InitialTenantID())
 	if err != nil {
 		t.Fatalf("activate Sandbox: %v", err)
 	}
-	updatedUser, err := store.CreateUser(ctx, actor, domain.CreateUserInput{
-		FullName: "Admin Update Race", Username: "update_" + uuid.NewString(), Role: domain.RoleAdmin,
-	}, "hash")
-	if err != nil {
-		t.Fatalf("create update target: %v", err)
-	}
-	deletedUser, err := store.CreateUser(ctx, actor, domain.CreateUserInput{
-		FullName: "Admin Delete Race", Username: "delete_" + uuid.NewString(), Role: domain.RoleAdmin,
-	}, "hash")
-	if err != nil {
-		t.Fatalf("create delete target: %v", err)
-	}
+	updatedActor, _ := seedSandboxLifecyclePrincipalWithToken(t, ctx, store, integrationBytes(121))
+	deletedActor, _ := seedSandboxLifecyclePrincipalWithToken(t, ctx, store, integrationBytes(122))
 	updatedName := "Admin Updated After Reset"
 	cases := []struct {
 		name        string
@@ -744,18 +742,18 @@ func TestUserSharedChangesFollowGenerationThatWinsLock(t *testing.T) {
 		run         func() error
 	}{
 		{
-			name: "update", aggregateID: updatedUser.ID.String(), action: "updated",
+			name: "update", aggregateID: updatedActor.UserID.String(), action: "updated",
 			run: func() error {
-				_, updateErr := store.UpdateUser(ctx, actor, updatedUser.ID, domain.UpdateUserInput{
-					FullName: &updatedName,
-				})
+				_, updateErr := store.UpdateOwnProfile(ctx, updatedActor, updatedName)
 				return updateErr
 			},
 		},
 		{
-			name: "delete", aggregateID: deletedUser.ID.String(), action: "deleted",
+			name: "deactivate membership", aggregateID: deletedActor.UserID.String(), action: "deleted",
 			run: func() error {
-				return store.DeleteUser(ctx, actor, deletedUser.ID, "generation race test")
+				active := false
+				_, updateErr := store.UpdateTenantMember(ctx, actor, deletedActor.UserID, domain.UpdateMembershipInput{Active: &active})
+				return updateErr
 			},
 		},
 	}
@@ -795,7 +793,7 @@ func TestMutationsWaitingBehindResetLockRejectRetiredGeneration(t *testing.T) {
 	defer cancel()
 
 	productionActor, terminalID := seedSandboxLifecyclePrincipal(t, ctx, store)
-	sandbox, err := store.EnsureSandbox(ctx)
+	sandbox, err := store.EnsureSandbox(ctx, domain.InitialTenantID())
 	if err != nil {
 		t.Fatalf("activate Sandbox: %v", err)
 	}
@@ -830,7 +828,7 @@ func TestMutationsWaitingBehindResetLockRejectRetiredGeneration(t *testing.T) {
 	if _, err = resetLock.Exec(
 		ctx,
 		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
-		sandboxGenerationLock,
+		sandboxGenerationLock+":"+domain.InitialTenantID().String(),
 	); err != nil {
 		t.Fatalf("hold reset lock: %v", err)
 	}
@@ -955,7 +953,7 @@ func TestMutationsWaitingBehindResetLockRejectRetiredGeneration(t *testing.T) {
 			  AND classid::bigint = ((value >> 32) & 4294967295)
 			  AND objid::bigint = (value & 4294967295)
 			  AND objsubid = 1`,
-			sandboxGenerationLock,
+			sandboxGenerationLock+":"+domain.InitialTenantID().String(),
 		).Scan(&waiting); err != nil {
 			t.Fatalf("inspect waiting generation lock: %v", err)
 		}
@@ -1010,7 +1008,7 @@ func holdSandboxGenerationLock(t *testing.T, ctx context.Context, store *Store) 
 	if _, err = tx.Exec(
 		ctx,
 		`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
-		sandboxGenerationLock,
+		sandboxGenerationLock+":"+domain.InitialTenantID().String(),
 	); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("hold generation lock: %v", err)
@@ -1041,7 +1039,7 @@ func waitForSandboxGenerationLockWaiters(
 			  AND classid::bigint = ((value >> 32) & 4294967295)
 			  AND objid::bigint = (value & 4294967295)
 			  AND objsubid = 1`,
-			sandboxGenerationLock,
+			sandboxGenerationLock+":"+domain.InitialTenantID().String(),
 			mode,
 		).Scan(&waiting); err != nil {
 			t.Fatalf("inspect waiting %s generation locks: %v", mode, err)
@@ -1087,11 +1085,12 @@ func replaceSandboxGenerationUnderLock(
 		ActivatedAt: now,
 	}
 	if _, err = tx.Exec(ctx, `
-		INSERT INTO data_spaces (id, mode, generation, status, activated_at)
-		VALUES ($1, 'sandbox', $2, 'active', $3)`,
+		INSERT INTO data_spaces (id, mode, generation, status, activated_at,tenant_id)
+		VALUES ($1, 'sandbox', $2, 'active', $3,$4)`,
 		replacement.ID,
 		replacement.Generation,
 		replacement.ActivatedAt,
+		domain.InitialTenantID(),
 	); err != nil {
 		t.Fatalf("insert competing Sandbox generation: %v", err)
 	}
@@ -1238,6 +1237,7 @@ func seedSandboxLifecyclePrincipalWithToken(
 	userID := uuid.New()
 	terminalID := uuid.New()
 	sessionID := uuid.New()
+	membershipID := uuid.New()
 	if _, err := store.Pool.Exec(ctx, `
 		INSERT INTO users (
 			id, full_name, username, password_hash, role, is_active, must_change_password
@@ -1246,11 +1246,14 @@ func seedSandboxLifecyclePrincipalWithToken(
 	); err != nil {
 		t.Fatalf("insert lifecycle user: %v", err)
 	}
+	if _, err := store.Pool.Exec(ctx, `INSERT INTO tenant_memberships (id, tenant_id, user_id, role, status) VALUES ($1,$2,$3,'superadmin','active')`, membershipID, domain.InitialTenantID(), userID); err != nil {
+		t.Fatalf("insert lifecycle membership: %v", err)
+	}
 	if _, err := store.Pool.Exec(ctx, `
 		INSERT INTO terminals (
-			id, installation_id, name, public_key, enrolled_by
-		) VALUES ($1,$2,'Sandbox Lifecycle Terminal',$3,$4)`,
-		terminalID, uuid.NewString(), integrationBytes(17), userID,
+			id, installation_id, name, public_key, enrolled_by, tenant_id
+		) VALUES ($1,$2,'Sandbox Lifecycle Terminal',$3,$4,$5)`,
+		terminalID, uuid.NewString(), integrationBytes(17), userID, domain.InitialTenantID(),
 	); err != nil {
 		t.Fatalf("insert lifecycle terminal: %v", err)
 	}
@@ -1262,14 +1265,24 @@ func seedSandboxLifecyclePrincipalWithToken(
 		t.Fatalf("insert lifecycle production session: %v", err)
 	}
 	return domain.Principal{
-		UserID:      userID,
-		SessionID:   sessionID,
-		TerminalID:  &terminalID,
-		FullName:    "Sandbox Lifecycle Superadmin",
-		Username:    "sandbox_lifecycle",
-		Role:        domain.RoleSuperadmin,
-		DataSpaceID: domain.LiveDataSpaceID(),
-		DataMode:    domain.DataModeProduction,
+		Terminal: func() *domain.Terminal {
+			terminal, err := store.GetTerminal(ctx, domain.InitialTenantID(), terminalID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return &terminal
+		}(),
+		ContextKind:  domain.ContextTenant,
+		TenantID:     domain.InitialTenantID(),
+		MembershipID: membershipID,
+		UserID:       userID,
+		SessionID:    sessionID,
+		TerminalID:   &terminalID,
+		FullName:     "Sandbox Lifecycle Superadmin",
+		Username:     "sandbox_lifecycle",
+		Role:         domain.RoleSuperadmin,
+		DataSpaceID:  domain.LiveDataSpaceID(),
+		DataMode:     domain.DataModeProduction,
 	}, terminalID
 }
 
@@ -1328,7 +1341,7 @@ func assertPurgeGuardRejectsOtherSpace(
 
 func assertDataSpaceStatus(t *testing.T, ctx context.Context, store *Store, id uuid.UUID, want domain.DataSpaceStatus) {
 	t.Helper()
-	space, err := store.DataSpaceByID(ctx, id)
+	space, err := store.DataSpaceByID(ctx, domain.InitialTenantID(), id)
 	if err != nil {
 		t.Fatalf("read data space %s: %v", id, err)
 	}

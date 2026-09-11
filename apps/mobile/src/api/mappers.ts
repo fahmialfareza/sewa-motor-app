@@ -5,6 +5,7 @@ import type {
 } from "@/api/contracts";
 import type {
   RentalPackage,
+  BusinessProfile,
   Transaction,
   TransactionItem,
 } from "@/domain/types";
@@ -43,6 +44,14 @@ export function mapApiTransaction(value: ApiTransaction): Transaction {
     subtotal: value.subtotal,
     total: value.total,
     paymentAmount: paymentAmount ?? value.total,
+    ...((value as ApiTransaction & { receiptIdentity?: BusinessProfile | null })
+      .receiptIdentity
+      ? {
+          receiptIdentity: (
+            value as ApiTransaction & { receiptIdentity: BusinessProfile }
+          ).receiptIdentity,
+        }
+      : {}),
     originActorId: value.originActor.id,
     originActorName: value.originActor.fullName,
     updatedActorName: value.updatedBy.fullName,
@@ -79,6 +88,19 @@ export function mergeSnapshot(
     subtotal: snapshot.subtotal,
     total: snapshot.total,
     paymentAmount: paymentAmount ?? snapshot.total,
+    ...((
+      snapshot as ApiTransactionSnapshot & {
+        receiptIdentity?: BusinessProfile | null;
+      }
+    ).receiptIdentity
+      ? {
+          receiptIdentity: (
+            snapshot as ApiTransactionSnapshot & {
+              receiptIdentity: BusinessProfile;
+            }
+          ).receiptIdentity,
+        }
+      : {}),
     paymentMethod: snapshot.paymentMethod,
     paymentStatus: snapshot.paymentStatus,
     paymentConfirmedRevision: snapshot.paymentConfirmedRevision,

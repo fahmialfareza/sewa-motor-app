@@ -117,7 +117,7 @@ describe("retired Sandbox recovery", () => {
 
     expect(mockClearSession).toHaveBeenCalledTimes(1);
     expect(mockSetModeFromSession).toHaveBeenCalledWith(null);
-    expect(mockClearLocalDatabase).toHaveBeenCalledWith("sandbox");
+    expect(mockClearLocalDatabase).toHaveBeenCalledWith(sandboxSession);
     expect(mockClearLocalDatabase).not.toHaveBeenCalledWith("production");
     expect(mockWriteAuthNotice).toHaveBeenCalledWith(SANDBOX_RETIRED_MESSAGE);
   });
@@ -131,7 +131,7 @@ describe("retired Sandbox recovery", () => {
     );
 
     expect(mockSetModeFromSession).toHaveBeenCalledWith(null);
-    expect(mockClearLocalDatabase).toHaveBeenCalledWith("sandbox");
+    expect(mockClearLocalDatabase).toHaveBeenCalledWith(sandboxSession);
     expect(mockWriteAuthNotice).toHaveBeenCalledWith(SANDBOX_RETIRED_MESSAGE);
   });
 
@@ -167,7 +167,7 @@ describe("retired Sandbox recovery", () => {
       notice: SANDBOX_RECOVERED_MESSAGE,
     });
 
-    expect(mockClearLocalDatabase).toHaveBeenCalledWith("sandbox");
+    expect(mockClearLocalDatabase).toHaveBeenCalledWith(sandboxSession);
     expect(mockClearLocalDatabase).not.toHaveBeenCalledWith("production");
     expect(mockApiRequest).toHaveBeenCalledWith("/auth/switch-mode", {
       method: "POST",
@@ -201,7 +201,7 @@ describe("retired Sandbox recovery", () => {
     ).rejects.toThrow("Silakan masuk kembali");
 
     expect(mockClearSession).toHaveBeenCalledTimes(1);
-    expect(mockClearLocalDatabase).toHaveBeenCalledWith("sandbox");
+    expect(mockClearLocalDatabase).toHaveBeenCalledWith(sandboxSession);
     expect(mockClearLocalDatabase).not.toHaveBeenCalledWith("production");
     expect(mockWriteSession).not.toHaveBeenCalled();
     expect(mockSetModeFromSession).toHaveBeenLastCalledWith(null);

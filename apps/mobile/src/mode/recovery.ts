@@ -91,7 +91,7 @@ export async function retireSandboxSession(session: Session): Promise<void> {
   }
   setModeFromSession(null);
   try {
-    await clearLocalDatabase("sandbox");
+    await clearLocalDatabase(session);
   } catch (error) {
     failure ??= error;
   }
@@ -197,7 +197,7 @@ async function performRetiredSandboxRecovery(
     setModeFromSession(null);
     // The Production database is intentionally preserved. A fresh Sandbox
     // database also prevents stale outbox entries from crossing generations.
-    await clearLocalDatabase("sandbox");
+    await clearLocalDatabase(retiredSession);
     const response = await apiRequest<LoginResponse>("/auth/switch-mode", {
       method: "POST",
       token: retiredSession.token,
@@ -243,7 +243,7 @@ async function performRetiredSandboxRecovery(
     // one-time, so any incomplete local handoff returns the operator to login.
     setModeFromSession(null);
     await clearSession().catch(() => undefined);
-    await clearLocalDatabase("sandbox").catch(() => undefined);
+    await clearLocalDatabase(retiredSession).catch(() => undefined);
     await writeAuthNotice(SANDBOX_RECOVERY_ERROR).catch(() => undefined);
 
     const recoveryError = new Error(SANDBOX_RECOVERY_ERROR);

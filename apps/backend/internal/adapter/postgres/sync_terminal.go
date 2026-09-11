@@ -12,12 +12,12 @@ import (
 	"gorm.io/gorm"
 )
 
-func (s *Store) TerminalIDByInstallation(ctx context.Context, installationID uuid.UUID) (*uuid.UUID, error) {
+func (s *Store) TerminalIDByInstallation(ctx context.Context, tenantID, installationID uuid.UUID) (*uuid.UUID, error) {
 	defer observability.StartSegment(ctx, "Postgres.TerminalIDByInstallation")()
 	var record terminalRecord
 	err := s.ORM.WithContext(ctx).
 		Select("id").
-		Where("installation_id = ? AND is_active AND revoked_at IS NULL", installationID.String()).
+		Where("tenant_id = ? AND installation_id = ? AND is_active AND revoked_at IS NULL", tenantID, installationID.String()).
 		Take(&record).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil
@@ -35,14 +35,24 @@ func (s *Store) EnrollTerminal(ctx context.Context, principal domain.Principal, 
 		return domain.Terminal{}, dbError(err, "begin terminal enrollment")
 	}
 	defer tx.Rollback(ctx)
+	if _, err = lockTenantLifecycleAccess(ctx, tx, principal); err != nil {
+		return domain.Terminal{}, err
+	}
+	space, err := lockActiveDataSpace(ctx, tx, principal.DataSpaceID)
+	if err != nil {
+		return domain.Terminal{}, err
+	}
+	if space.Mode != domain.DataModeProduction {
+		return domain.Terminal{}, domain.NewError(domain.CodeForbidden, "Pendaftaran terminal hanya tersedia di mode produksi")
+	}
 	var existingID uuid.UUID
 	var existingKey []byte
 	var active bool
 	err = tx.QueryRow(ctx, `
 		SELECT id, public_key, is_active AND revoked_at IS NULL
-		FROM terminals WHERE installation_id = $1
+		FROM terminals WHERE installation_id = $1 AND tenant_id = $2
 		FOR UPDATE`,
-		input.InstallationID,
+		input.InstallationID, principal.TenantID,
 	).Scan(&existingID, &existingKey, &active)
 	switch {
 	case err == nil:
@@ -62,10 +72,10 @@ func (s *Store) EnrollTerminal(ctx context.Context, principal domain.Principal, 
 		existingID = uuid.New()
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO terminals (
-				id, installation_id, name, public_key, device_model, os_version, app_version, enrolled_by
-			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+				id, installation_id, name, public_key, device_model, os_version, app_version, enrolled_by, tenant_id
+			) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 			existingID, input.InstallationID, input.Name, input.PublicKey,
-			input.DeviceModel, input.OSVersion, input.AppVersion, principal.UserID,
+			input.DeviceModel, input.OSVersion, input.AppVersion, principal.UserID, principal.TenantID,
 		); err != nil {
 			return domain.Terminal{}, dbError(err, "insert terminal")
 		}
@@ -78,7 +88,7 @@ func (s *Store) EnrollTerminal(ctx context.Context, principal domain.Principal, 
 	); err != nil {
 		return domain.Terminal{}, dbError(err, "bind enrolling session")
 	}
-	terminal, err := terminalByID(ctx, tx, existingID)
+	terminal, err := terminalByID(ctx, tx, principal.TenantID, existingID)
 	if err != nil {
 		return domain.Terminal{}, dbError(err, "read enrolled terminal")
 	}
@@ -98,10 +108,10 @@ func (s *Store) EnrollTerminal(ctx context.Context, principal domain.Principal, 
 	return terminal, nil
 }
 
-func (s *Store) GetTerminal(ctx context.Context, id uuid.UUID) (domain.Terminal, error) {
+func (s *Store) GetTerminal(ctx context.Context, tenantID, id uuid.UUID) (domain.Terminal, error) {
 	defer observability.StartSegment(ctx, "Postgres.GetTerminal")()
 	var record terminalRecord
-	err := s.ORM.WithContext(ctx).Where("id = ?", id).Take(&record).Error
+	err := s.ORM.WithContext(ctx).Where("id = ? AND tenant_id = ?", id, tenantID).Take(&record).Error
 	return record.domainTerminal(), dbError(err, "get terminal")
 }
 
@@ -112,7 +122,21 @@ func (s *Store) RevokeTerminal(ctx context.Context, principal domain.Principal, 
 		return domain.Terminal{}, dbError(err, "begin terminal revocation")
 	}
 	defer tx.Rollback(ctx)
-	before, err := terminalByID(ctx, tx, id)
+	role, err := lockTenantLifecycleAccess(ctx, tx, principal)
+	if err != nil {
+		return domain.Terminal{}, err
+	}
+	if role != domain.RoleSuperadmin {
+		return domain.Terminal{}, domain.NewError(domain.CodeForbidden, "Hanya superadmin usaha dapat mencabut terminal")
+	}
+	space, err := lockActiveDataSpace(ctx, tx, principal.DataSpaceID)
+	if err != nil {
+		return domain.Terminal{}, err
+	}
+	if space.Mode != domain.DataModeProduction {
+		return domain.Terminal{}, domain.NewError(domain.CodeForbidden, "Pencabutan terminal hanya tersedia di mode produksi")
+	}
+	before, err := terminalByID(ctx, tx, principal.TenantID, id)
 	if err != nil {
 		return domain.Terminal{}, dbError(err, "get revoked terminal")
 	}
@@ -131,7 +155,7 @@ func (s *Store) RevokeTerminal(ctx context.Context, principal domain.Principal, 
 		WHERE terminal_id = $1 AND revoked_at IS NULL`, id); err != nil {
 		return domain.Terminal{}, dbError(err, "revoke terminal sessions")
 	}
-	after, err := terminalByID(ctx, tx, id)
+	after, err := terminalByID(ctx, tx, principal.TenantID, id)
 	if err != nil {
 		return domain.Terminal{}, dbError(err, "read revoked terminal")
 	}
@@ -148,13 +172,13 @@ func (s *Store) RevokeTerminal(ctx context.Context, principal domain.Principal, 
 	return after, nil
 }
 
-func (s *Store) TerminalPublicKey(ctx context.Context, terminalID uuid.UUID) ([]byte, error) {
+func (s *Store) TerminalPublicKey(ctx context.Context, tenantID, terminalID uuid.UUID) ([]byte, error) {
 	defer observability.StartSegment(ctx, "Postgres.TerminalPublicKey")()
 	var publicKey []byte
 	err := s.Pool.QueryRow(ctx, `
 		SELECT public_key FROM terminals
-		WHERE id = $1 AND is_active AND revoked_at IS NULL`,
-		terminalID,
+		WHERE id = $1 AND tenant_id = $2 AND is_active AND revoked_at IS NULL`,
+		terminalID, tenantID,
 	).Scan(&publicKey)
 	return publicKey, dbError(err, "get terminal public key")
 }
@@ -164,10 +188,15 @@ func (s *Store) OriginSessionMatches(ctx context.Context, sessionID, actorID, te
 	var matches bool
 	err := s.Pool.QueryRow(ctx, `
 		SELECT EXISTS (
-			SELECT 1 FROM sessions
-			WHERE id = $1 AND user_id = $2 AND terminal_id = $3 AND data_space_id = $4
+			SELECT 1 FROM sessions s
+			JOIN tenant_memberships m ON m.id = s.membership_id AND m.tenant_id = s.tenant_id AND m.user_id = s.user_id
+			JOIN tenants t ON t.id = s.tenant_id
+			JOIN users u ON u.id = s.user_id
+			WHERE s.id = $1 AND s.user_id = $2 AND s.terminal_id = $3 AND s.data_space_id = $4
+			  AND s.context_kind = 'tenant' AND m.status = 'active' AND t.status = 'active'
+			  AND u.is_active AND u.deleted_at IS NULL
 		)`,
-		sessionID, actorID, terminalID, domain.EffectiveDataSpaceID(dataSpaceID),
+		sessionID, actorID, terminalID, dataSpaceID,
 	).Scan(&matches)
 	return matches, dbError(err, "validate origin session")
 }
@@ -182,7 +211,7 @@ func (s *Store) PullChanges(ctx context.Context, dataSpaceID uuid.UUID, cursor i
 		WHERE data_space_id = $1 AND cursor > $2
 		ORDER BY cursor
 		LIMIT $3`,
-		domain.EffectiveDataSpaceID(dataSpaceID), cursor, limit,
+		dataSpaceID, cursor, limit,
 	)
 	if err != nil {
 		return nil, dbError(err, "pull sync changes")
@@ -203,14 +232,14 @@ func (s *Store) PullChanges(ctx context.Context, dataSpaceID uuid.UUID, cursor i
 	return changes, dbError(rows.Err(), "iterate sync changes")
 }
 
-func terminalByID(ctx context.Context, query rowQuerier, id uuid.UUID) (domain.Terminal, error) {
+func terminalByID(ctx context.Context, query rowQuerier, tenantID, id uuid.UUID) (domain.Terminal, error) {
 	defer observability.StartSegment(ctx, "Postgres.terminalByID")()
 	var terminal domain.Terminal
 	err := query.QueryRow(ctx, `
 		SELECT id, installation_id, name, public_key, 'Ed25519', platform,
 		       device_model, os_version, app_version, is_active, created_at, revoked_at
-		FROM terminals WHERE id = $1`,
-		id,
+		FROM terminals WHERE id = $1 AND tenant_id = $2`,
+		id, tenantID,
 	).Scan(
 		&terminal.ID, &terminal.InstallationID, &terminal.Name, &terminal.PublicKey,
 		&terminal.Algorithm, &terminal.Platform, &terminal.DeviceModel, &terminal.OSVersion,

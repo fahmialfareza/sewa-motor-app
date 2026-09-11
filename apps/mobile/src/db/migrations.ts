@@ -4,6 +4,7 @@ interface Migration {
   version: number;
   name: string;
   sql: string;
+  legacyOnlySql?: string;
 }
 
 const migrations: Migration[] = [
@@ -132,7 +133,8 @@ const migrations: Migration[] = [
       );
       INSERT OR IGNORE INTO sync_metadata(singleton, status)
         VALUES(1, 'idle');
-
+    `,
+    legacyOnlySql: `
       INSERT OR IGNORE INTO packages_local(
         id, revision, name, description, unit_price, accent, active, updated_at
       ) VALUES
@@ -346,9 +348,31 @@ const migrations: Migration[] = [
         ADD COLUMN generation INTEGER;
     `,
   },
+  {
+    version: 10,
+    name: "tenant_cache_and_quarantined_outbox",
+    sql: `
+      CREATE TABLE IF NOT EXISTS tenant_configuration (
+        kind TEXT PRIMARY KEY NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      ALTER TABLE outbox_operations ADD COLUMN quarantine_reason TEXT;
+      ALTER TABLE transactions ADD COLUMN receipt_identity_json TEXT;
+      CREATE TABLE IF NOT EXISTS scope_access (
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        blocked_reason TEXT,
+        blocked_actor_id TEXT,
+        blocked_at TEXT
+      );
+      INSERT OR IGNORE INTO scope_access(singleton) VALUES (1);
+    `,
+  },
 ];
 
-export async function runMigrations(database: SQLiteDatabase): Promise<void> {
+export async function runMigrations(
+  database: SQLiteDatabase,
+  options = { seedLegacyCatalog: true },
+): Promise<void> {
   const row = await database.getFirstAsync<{ user_version: number }>(
     "PRAGMA user_version",
   );
@@ -358,6 +382,8 @@ export async function runMigrations(database: SQLiteDatabase): Promise<void> {
     if (migration.version <= currentVersion) continue;
     await database.withTransactionAsync(async () => {
       await database.execAsync(migration.sql);
+      if (options.seedLegacyCatalog && migration.legacyOnlySql)
+        await database.execAsync(migration.legacyOnlySql);
       await database.execAsync(`PRAGMA user_version = ${migration.version}`);
     });
     currentVersion = migration.version;

@@ -5,7 +5,8 @@ import { useAuth } from "@/auth/AuthProvider";
 import { colors, spacing, textStyles } from "@/theme/tokens";
 
 export default function ProtectedLayout() {
-  const { bootError, booting, session, terminalEnrolled } = useAuth();
+  const { bootError, booting, session, terminalEnrolled, scopeLocked } =
+    useAuth();
   if (booting) return null;
   if (bootError) {
     return (
@@ -23,11 +24,20 @@ export default function ProtectedLayout() {
   if (session.user.mustChangePassword) {
     return <Redirect href="/(auth)/change-password" />;
   }
+  if (
+    scopeLocked ||
+    (session.contextKind && session.contextKind !== "tenant")
+  ) {
+    return <Redirect href="/contexts" />;
+  }
   if (!terminalEnrolled) {
     return <Redirect href="/(auth)/terminal-enrollment" />;
   }
   return (
-    <Stack key={session.dataSpaceId} screenOptions={{ headerShown: false }} />
+    <Stack
+      key={`${session.tenantId}:${session.dataSpaceId}:${session.sessionId}`}
+      screenOptions={{ headerShown: false }}
+    />
   );
 }
 

@@ -4,6 +4,286 @@
  */
 
 export interface paths {
+    "/auth/contexts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the account's available tenant and platform contexts */
+        get: operations["getAuthContexts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/switch-context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange the session into an authorized account, tenant, or platform context
+         * @description Tenant context always starts in Production. Requires online outbox drainage or explicit quarantine after revoked access. The previous session is revoked and retained as immutable origin evidence.
+         */
+        post: operations["switchAuthContext"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/register-invitation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Register an account and atomically accept a valid invitation */
+        post: operations["registerInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/invitations/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Accept an invitation using the authenticated account */
+        post: operations["acceptInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/tenants": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List tenants in platform context */
+        get: operations["listPlatformTenants"];
+        put?: never;
+        /**
+         * Create a pending tenant and a seven-day initial-owner invitation
+         * @description Requires platform context and TENANT_PROVISIONING_ENABLED. Does not grant tenant membership to the platform administrator.
+         */
+        post: operations["createTenant"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/tenants/{tenantId}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Suspend or reactivate a tenant without reviving revoked sessions */
+        post: operations["setTenantStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/tenants/{tenantId}/invitation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reissue the initial-owner invitation for a pending tenant
+         * @description Invalidates the previous initial-owner code. Active tenant membership is managed only by that tenant's superadmins.
+         */
+        post: operations["reissueOwnerInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/platform/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List recent durable control-plane audit events */
+        get: operations["listPlatformAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenant/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List memberships in the active tenant */
+        get: operations["listTenantMembers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenant/members/{userId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update the role or active status of one tenant membership
+         * @description Production-mode tenant superadmin only. Does not change global credentials or other tenant memberships; last-active-superadmin and self-demotion protections apply.
+         */
+        patch: operations["updateTenantMember"];
+        trace?: never;
+    };
+    "/tenant/invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List tenant invitations without exposing their codes */
+        get: operations["listTenantInvitations"];
+        put?: never;
+        /** Create a single-use seven-day membership invitation */
+        post: operations["createTenantInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenant/invitations/{invitationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke an unused tenant invitation */
+        delete: operations["revokeTenantInvitation"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/tenant/profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get the current business receipt and report identity */
+        get: operations["getTenantProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Create a new tenant business-profile revision
+         * @description Production-mode tenant superadmin only. Existing transactions retain their captured identity.
+         */
+        patch: operations["updateTenantProfile"];
+        trace?: never;
+    };
+    "/tenant/qris": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get active and historical merchant QRIS payloads for the tenant */
+        get: operations["getTenantQRIS"];
+        /**
+         * Import a merchant QRIS payload and optionally activate it
+         * @description Production-mode tenant superadmin only. Historical payloads remain available for exact transaction bindings. activate defaults to true; false imports only a historical payload.
+         */
+        put: operations["updateTenantQRIS"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sync/revalidate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revalidate quarantined signed origins in the current tenant context
+         * @description Only matching active origin accounts, memberships and terminal enrollments are allowed. This does not rewrite or submit signed entries.
+         */
+        post: operations["revalidateSyncOrigins"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/health/live": {
         parameters: {
             query?: never;
@@ -140,7 +420,11 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        patch?: never;
+        /**
+         * Update the global account owner's name
+         * @description Account-owner action. Membership roles and other accounts cannot be modified here.
+         */
+        patch: operations["updateOwnProfile"];
         trace?: never;
     };
     "/sandbox/status": {
@@ -540,6 +824,210 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @enum {string} */
+        ContextKind: "account" | "tenant" | "platform";
+        Tenant: {
+            id: components["schemas"]["UUID"];
+            name: string;
+            slug: string;
+            /** @enum {string} */
+            status: "pending_setup" | "active" | "suspended";
+            profileRevision: number;
+            qrisRevision: number | null;
+        };
+        TenantContext: {
+            tenant: components["schemas"]["Tenant"];
+            membershipId: components["schemas"]["UUID"];
+            role: components["schemas"]["UserRole"];
+        };
+        AvailableContexts: {
+            tenants: components["schemas"]["TenantContext"][];
+            platformAdmin: boolean;
+        };
+        SwitchContextRequest: {
+            kind: components["schemas"]["ContextKind"];
+            /** @description Required only when selecting tenant context. */
+            tenantId?: components["schemas"]["UUID"];
+            /**
+             * Format: uuid
+             * @description Existing physical-installation binding to look up within the selected tenant.
+             */
+            installationId?: string | null;
+        };
+        AcceptInvitationRequest: {
+            code: string;
+        };
+        RegisterInvitationRequest: {
+            code: string;
+            username: string;
+            fullName: string;
+            password: string;
+        };
+        CreateTenantRequest: {
+            name: string;
+            slug: string;
+        };
+        CreateTenantResult: {
+            tenant: components["schemas"]["Tenant"];
+            invitation: components["schemas"]["Invitation"];
+        };
+        SetTenantStatusRequest: {
+            /** @enum {string} */
+            status: "active" | "suspended";
+        };
+        TenantMember: {
+            /** @description Global account ID; used only within the authorized tenant membership. */
+            id: components["schemas"]["UUID"];
+            membershipId: components["schemas"]["UUID"];
+            fullName: string;
+            username: string;
+            role: components["schemas"]["UserRole"];
+            active: boolean;
+        };
+        UpdateTenantMemberRequest: {
+            role?: components["schemas"]["UserRole"];
+            active?: boolean;
+        };
+        CreateInvitationRequest: {
+            role: components["schemas"]["UserRole"];
+        };
+        Invitation: {
+            id: components["schemas"]["UUID"];
+            tenantId: components["schemas"]["UUID"];
+            role: components["schemas"]["UserRole"];
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            acceptedAt: string | null;
+            /** Format: date-time */
+            revokedAt: string | null;
+            initialOwner: boolean;
+            /** @description Returned only once when issuing or reissuing a code. Never present in lists or audit. */
+            readonly code?: string;
+        };
+        ReceiptIdentity: {
+            revision: number;
+            businessName: string;
+            address: string;
+            phone: string;
+        };
+        TenantProfile: {
+            tenantId: components["schemas"]["UUID"];
+            revision: number;
+            businessName: string;
+            address: string;
+            phone: string;
+        };
+        UpdateTenantProfileRequest: {
+            expectedRevision: number;
+            businessName: string;
+            address: string;
+            phone: string;
+        };
+        TenantQRIS: {
+            tenantId: components["schemas"]["UUID"];
+            revision: number;
+            payloadHash: components["schemas"]["QrisPayloadHash"];
+            staticPayload: string;
+        };
+        TenantQRISConfig: {
+            revision: number;
+            activePayloadHash: components["schemas"]["QrisPayloadHash"] | null;
+            payloads: components["schemas"]["TenantQRIS"][];
+        };
+        UpdateTenantQRISRequest: {
+            expectedRevision: number;
+            staticPayload: string;
+            /** @default true */
+            activate: boolean;
+        };
+        UpdateOwnProfileRequest: {
+            fullName: string;
+        };
+        PlatformAuditEvent: {
+            id: components["schemas"]["UUID"];
+            eventType: string;
+            /** Format: uuid */
+            actorId: string | null;
+            /** Format: uuid */
+            tenantId: string | null;
+            metadata: {
+                [key: string]: unknown;
+            };
+            /** Format: date-time */
+            createdAt: string;
+        };
+        SyncOrigin: {
+            originSessionId: components["schemas"]["UUID"];
+            originActorId: components["schemas"]["UUID"];
+            terminalId: components["schemas"]["UUID"];
+        };
+        RevalidatedOrigin: {
+            originSessionId: components["schemas"]["UUID"];
+            originActorId: components["schemas"]["UUID"];
+            terminalId: components["schemas"]["UUID"];
+            allowed: boolean;
+        };
+        RevalidateOriginsRequest: {
+            origins: components["schemas"]["SyncOrigin"][];
+        };
+        RevalidateOriginsResult: {
+            origins: components["schemas"]["RevalidatedOrigin"][];
+        };
+        AvailableContextsEnvelope: {
+            data: components["schemas"]["AvailableContexts"];
+            meta: components["schemas"]["Meta"];
+        };
+        TenantContextEnvelope: {
+            data: components["schemas"]["TenantContext"];
+            meta: components["schemas"]["Meta"];
+        };
+        TenantEnvelope: {
+            data: components["schemas"]["Tenant"];
+            meta: components["schemas"]["Meta"];
+        };
+        TenantListEnvelope: {
+            data: components["schemas"]["Tenant"][];
+            meta: components["schemas"]["Meta"];
+        };
+        CreateTenantEnvelope: {
+            data: components["schemas"]["CreateTenantResult"];
+            meta: components["schemas"]["Meta"];
+        };
+        InvitationEnvelope: {
+            data: components["schemas"]["Invitation"];
+            meta: components["schemas"]["Meta"];
+        };
+        InvitationListEnvelope: {
+            data: components["schemas"]["Invitation"][];
+            meta: components["schemas"]["Meta"];
+        };
+        TenantMemberEnvelope: {
+            data: components["schemas"]["TenantMember"];
+            meta: components["schemas"]["Meta"];
+        };
+        TenantMemberListEnvelope: {
+            data: components["schemas"]["TenantMember"][];
+            meta: components["schemas"]["Meta"];
+        };
+        TenantProfileEnvelope: {
+            data: components["schemas"]["TenantProfile"];
+            meta: components["schemas"]["Meta"];
+        };
+        TenantQRISConfigEnvelope: {
+            data: components["schemas"]["TenantQRISConfig"];
+            meta: components["schemas"]["Meta"];
+        };
+        PlatformAuditListEnvelope: {
+            data: components["schemas"]["PlatformAuditEvent"][];
+            meta: components["schemas"]["Meta"];
+        };
+        RevalidateOriginsEnvelope: {
+            data: components["schemas"]["RevalidateOriginsResult"];
+            meta: components["schemas"]["Meta"];
+        };
         /** Format: uuid */
         UUID: string;
         /** @description Canonical uppercase ULID without a display prefix. */
@@ -674,20 +1162,33 @@ export interface components {
              * @description Client installation UUID used to look up an existing terminal binding.
              */
             installationId?: string | null;
+            /**
+             * @description New clients send 2 to enter account context and select an authorized tenant. Omission supports only the migrated Telomoyo tenant.
+             * @constant
+             */
+            protocolVersion?: 2;
         };
         SwitchModeRequest: {
             mode: components["schemas"]["DataMode"];
         };
         LoginResult: {
+            contextKind: components["schemas"]["ContextKind"];
+            /** Format: uuid */
+            tenantId: string | null;
+            /** Format: uuid */
+            membershipId: string | null;
+            tenant: components["schemas"]["Tenant"] | null;
+            isPlatformAdmin: boolean;
             sessionToken: string;
             sessionId: components["schemas"]["UUID"];
             user: components["schemas"]["User"];
             terminal: components["schemas"]["Terminal"] | null;
-            dataMode: components["schemas"]["DataMode"];
-            dataSpaceId: components["schemas"]["UUID"];
+            dataMode: components["schemas"]["DataMode"] | null;
+            /** Format: uuid */
+            dataSpaceId: string | null;
             /**
              * Format: int64
-             * @description Zero in production; the active immutable generation in Sandbox Mode.
+             * @description Zero outside Sandbox; account and platform contexts have null tenant, membership, mode, and data-space fields.
              */
             sandboxGeneration: number;
         };
@@ -706,6 +1207,8 @@ export interface components {
             role: components["schemas"]["UserRole"];
         };
         User: {
+            /** Format: uuid */
+            membershipId?: string | null;
             id: components["schemas"]["UUID"];
             fullName: string;
             username: string;
@@ -720,18 +1223,27 @@ export interface components {
             deletedAt: string | null;
         };
         ProfileResult: {
+            contextKind: components["schemas"]["ContextKind"];
+            /** Format: uuid */
+            tenantId: string | null;
+            /** Format: uuid */
+            membershipId: string | null;
+            tenant: components["schemas"]["Tenant"] | null;
+            isPlatformAdmin: boolean;
             user: components["schemas"]["User"];
             sessionId: components["schemas"]["UUID"];
             terminal: components["schemas"]["Terminal"] | null;
-            dataMode: components["schemas"]["DataMode"];
-            dataSpaceId: components["schemas"]["UUID"];
+            dataMode: components["schemas"]["DataMode"] | null;
+            /** Format: uuid */
+            dataSpaceId: string | null;
             /**
              * Format: int64
-             * @description Zero in production; the active immutable generation in Sandbox Mode.
+             * @description Zero outside Sandbox; account and platform contexts have null tenant, membership, mode, and data-space fields.
              */
             sandboxGeneration: number;
         };
         DataSpace: {
+            tenantId: components["schemas"]["UUID"];
             id: components["schemas"]["UUID"];
             mode: components["schemas"]["DataMode"];
             /** Format: int64 */
@@ -903,6 +1415,7 @@ export interface components {
             paymentAmount: components["schemas"]["Rupiah"];
         };
         TransactionRevision: {
+            receiptIdentity?: components["schemas"]["ReceiptIdentity"];
             id: components["schemas"]["UUID"];
             transactionId: components["schemas"]["ULID"];
             revision: number;
@@ -932,6 +1445,9 @@ export interface components {
             reason: string;
         };
         Transaction: {
+            /** @description Immutable business-profile selection captured at creation; absent on legacy transactions. */
+            receiptProfileRevision?: number;
+            receiptIdentity?: components["schemas"]["ReceiptIdentity"];
             id: components["schemas"]["ULID"];
             /** @description Display identity; Sandbox transactions use a `TEST-` prefix. */
             displayId: string;
@@ -966,6 +1482,8 @@ export interface components {
             updatedAt: string;
         };
         CreateTransactionRequest: {
+            /** @description Cached tenant business-profile revision to snapshot. Omission selects the current profile for compatibility. */
+            receiptProfileRevision?: number;
             id: components["schemas"]["ULID"];
             /** Format: date-time */
             occurredAt: string;
@@ -1164,6 +1682,8 @@ export interface components {
          */
         SyncAction: "create" | "correct" | "set_payment_status";
         CreateTransactionMutationPayload: {
+            /** @description Tenant business-profile revision captured when the offline operation was created. Existing signed legacy payloads remain valid without this field. */
+            receiptProfileRevision?: number;
             id: components["schemas"]["ULID"];
             /** @description Required for current clients; explicit null is never accepted. */
             paymentMethod: components["schemas"]["SelectablePaymentMethod"];
@@ -1250,12 +1770,12 @@ export interface components {
         };
         SyncChange: {
             /**
-             * @description Durable cursor after this individual change. Production retains the
-             *     legacy decimal form; Sandbox uses `sandbox:<generation>:<position>`.
+             * @description Durable tenant/data-space-bound cursor after this individual change:
+             *     `tenant:<tenantUUID>:<spaceUUID>:<generation>:<position>`.
              */
             cursor: string;
             /** @enum {string} */
-            aggregate: "user" | "package" | "transaction" | "print_attempt" | "terminal";
+            aggregate: "user" | "package" | "transaction" | "print_attempt" | "terminal" | "tenant_profile" | "tenant_qris";
             /** @enum {string} */
             action: "upsert" | "delete";
             aggregateId: string;
@@ -1263,13 +1783,15 @@ export interface components {
             /** Format: date-time */
             changedAt: string;
             tombstone: boolean;
-            payload: components["schemas"]["User"] | components["schemas"]["Package"] | components["schemas"]["Transaction"] | components["schemas"]["PrintAttempt"] | components["schemas"]["Terminal"] | null;
+            payload: components["schemas"]["User"] | components["schemas"]["Package"] | components["schemas"]["Transaction"] | components["schemas"]["PrintAttempt"] | components["schemas"]["Terminal"] | components["schemas"]["TenantProfile"] | components["schemas"]["TenantQRISConfig"] | null;
         };
         SyncPullResult: {
             changes: components["schemas"]["SyncChange"][];
             /**
-             * @description Production decimal cursor or generation-bound Sandbox cursor in the
-             *     form `sandbox:<generation>:<position>`.
+             * @description Cursor bound to tenant and data space, in the form
+             *     `tenant:<tenantUUID>:<spaceUUID>:<generation>:<position>`.
+             *     The migrated Telomoyo tenant alone accepts legacy decimal Production
+             *     cursors and `sandbox:<generation>:<position>` Sandbox cursors.
              */
             cursor: string;
             hasMore: boolean;
@@ -1570,6 +2092,9 @@ export interface components {
         };
     };
     parameters: {
+        TenantId: components["schemas"]["UUID"];
+        InvitationId: components["schemas"]["UUID"];
+        AuditLimit: number;
         Cursor: string;
         Limit: number;
         UserId: components["schemas"]["UUID"];
@@ -1589,6 +2114,550 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getAuthContexts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List the account's available tenant and platform contexts. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AvailableContextsEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    switchAuthContext: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SwitchContextRequest"];
+            };
+        };
+        responses: {
+            /** @description Exchange the session into an authorized account, tenant, or platform context. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    registerInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterInvitationRequest"];
+            };
+        };
+        responses: {
+            /** @description Register an account and atomically accept a valid invitation. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    acceptInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcceptInvitationRequest"];
+            };
+        };
+        responses: {
+            /** @description Accept an invitation using the authenticated account. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantContextEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    listPlatformTenants: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List tenants in platform context. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantListEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    createTenant: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTenantRequest"];
+            };
+        };
+        responses: {
+            /** @description Create a pending tenant and a seven-day initial-owner invitation. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateTenantEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    setTenantStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenantId: components["parameters"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetTenantStatusRequest"];
+            };
+        };
+        responses: {
+            /** @description Suspend or reactivate a tenant without reviving revoked sessions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    reissueOwnerInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenantId: components["parameters"]["TenantId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Reissue the initial-owner invitation for a pending tenant. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    listPlatformAudit: {
+        parameters: {
+            query?: {
+                limit?: components["parameters"]["AuditLimit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List recent durable control-plane audit events. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlatformAuditListEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    listTenantMembers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List memberships in the active tenant. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantMemberListEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    updateTenantMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: components["parameters"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateTenantMemberRequest"];
+            };
+        };
+        responses: {
+            /** @description Update the role or active status of one tenant membership. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantMemberEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    listTenantInvitations: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List tenant invitations without exposing their codes. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationListEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    createTenantInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateInvitationRequest"];
+            };
+        };
+        responses: {
+            /** @description Create a single-use seven-day membership invitation. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InvitationEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    revokeTenantInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                invitationId: components["parameters"]["InvitationId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoke an unused tenant invitation. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    getTenantProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Get the current business receipt and report identity. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantProfileEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    updateTenantProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateTenantProfileRequest"];
+            };
+        };
+        responses: {
+            /** @description Create a new tenant business-profile revision. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantProfileEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    getTenantQRIS: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Get active and historical merchant QRIS payloads for the tenant. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantQRISConfigEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    updateTenantQRIS: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateTenantQRISRequest"];
+            };
+        };
+        responses: {
+            /** @description Import a merchant QRIS payload and optionally activate it. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TenantQRISConfigEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    revalidateSyncOrigins: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevalidateOriginsRequest"];
+            };
+        };
+        responses: {
+            /** @description Revalidate quarantined signed origins in the current tenant context. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevalidateOriginsEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
     getLiveness: {
         parameters: {
             query?: never;
@@ -1700,6 +2769,26 @@ export interface operations {
         responses: {
             200: components["responses"]["Profile"];
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    updateOwnProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateOwnProfileRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["Profile"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            422: components["responses"]["UnprocessableEntity"];
         };
     };
     getSandboxStatus: {

@@ -75,16 +75,18 @@ export default function HistoryScreen() {
     Number(syncState !== undefined);
 
   const loadOptions = useCallback(async () => {
+    if (!session) return;
     const [packages, creators] = await Promise.all([
-      listHistoryPackageOptions(),
-      listHistoryCreatorOptions(),
+      listHistoryPackageOptions(session),
+      listHistoryCreatorOptions(session),
     ]);
     setPackageOptions(packages);
     setCreatorOptions(creators);
-  }, []);
+  }, [session]);
 
   const load = useCallback(
     async (append: boolean) => {
+      if (!session) return;
       const currentRequestId = ++requestId.current;
       setLoading(true);
       if (!append) {
@@ -113,7 +115,7 @@ export default function HistoryScreen() {
               }
             : {}),
         };
-        const rows = await listTransactions(filter);
+        const rows = await listTransactions(filter, session);
         if (currentRequestId !== requestId.current) return;
         const page = rows.slice(0, pageSize);
         const last = page.at(-1);
@@ -136,6 +138,7 @@ export default function HistoryScreen() {
       selectedDate,
       selectedMonth,
       syncState,
+      session,
     ],
   );
 

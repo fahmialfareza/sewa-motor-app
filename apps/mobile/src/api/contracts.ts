@@ -1,4 +1,10 @@
 import type { ApiSchema } from "@sewa-motor/api-client";
+import type {
+  BusinessProfile,
+  ContextKind,
+  Role,
+  TenantSummary,
+} from "@/domain/types";
 
 /**
  * Mobile-facing aliases of the OpenAPI-generated schema. Keeping the names
@@ -12,7 +18,31 @@ export interface ApiEnvelope<T> {
 
 export type ApiErrorEnvelope = ApiSchema["ErrorEnvelope"];
 export type ApiTerminal = ApiSchema["Terminal"];
-export type LoginResponse = ApiSchema["LoginResult"];
+export type LoginResponse = ApiSchema["LoginResult"] & {
+  contextKind?: ContextKind;
+  tenantId?: string | null;
+  membershipId?: string | null;
+  tenant?: TenantSummary | null;
+  isPlatformAdmin?: boolean;
+};
+export interface AuthContextsResponse {
+  tenants: { tenant: TenantSummary; membershipId: string; role: Role }[];
+  platformAdmin: boolean;
+}
+export interface TenantQrisResponse {
+  revision: number;
+  activePayloadHash: string | null;
+  payloads: { payloadHash: string; staticPayload: string; revision: number }[];
+}
+export interface TenantInvitation {
+  id: string;
+  role: Role;
+  code?: string;
+  expiresAt: string;
+  revokedAt?: string | null;
+  acceptedAt?: string | null;
+}
+export type TenantProfileResponse = BusinessProfile;
 export type ApiPackage = ApiSchema["Package"];
 export type ApiTransactionItem = ApiSchema["TransactionItem"];
 export type ApiTransaction = ApiSchema["Transaction"];

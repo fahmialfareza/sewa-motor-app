@@ -143,7 +143,7 @@ describe("Sandbox sync pagination and retirement", () => {
     expect(mockApplyRemoteChanges).not.toHaveBeenCalled();
     expect(mockSetSyncError).toHaveBeenCalledWith(
       expect.stringContaining("cursor"),
-      "sandbox",
+      sandboxSession,
     );
   });
 
@@ -158,7 +158,10 @@ describe("Sandbox sync pagination and retirement", () => {
     mockApiRequest.mockRejectedValueOnce(retired);
 
     await expect(runSync(sandboxSession)).rejects.toBe(retired);
-    expect(mockSetSyncError).toHaveBeenCalledWith(retired.message, "sandbox");
+    expect(mockSetSyncError).toHaveBeenCalledWith(
+      retired.message,
+      sandboxSession,
+    );
   });
 
   it("promotes a retired-generation batch result into a recoverable API error", async () => {
@@ -203,3 +206,16 @@ describe("Sandbox sync pagination and retirement", () => {
     expect(mockApplyRemoteChanges).not.toHaveBeenCalled();
   });
 });
+jest.mock("@/tenant/quarantine", () => ({
+  blockedScopeReason: async () => null,
+  quarantineScope: jest.fn(),
+  SCOPE_ACCESS_CODES: new Set([
+    "TENANT_SUSPENDED",
+    "MEMBERSHIP_INACTIVE",
+    "MEMBERSHIP_REVOKED",
+    "TERMINAL_REVOKED",
+  ]),
+}));
+jest.mock("@/tenant/configuration", () => ({
+  refreshTenantConfiguration: async () => undefined,
+}));

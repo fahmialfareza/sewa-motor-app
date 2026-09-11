@@ -3,7 +3,7 @@ jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 info:
   title: Telomoyo POS API
   version: 1.0.0
-  summary: Local-first point-of-sale API for a single rental store.
+  summary: Local-first point-of-sale API for isolated business tenants.
   description: |
     The contract used by the Android terminal and the Go backend. Money is integer
     Indonesian rupiah, timestamps are RFC 3339, reporting uses Asia/Jakarta, and
@@ -27,7 +27,11 @@ tags:
   - name: Sandbox
     description: Production-hosted test data-space status, switching, and lifecycle.
   - name: Users
-    description: Superadmin-only user administration.
+    description: Legacy tenant-scoped member projections; obsolete mutations require an app upgrade.
+  - name: Tenants
+    description: Active tenant membership, invitations, business identity, and merchant QRIS.
+  - name: Platform
+    description: Explicit platform-admin provisioning and tenant lifecycle; no business-data access.
   - name: Packages
     description: Package catalog and revision management.
   - name: Transactions
@@ -42,6 +46,551 @@ tags:
     description: Idempotent signed mutation push and cursor-based change pull.
 
 paths:
+  /auth/contexts:
+    get:
+      operationId: getAuthContexts
+      tags: [Authentication]
+      summary: List the account's available tenant and platform contexts
+      responses:
+        "200":
+          description: List the account's available tenant and platform contexts.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AvailableContextsEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /auth/switch-context:
+    post:
+      operationId: switchAuthContext
+      tags: [Authentication]
+      summary: Exchange the session into an authorized account, tenant, or platform context
+      description: Tenant context always starts in Production. Requires online outbox drainage or explicit quarantine after revoked access. The previous session is revoked and retained as immutable origin evidence.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SwitchContextRequest"
+      responses:
+        "200":
+          description: Exchange the session into an authorized account, tenant, or platform context.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /auth/register-invitation:
+    post:
+      operationId: registerInvitation
+      tags: [Authentication]
+      summary: Register an account and atomically accept a valid invitation
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterInvitationRequest"
+      responses:
+        "201":
+          description: Register an account and atomically accept a valid invitation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /auth/invitations/accept:
+    post:
+      operationId: acceptInvitation
+      tags: [Authentication]
+      summary: Accept an invitation using the authenticated account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptInvitationRequest"
+      responses:
+        "200":
+          description: Accept an invitation using the authenticated account.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantContextEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /platform/tenants:
+    get:
+      operationId: listPlatformTenants
+      tags: [Platform]
+      summary: List tenants in platform context
+      responses:
+        "200":
+          description: List tenants in platform context.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantListEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    post:
+      operationId: createTenant
+      tags: [Platform]
+      summary: Create a pending tenant and a seven-day initial-owner invitation
+      description: Requires platform context and TENANT_PROVISIONING_ENABLED. Does not grant tenant membership to the platform administrator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTenantRequest"
+      responses:
+        "201":
+          description: Create a pending tenant and a seven-day initial-owner invitation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateTenantEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /platform/tenants/{tenantId}/status:
+    post:
+      operationId: setTenantStatus
+      tags: [Platform]
+      summary: Suspend or reactivate a tenant without reviving revoked sessions
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetTenantStatusRequest"
+      responses:
+        "200":
+          description: Suspend or reactivate a tenant without reviving revoked sessions.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /platform/tenants/{tenantId}/invitation:
+    post:
+      operationId: reissueOwnerInvitation
+      tags: [Platform]
+      summary: Reissue the initial-owner invitation for a pending tenant
+      description: Invalidates the previous initial-owner code. Active tenant membership is managed only by that tenant's superadmins.
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      responses:
+        "200":
+          description: Reissue the initial-owner invitation for a pending tenant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /platform/audit:
+    get:
+      operationId: listPlatformAudit
+      tags: [Platform]
+      summary: List recent durable control-plane audit events
+      parameters:
+        - $ref: "#/components/parameters/AuditLimit"
+      responses:
+        "200":
+          description: List recent durable control-plane audit events.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlatformAuditListEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /tenant/members:
+    get:
+      operationId: listTenantMembers
+      tags: [Tenants]
+      summary: List memberships in the active tenant
+      responses:
+        "200":
+          description: List memberships in the active tenant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantMemberListEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /tenant/members/{userId}:
+    patch:
+      operationId: updateTenantMember
+      tags: [Tenants]
+      summary: Update the role or active status of one tenant membership
+      description: Production-mode tenant superadmin only. Does not change global credentials or other tenant memberships; last-active-superadmin and self-demotion protections apply.
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTenantMemberRequest"
+      responses:
+        "200":
+          description: Update the role or active status of one tenant membership.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantMemberEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /tenant/invitations:
+    get:
+      operationId: listTenantInvitations
+      tags: [Tenants]
+      summary: List tenant invitations without exposing their codes
+      responses:
+        "200":
+          description: List tenant invitations without exposing their codes.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationListEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    post:
+      operationId: createTenantInvitation
+      tags: [Tenants]
+      summary: Create a single-use seven-day membership invitation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInvitationRequest"
+      responses:
+        "201":
+          description: Create a single-use seven-day membership invitation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /tenant/invitations/{invitationId}:
+    delete:
+      operationId: revokeTenantInvitation
+      tags: [Tenants]
+      summary: Revoke an unused tenant invitation
+      parameters:
+        - $ref: "#/components/parameters/InvitationId"
+      responses:
+        "200":
+          description: Revoke an unused tenant invitation.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /tenant/profile:
+    get:
+      operationId: getTenantProfile
+      tags: [Tenants]
+      summary: Get the current business receipt and report identity
+      responses:
+        "200":
+          description: Get the current business receipt and report identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantProfileEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    patch:
+      operationId: updateTenantProfile
+      tags: [Tenants]
+      summary: Create a new tenant business-profile revision
+      description: Production-mode tenant superadmin only. Existing transactions retain their captured identity.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTenantProfileRequest"
+      responses:
+        "200":
+          description: Create a new tenant business-profile revision.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantProfileEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /tenant/qris:
+    get:
+      operationId: getTenantQRIS
+      tags: [Tenants]
+      summary: Get active and historical merchant QRIS payloads for the tenant
+      responses:
+        "200":
+          description: Get active and historical merchant QRIS payloads for the tenant.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantQRISConfigEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+    put:
+      operationId: updateTenantQRIS
+      tags: [Tenants]
+      summary: Import a merchant QRIS payload and optionally activate it
+      description: Production-mode tenant superadmin only. Historical payloads remain available for exact transaction bindings. activate defaults to true; false imports only a historical payload.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTenantQRISRequest"
+      responses:
+        "200":
+          description: Import a merchant QRIS payload and optionally activate it.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TenantQRISConfigEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /sync/revalidate:
+    post:
+      operationId: revalidateSyncOrigins
+      tags: [Synchronization]
+      summary: Revalidate quarantined signed origins in the current tenant context
+      description: Only matching active origin accounts, memberships and terminal enrollments are allowed. This does not rewrite or submit signed entries.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RevalidateOriginsRequest"
+      responses:
+        "200":
+          description: Revalidate quarantined signed origins in the current tenant context.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RevalidateOriginsEnvelope"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
   /health/live:
     get:
       operationId: getLiveness
@@ -161,6 +710,28 @@ paths:
           $ref: "#/components/responses/Conflict"
 
   /profile:
+    patch:
+      operationId: updateOwnProfile
+      tags: [Authentication]
+      summary: Update the global account owner's name
+      description: Account-owner action. Membership roles and other accounts cannot be modified here.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateOwnProfileRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/Profile"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
     get:
       operationId: getProfile
       tags: [Authentication]
@@ -903,6 +1474,26 @@ components:
         minimum: 1
 
   parameters:
+    TenantId:
+      name: tenantId
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/UUID"
+    InvitationId:
+      name: invitationId
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/UUID"
+    AuditLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 200
+        default: 50
     Cursor:
       name: cursor
       in: query
@@ -1175,6 +1766,545 @@ components:
             $ref: "#/components/schemas/ErrorEnvelope"
 
   schemas:
+    ContextKind:
+      type: string
+      enum: [account, tenant, platform]
+
+    Tenant:
+      type: object
+      additionalProperties: false
+      required: [id, name, slug, status, profileRevision, qrisRevision]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        slug:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9-]{1,62}$"
+        status:
+          type: string
+          enum: [pending_setup, active, suspended]
+        profileRevision:
+          type: integer
+          minimum: 1
+        qrisRevision:
+          type: [integer, "null"]
+          minimum: 1
+
+    TenantContext:
+      type: object
+      additionalProperties: false
+      required: [tenant, membershipId, role]
+      properties:
+        tenant:
+          $ref: "#/components/schemas/Tenant"
+        membershipId:
+          $ref: "#/components/schemas/UUID"
+        role:
+          $ref: "#/components/schemas/UserRole"
+
+    AvailableContexts:
+      type: object
+      additionalProperties: false
+      required: [tenants, platformAdmin]
+      properties:
+        tenants:
+          type: array
+          items:
+            $ref: "#/components/schemas/TenantContext"
+        platformAdmin:
+          type: boolean
+
+    SwitchContextRequest:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind:
+          $ref: "#/components/schemas/ContextKind"
+        tenantId:
+          $ref: "#/components/schemas/UUID"
+          description: Required only when selecting tenant context.
+        installationId:
+          type: [string, "null"]
+          format: uuid
+          description: Existing physical-installation binding to look up within the selected tenant.
+
+    AcceptInvitationRequest:
+      type: object
+      additionalProperties: false
+      required: [code]
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 256
+          writeOnly: true
+
+    RegisterInvitationRequest:
+      type: object
+      additionalProperties: false
+      required: [code, username, fullName, password]
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 256
+          writeOnly: true
+        username:
+          type: string
+          minLength: 3
+          maxLength: 64
+        fullName:
+          type: string
+          minLength: 1
+          maxLength: 160
+        password:
+          type: string
+          minLength: 8
+          maxLength: 256
+          writeOnly: true
+
+    CreateTenantRequest:
+      type: object
+      additionalProperties: false
+      required: [name, slug]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        slug:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9-]{1,62}$"
+
+    CreateTenantResult:
+      type: object
+      additionalProperties: false
+      required: [tenant, invitation]
+      properties:
+        tenant:
+          $ref: "#/components/schemas/Tenant"
+        invitation:
+          $ref: "#/components/schemas/Invitation"
+
+    SetTenantStatusRequest:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [active, suspended]
+
+    TenantMember:
+      type: object
+      additionalProperties: false
+      required: [id, membershipId, fullName, username, role, active]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+          description: Global account ID; used only within the authorized tenant membership.
+        membershipId:
+          $ref: "#/components/schemas/UUID"
+        fullName:
+          type: string
+        username:
+          type: string
+        role:
+          $ref: "#/components/schemas/UserRole"
+        active:
+          type: boolean
+
+    UpdateTenantMemberRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        role:
+          $ref: "#/components/schemas/UserRole"
+        active:
+          type: boolean
+
+    CreateInvitationRequest:
+      type: object
+      additionalProperties: false
+      required: [role]
+      properties:
+        role:
+          $ref: "#/components/schemas/UserRole"
+
+    Invitation:
+      type: object
+      additionalProperties: false
+      required:
+        [
+          id,
+          tenantId,
+          role,
+          expiresAt,
+          createdAt,
+          acceptedAt,
+          revokedAt,
+          initialOwner,
+        ]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        tenantId:
+          $ref: "#/components/schemas/UUID"
+        role:
+          $ref: "#/components/schemas/UserRole"
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        acceptedAt:
+          type: [string, "null"]
+          format: date-time
+        revokedAt:
+          type: [string, "null"]
+          format: date-time
+        initialOwner:
+          type: boolean
+        code:
+          type: string
+          readOnly: true
+          description: Returned only once when issuing or reissuing a code. Never present in lists or audit.
+
+    ReceiptIdentity:
+      type: object
+      additionalProperties: false
+      required: [revision, businessName, address, phone]
+      properties:
+        revision:
+          type: integer
+          minimum: 1
+        businessName:
+          type: string
+          minLength: 1
+          maxLength: 160
+        address:
+          type: string
+          maxLength: 500
+        phone:
+          type: string
+          maxLength: 50
+
+    TenantProfile:
+      type: object
+      additionalProperties: false
+      required: [tenantId, revision, businessName, address, phone]
+      properties:
+        tenantId:
+          $ref: "#/components/schemas/UUID"
+        revision:
+          type: integer
+          minimum: 1
+        businessName:
+          type: string
+          minLength: 1
+          maxLength: 160
+        address:
+          type: string
+          maxLength: 500
+        phone:
+          type: string
+          maxLength: 50
+
+    UpdateTenantProfileRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision, businessName, address, phone]
+      properties:
+        expectedRevision:
+          type: integer
+          minimum: 1
+        businessName:
+          type: string
+          minLength: 1
+          maxLength: 160
+        address:
+          type: string
+          maxLength: 500
+        phone:
+          type: string
+          maxLength: 50
+
+    TenantQRIS:
+      type: object
+      additionalProperties: false
+      required: [tenantId, revision, payloadHash, staticPayload]
+      properties:
+        tenantId:
+          $ref: "#/components/schemas/UUID"
+        revision:
+          type: integer
+          minimum: 1
+        payloadHash:
+          $ref: "#/components/schemas/QrisPayloadHash"
+        staticPayload:
+          type: string
+          minLength: 1
+          maxLength: 4096
+
+    TenantQRISConfig:
+      type: object
+      additionalProperties: false
+      required: [revision, activePayloadHash, payloads]
+      properties:
+        revision:
+          type: integer
+          minimum: 0
+        activePayloadHash:
+          oneOf:
+            - $ref: "#/components/schemas/QrisPayloadHash"
+            - type: "null"
+        payloads:
+          type: array
+          items:
+            $ref: "#/components/schemas/TenantQRIS"
+
+    UpdateTenantQRISRequest:
+      type: object
+      additionalProperties: false
+      required: [expectedRevision, staticPayload]
+      properties:
+        expectedRevision:
+          type: integer
+          minimum: 0
+        staticPayload:
+          type: string
+          minLength: 1
+          maxLength: 4096
+          writeOnly: true
+        activate:
+          type: boolean
+          default: true
+
+    UpdateOwnProfileRequest:
+      type: object
+      additionalProperties: false
+      required: [fullName]
+      properties:
+        fullName:
+          type: string
+          minLength: 1
+          maxLength: 160
+
+    PlatformAuditEvent:
+      type: object
+      additionalProperties: false
+      required: [id, eventType, actorId, tenantId, metadata, createdAt]
+      properties:
+        id:
+          $ref: "#/components/schemas/UUID"
+        eventType:
+          type: string
+        actorId:
+          type: [string, "null"]
+          format: uuid
+        tenantId:
+          type: [string, "null"]
+          format: uuid
+        metadata:
+          type: object
+          additionalProperties: true
+        createdAt:
+          type: string
+          format: date-time
+
+    SyncOrigin:
+      type: object
+      additionalProperties: false
+      required: [originSessionId, originActorId, terminalId]
+      properties:
+        originSessionId:
+          $ref: "#/components/schemas/UUID"
+        originActorId:
+          $ref: "#/components/schemas/UUID"
+        terminalId:
+          $ref: "#/components/schemas/UUID"
+
+    RevalidatedOrigin:
+      type: object
+      additionalProperties: false
+      required: [originSessionId, originActorId, terminalId, allowed]
+      properties:
+        originSessionId:
+          $ref: "#/components/schemas/UUID"
+        originActorId:
+          $ref: "#/components/schemas/UUID"
+        terminalId:
+          $ref: "#/components/schemas/UUID"
+        allowed:
+          type: boolean
+
+    RevalidateOriginsRequest:
+      type: object
+      additionalProperties: false
+      required: [origins]
+      properties:
+        origins:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/SyncOrigin"
+
+    RevalidateOriginsResult:
+      type: object
+      additionalProperties: false
+      required: [origins]
+      properties:
+        origins:
+          type: array
+          items:
+            $ref: "#/components/schemas/RevalidatedOrigin"
+
+    AvailableContextsEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/AvailableContexts"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    TenantContextEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/TenantContext"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    TenantEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/Tenant"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    TenantListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tenant"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    CreateTenantEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/CreateTenantResult"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    InvitationEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/Invitation"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    InvitationListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Invitation"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    TenantMemberEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/TenantMember"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    TenantMemberListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/TenantMember"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    TenantProfileEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/TenantProfile"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    TenantQRISConfigEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/TenantQRISConfig"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    PlatformAuditListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlatformAuditEvent"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
+    RevalidateOriginsEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          $ref: "#/components/schemas/RevalidateOriginsResult"
+        meta:
+          $ref: "#/components/schemas/Meta"
+
     UUID:
       type: string
       format: uuid
@@ -1447,6 +2577,10 @@ components:
           type: [string, "null"]
           format: uuid
           description: Client installation UUID used to look up an existing terminal binding.
+        protocolVersion:
+          type: integer
+          const: 2
+          description: New clients send 2 to enter account context and select an authorized tenant. Omission supports only the migrated Telomoyo tenant.
 
     SwitchModeRequest:
       type: object
@@ -1468,8 +2602,27 @@ components:
           dataMode,
           dataSpaceId,
           sandboxGeneration,
+          contextKind,
+          tenantId,
+          membershipId,
+          tenant,
+          isPlatformAdmin,
         ]
       properties:
+        contextKind:
+          $ref: "#/components/schemas/ContextKind"
+        tenantId:
+          type: [string, "null"]
+          format: uuid
+        membershipId:
+          type: [string, "null"]
+          format: uuid
+        tenant:
+          oneOf:
+            - $ref: "#/components/schemas/Tenant"
+            - type: "null"
+        isPlatformAdmin:
+          type: boolean
         sessionToken:
           type: string
           minLength: 43
@@ -1483,14 +2636,17 @@ components:
             - $ref: "#/components/schemas/Terminal"
             - type: "null"
         dataMode:
-          $ref: "#/components/schemas/DataMode"
+          oneOf:
+            - $ref: "#/components/schemas/DataMode"
+            - type: "null"
         dataSpaceId:
-          $ref: "#/components/schemas/UUID"
+          type: [string, "null"]
+          format: uuid
         sandboxGeneration:
           type: integer
           format: int64
           minimum: 0
-          description: Zero in production; the active immutable generation in Sandbox Mode.
+          description: Zero outside Sandbox; account and platform contexts have null tenant, membership, mode, and data-space fields.
 
     LoginEnvelope:
       type: object
@@ -1546,6 +2702,9 @@ components:
           deletedAt,
         ]
       properties:
+        membershipId:
+          type: [string, "null"]
+          format: uuid
         id:
           $ref: "#/components/schemas/UUID"
         fullName:
@@ -1572,8 +2731,34 @@ components:
       type: object
       additionalProperties: false
       required:
-        [user, sessionId, terminal, dataMode, dataSpaceId, sandboxGeneration]
+        [
+          user,
+          sessionId,
+          terminal,
+          dataMode,
+          dataSpaceId,
+          sandboxGeneration,
+          contextKind,
+          tenantId,
+          membershipId,
+          tenant,
+          isPlatformAdmin,
+        ]
       properties:
+        contextKind:
+          $ref: "#/components/schemas/ContextKind"
+        tenantId:
+          type: [string, "null"]
+          format: uuid
+        membershipId:
+          type: [string, "null"]
+          format: uuid
+        tenant:
+          oneOf:
+            - $ref: "#/components/schemas/Tenant"
+            - type: "null"
+        isPlatformAdmin:
+          type: boolean
         user:
           $ref: "#/components/schemas/User"
         sessionId:
@@ -1583,14 +2768,17 @@ components:
             - $ref: "#/components/schemas/Terminal"
             - type: "null"
         dataMode:
-          $ref: "#/components/schemas/DataMode"
+          oneOf:
+            - $ref: "#/components/schemas/DataMode"
+            - type: "null"
         dataSpaceId:
-          $ref: "#/components/schemas/UUID"
+          type: [string, "null"]
+          format: uuid
         sandboxGeneration:
           type: integer
           format: int64
           minimum: 0
-          description: Zero in production; the active immutable generation in Sandbox Mode.
+          description: Zero outside Sandbox; account and platform contexts have null tenant, membership, mode, and data-space fields.
 
     DataSpace:
       type: object
@@ -1598,6 +2786,7 @@ components:
       required:
         [
           id,
+          tenantId,
           mode,
           generation,
           status,
@@ -1607,6 +2796,8 @@ components:
           purgedAt,
         ]
       properties:
+        tenantId:
+          $ref: "#/components/schemas/UUID"
         id:
           $ref: "#/components/schemas/UUID"
         mode:
@@ -2055,6 +3246,8 @@ components:
           serverReceivedAt,
         ]
       properties:
+        receiptIdentity:
+          $ref: "#/components/schemas/ReceiptIdentity"
         id:
           $ref: "#/components/schemas/UUID"
         transactionId:
@@ -2138,6 +3331,12 @@ components:
           updatedAt,
         ]
       properties:
+        receiptProfileRevision:
+          type: integer
+          minimum: 1
+          description: Immutable business-profile selection captured at creation; absent on legacy transactions.
+        receiptIdentity:
+          $ref: "#/components/schemas/ReceiptIdentity"
         id:
           $ref: "#/components/schemas/ULID"
         displayId:
@@ -2200,6 +3399,10 @@ components:
       additionalProperties: false
       required: [id, occurredAt, paymentMethod, items]
       properties:
+        receiptProfileRevision:
+          type: integer
+          minimum: 1
+          description: Cached tenant business-profile revision to snapshot. Omission selects the current profile for compatibility.
         id:
           $ref: "#/components/schemas/ULID"
         occurredAt:
@@ -2673,6 +3876,10 @@ components:
       additionalProperties: false
       required: [id, paymentMethod, items]
       properties:
+        receiptProfileRevision:
+          type: integer
+          minimum: 1
+          description: Tenant business-profile revision captured when the offline operation was created. Existing signed legacy payloads remain valid without this field.
         id:
           $ref: "#/components/schemas/ULID"
         paymentMethod:
@@ -2904,11 +4111,20 @@ components:
         cursor:
           type: string
           description: |
-            Durable cursor after this individual change. Production retains the
-            legacy decimal form; Sandbox uses `sandbox:<generation>:<position>`.
+            Durable tenant/data-space-bound cursor after this individual change:
+            `tenant:<tenantUUID>:<spaceUUID>:<generation>:<position>`.
         aggregate:
           type: string
-          enum: [user, package, transaction, print_attempt, terminal]
+          enum:
+            [
+              user,
+              package,
+              transaction,
+              print_attempt,
+              terminal,
+              tenant_profile,
+              tenant_qris,
+            ]
         action:
           type: string
           enum: [upsert, delete]
@@ -2929,6 +4145,8 @@ components:
             - $ref: "#/components/schemas/Transaction"
             - $ref: "#/components/schemas/PrintAttempt"
             - $ref: "#/components/schemas/Terminal"
+            - $ref: "#/components/schemas/TenantProfile"
+            - $ref: "#/components/schemas/TenantQRISConfig"
             - type: "null"
 
     SyncPullResult:
@@ -2943,8 +4161,10 @@ components:
         cursor:
           type: string
           description: |
-            Production decimal cursor or generation-bound Sandbox cursor in the
-            form `sandbox:<generation>:<position>`.
+            Cursor bound to tenant and data space, in the form
+            `tenant:<tenantUUID>:<spaceUUID>:<generation>:<position>`.
+            The migrated Telomoyo tenant alone accepts legacy decimal Production
+            cursors and `sandbox:<generation>:<position>` Sandbox cursors.
         hasMore:
           type: boolean
 

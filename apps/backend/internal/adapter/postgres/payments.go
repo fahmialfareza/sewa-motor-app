@@ -37,6 +37,9 @@ func (s *Store) setTransactionPaymentStatusTx(
 	input domain.SetPaymentStatusInput,
 ) (domain.Transaction, error) {
 	defer observability.StartSegment(ctx, "Postgres.setTransactionPaymentStatusTx")()
+	if _, err := lockMutationIdentity(ctx, tx, input.Identity); err != nil {
+		return domain.Transaction{}, err
+	}
 	dataSpaceID := input.Identity.EffectiveDataSpaceID()
 	if _, err := lockActiveDataSpace(ctx, tx, dataSpaceID); err != nil {
 		return domain.Transaction{}, err
@@ -65,7 +68,7 @@ func (s *Store) setTransactionPaymentStatusTx(
 		JOIN transaction_revisions r
 		  ON r.transaction_id = t.id AND r.revision = t.current_revision
 		 AND r.data_space_id = t.data_space_id
-		JOIN users acting_user ON acting_user.id = $2
+		JOIN tenant_memberships acting_user ON acting_user.user_id = $2 AND acting_user.tenant_id = t.tenant_id AND acting_user.status = 'active'
 		WHERE t.id = $1 AND t.data_space_id = $3
 		FOR UPDATE OF t`,
 		input.ID, input.Identity.OriginActorID, dataSpaceID,

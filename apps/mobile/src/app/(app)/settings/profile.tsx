@@ -1,9 +1,11 @@
 import { StyleSheet, Text, View } from "react-native";
+import { useRouter } from "expo-router";
 
 import { useAuth } from "@/auth/AuthProvider";
 import { AppScreen } from "@/components/layout/AppScreen";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { Card } from "@/components/ui/Card";
+import { Button } from "@/components/ui/Button";
 import {
   colors,
   radius,
@@ -15,6 +17,7 @@ import { initials } from "@/utils/format";
 
 export default function ProfileScreen() {
   const { session } = useAuth();
+  const router = useRouter();
   if (!session) return <AppScreen />;
   return (
     <AppScreen>
@@ -40,8 +43,14 @@ export default function ProfileScreen() {
       <Text style={styles.note}>
         {session.dataMode === "sandbox"
           ? "Profil ini digunakan bersama dengan Produksi dan hanya dapat diubah dari Mode Produksi."
-          : "Nama, username, dan peran dikelola oleh superadmin agar jejak audit tetap konsisten."}
+          : "Nama dan kata sandi hanya dapat diubah oleh pemilik akun. Peran dikelola terpisah oleh superadmin setiap bisnis."}
       </Text>
+      <Button
+        disabled={session.dataMode === "sandbox"}
+        onPress={() => router.push("/account-profile")}
+      >
+        Kelola akun saya
+      </Button>
     </AppScreen>
   );
 }
