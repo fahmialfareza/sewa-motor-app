@@ -5,6 +5,7 @@
     "build": "go build ./...",
     "dev": "go run ./cmd/api",
     "seed:superadmin": "go run ./cmd/seed-superadmin",
+    "bootstrap:superadmin": "go run ./cmd/bootstrap-superadmin",
     "account:admin": "go run ./cmd/account-admin",
     "test": "go test ./...",
     "lint": "go vet ./...",

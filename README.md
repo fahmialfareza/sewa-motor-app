@@ -201,10 +201,18 @@ Infrastructure backups are operator-only full shared-database recovery copies
 containing every tenant and both modes. Encrypt and restrict them and rehearse
 restores. Never distribute a raw snapshot to staff or sanitize live data.
 
-The backend Dockerfile exposes separate `migrate`, `bootstrap`, and `api`
-targets. Production should run the migration image as a one-shot pre-deploy
-step, run bootstrap only when explicitly provisioning initial users, and deploy
-the API image without either administrative binary.
+The backend Dockerfile exposes separate `migrate`, `bootstrap-superadmin`,
+`bootstrap`, `account-admin`, and `api` targets. Production should run the
+migration image as a one-shot pre-deploy step, run account provisioning only
+when explicitly authorized, and deploy the API image without administrative
+binaries.
+
+For an installation hosted on Railway, follow
+[Railway production: first Superadmin and recovery](apps/backend/README.md#railway-production-first-superadmin-and-recovery).
+The guide selects the production database explicitly, keeps credentials out of
+command arguments, and distinguishes initial provisioning from recovery of an
+existing account. Do not run the development `pnpm seed:superadmin` command or
+change `APP_ENV` to `development` against production.
 
 The Android application ID is configured as
 `com.fahmialfareza.sewamotorpos`. The following release inputs remain
@@ -212,7 +220,7 @@ intentionally unset:
 
 - Expo/Play owner and account assignments
 - backend hosting/domain and TLS termination
-- initial one-superadmin/seven-admin secret manifest
+- initial production Superadmin identity and securely delivered temporary password
 - MPOS model/OS, paper widths, Bluetooth capabilities
 - vendor printer SDK/AAR/JAR and license
 - internal tester list

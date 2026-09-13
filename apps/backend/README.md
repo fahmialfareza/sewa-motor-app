@@ -38,6 +38,8 @@ only the API binary:
 docker build --target api -t sewa-motor-backend:api apps/backend
 docker build --target migrate -t sewa-motor-backend:migrate apps/backend
 docker build --target bootstrap -t sewa-motor-backend:bootstrap apps/backend
+docker build --target bootstrap-superadmin -t sewa-motor-backend:bootstrap-superadmin apps/backend
+docker build --target account-admin -t sewa-motor-backend:account-admin apps/backend
 ```
 
 The `api` target is the default for a plain `docker build` and is selected
@@ -288,7 +290,190 @@ DATABASE_URL='postgres://...' \
 The command is idempotent by username and never silently resets an existing
 password.
 
-### Sample development superadmin
+## Railway production: first Superadmin and recovery
+
+Run account provisioning as an explicitly authorized, one-off operator task
+from a trusted workstation. The deployed Distroless `api` image contains only
+`/app/api`: it has no shell, Go toolchain, bootstrap, or account-admin binary.
+An API start-command override or `railway ssh ... go run ...` will not provide
+those tools. Do not add seeding to startup, every deployment, or a cron job.
+
+The current commands serve different purposes:
+
+| Situation                                       | Command                                       | Important boundary                                                                      |
+| ----------------------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------- |
+| First production Superadmin                     | `cmd/bootstrap-superadmin`                    | Creates one initial Superadmin; requires explicit confirmation and a password on stdin. |
+| Optional original eight-person roster           | `cmd/bootstrap`                               | Requires exactly one Superadmin and seven Admins in a protected manifest.               |
+| Existing active account needs Superadmin access | `cmd/account-admin --action grant-superadmin` | Changes the global role; does not create an account.                                    |
+| Existing active account cannot sign in          | `cmd/account-admin --action reset-password`   | Revokes every account session and requires a new password at next login.                |
+| Local development sample only                   | `pnpm seed:superadmin`                        | Requires `APP_ENV=development`; never use it against production.                        |
+
+Use the single-account command for a new installation. Do not bypass the
+development guard or create seven dummy Admins for the original roster command.
+
+### 1. Verify the production target and database connection
+
+Use the reviewed backend revision matching the deployed schema, Go 1.26, Node.js,
+and the current [Railway CLI](https://docs.railway.com/cli). Before any write,
+confirm an approved production backup exists and the versioned GORM migrations
+have already succeeded, including `000006_internal_organization`. The production
+account-provisioning and recovery commands do not run migrations automatically.
+
+In Railway's dashboard, select the actual production environment and confirm
+which PostgreSQL service the API references. Copy the project, environment, and
+PostgreSQL service IDs, not the API service ID. Then, from the repository root:
+
+```sh
+railway login
+railway --version
+railway_project_id='replace-with-project-id'
+railway_environment_id='replace-with-production-environment-id'
+railway_postgres_service_id='replace-with-production-postgres-service-id'
+```
+
+`railway run` executes on **your computer**, with the selected service's
+variables injected; it does not run inside the deployed container. The wrapper
+below supplies all three IDs and `--no-local` to avoid linked-target or local
+development overrides. [Railway run reference](https://docs.railway.com/cli/run)
+
+For this workstation workflow, the PostgreSQL service must have approved public
+TCP access and its `DATABASE_PUBLIC_URL`. A `*.railway.internal` address is not
+directly reachable from your laptop; keep the API itself using its private
+database URL. If public access is unavailable, stop and use an operator-approved
+private-network execution/tunnel workflow; do not silently expose the database
+or substitute your local database. Railway documents public database access
+under PostgreSQL **Settings → Networking → Public Access**.
+[PostgreSQL connectivity](https://docs.railway.com/databases/postgresql#connecting-externally),
+[private networking](https://docs.railway.com/networking/private-networking).
+
+### 2. Build and prepare the local operator
+
+These commands build locally; they do not deploy or modify a database:
+
+```sh
+umask 077
+operator_directory=$(mktemp -d "${TMPDIR:-/tmp}/telomoyo-operator.XXXXXX")
+go build -o "$operator_directory/bootstrap-superadmin" ./apps/backend/cmd/bootstrap-superadmin
+go build -o "$operator_directory/account-admin" ./apps/backend/cmd/account-admin
+```
+
+Define this helper in the same terminal. It fetches only the selected PostgreSQL
+service's variables, fails when the public URL is missing, requires database
+TLS (retaining an existing certificate-verifying mode), and passes the URL in
+the child environment, never in command arguments or output. `APP_ENV` and
+`AUTO_MIGRATE` here affect only the local operator process, not Railway settings.
+
+```sh
+railway_operator() {
+  railway run \
+    --project "$railway_project_id" \
+    --environment "$railway_environment_id" \
+    --service "$railway_postgres_service_id" \
+    --no-local node -e '
+      let url;
+      try {
+        url = new URL(process.env.DATABASE_PUBLIC_URL || "");
+        if (!["postgres:", "postgresql:"].includes(url.protocol) ||
+            !url.hostname || url.hostname.endsWith(".railway.internal")) {
+          throw new Error();
+        }
+      } catch {
+        console.error("An approved production DATABASE_PUBLIC_URL is required.");
+        process.exit(1);
+      }
+      if (!["require", "verify-ca", "verify-full"].includes(url.searchParams.get("sslmode"))) {
+        url.searchParams.set("sslmode", "require");
+      }
+      const result = require("node:child_process").spawnSync(
+        process.argv[1], process.argv.slice(2), {
+          env: { ...process.env, DATABASE_URL: url.toString(),
+                 APP_ENV: "production", AUTO_MIGRATE: "false" },
+          stdio: "inherit"
+        }
+      );
+      if (result.error) console.error("Could not start the local operator binary.");
+      process.exit(result.status ?? 1);
+    ' "$@"
+}
+```
+
+Do not enable shell tracing (`set -x`), print environment variables, paste the
+database URL into commands, or share unredacted diagnostics. Keep password and
+manifest files outside the repository in restricted storage. TLS `require`
+encrypts the connection but does not verify the server hostname; use
+`verify-full` with the approved CA/hostname configuration when available.
+
+### 3. Create the first production Superadmin
+
+In a secure editor, prepare a protected file containing only one unique random
+temporary password on one line (8–256 bytes, without surrounding quotes; prefer
+at least 12 characters). Keep the file outside the repository. Do not put the
+password in shell commands, Git, or Railway deployment logs.
+
+After reviewing the exact production target IDs, replace the account name,
+operator identity, and reason below with the approved values, then run once:
+
+```sh
+initial_password_file='/absolute/protected/path/initial-superadmin-password.txt'
+chmod 600 "$initial_password_file"
+railway_operator "$operator_directory/bootstrap-superadmin" \
+  --username telomoyo.owner --full-name 'Nama Pengelola Telomoyo' \
+  --operator on-call@example.test --reason 'Approved initial production setup' \
+  --confirm-production < "$initial_password_file"
+```
+
+The command creates one active global Superadmin, requires a first-login
+password change, records an organization audit event with the operator/reason,
+and publishes safe account projections. It prints no password. It refuses a
+different existing Superadmin, an existing Admin under the requested username,
+or an inactive/deleted or mismatched account. An exact existing active
+Superadmin identity is an idempotent no-op; rerunning does **not** reset that
+password, revive sessions, or reactivate an account.
+
+Sign in online using the intended Superadmin and change the temporary password
+before operating. Select the business and enroll the physical terminal as that
+Superadmin. Subsequent staff creation belongs in **Pengguna** in the mobile app;
+do not routinely rerun bootstrap. Transfer initial passwords through the approved
+secret channel and remove the temporary password file from operator storage after
+handoff according to your secret-retention policy.
+
+### 4. Recover an existing account instead of reseeding
+
+An existing active Admin can be explicitly promoted after operator authorization:
+
+```sh
+railway_operator "$operator_directory/account-admin" \
+  --action grant-superadmin --username approved.account \
+  --operator on-call@example.test --reason 'Approved organization Superadmin recovery'
+```
+
+Replace the account, operator identity, and reason with the approved values. A
+role change revokes all of that account's sessions across tenants. Promotion
+alone does not replace a password or set the forced-password-change flag.
+
+For a forgotten password, use a protected file containing only the unique
+temporary password on one line (8–256 bytes, without surrounding quotes). Create
+it in a secure editor, then pass it through stdin:
+
+```sh
+recovery_password_file='/absolute/protected/path/temporary-password.txt'
+chmod 600 "$recovery_password_file"
+railway_operator "$operator_directory/account-admin" \
+  --action reset-password --username approved.account \
+  --operator on-call@example.test --reason 'Verified account-owner password recovery' \
+  < "$recovery_password_file"
+```
+
+Recovery preserves the role, revokes all sessions, and requires changing the
+temporary password after the next online login. Both operator actions append
+audited `operator.*` events with the responsible operator and reason, never the
+password. They cannot create, reactivate, or recover a deleted account. Neither
+action alters signed offline evidence; preserve quarantined entries and follow
+the [offline recovery procedure](../../docs/multi-tenant-operations.md#sessions-compatibility-and-offline-recovery).
+Remove the temporary password file after secure handoff according to your secret
+policy. Do not use SQL edits or development seeds as password-recovery shortcuts.
+
+## Sample development superadmin
 
 For local development, create one sample superadmin without weakening the
 production eight-user bootstrap contract:

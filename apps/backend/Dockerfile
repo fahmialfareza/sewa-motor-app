@@ -46,6 +46,19 @@ RUN --mount=type=cache,id=s/331944f1-96e7-4f7e-8ef0-2a436edf861a-/go/pkg/mod,tar
         -o /out/bootstrap \
         ./cmd/bootstrap
 
+FROM build-base AS build-bootstrap-superadmin
+ARG TARGETOS=linux
+ARG TARGETARCH
+RUN --mount=type=cache,id=s/331944f1-96e7-4f7e-8ef0-2a436edf861a-/go/pkg/mod,target=/go/pkg/mod \
+    --mount=type=cache,id=s/331944f1-96e7-4f7e-8ef0-2a436edf861a-/root/.cache/go-build,target=/root/.cache/go-build \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build \
+        -mod=readonly \
+        -trimpath \
+        -ldflags="-s -w -buildid=" \
+        -o /out/bootstrap-superadmin \
+        ./cmd/bootstrap-superadmin
+
 FROM build-base AS build-account-admin
 ARG TARGETOS=linux
 ARG TARGETARCH
@@ -94,6 +107,14 @@ COPY --from=build-bootstrap \
     /app/bootstrap
 ENTRYPOINT ["/app/bootstrap"]
 CMD ["-manifest", "/run/secrets/bootstrap-users.json"]
+
+FROM runtime AS bootstrap-superadmin
+COPY --from=build-bootstrap-superadmin \
+    --chown=65532:65532 \
+    --chmod=0555 \
+    /out/bootstrap-superadmin \
+    /app/bootstrap-superadmin
+ENTRYPOINT ["/app/bootstrap-superadmin"]
 
 FROM runtime AS account-admin
 COPY --from=build-account-admin \

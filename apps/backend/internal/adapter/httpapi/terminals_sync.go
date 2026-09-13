@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/domain"
+	"github.com/fahmialfareza/sewa-motor-app/apps/backend/internal/observability"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -252,6 +253,7 @@ func (s *Server) syncPull(c *gin.Context) {
 }
 
 func (s *Server) syncChangePayload(c *gin.Context, change domain.SyncChange) (any, error) {
+	defer observability.StartSegment(c.Request.Context(), "HTTP.SyncChangePayload")()
 	switch change.Aggregate {
 	case "user":
 		id, err := uuid.Parse(change.AggregateID)
@@ -292,8 +294,10 @@ func (s *Server) syncChangePayload(c *gin.Context, change domain.SyncChange) (an
 			return nil, domain.WrapInternal(err, "parse synced terminal id")
 		}
 		return s.deps.Repo.GetTerminal(c.Request.Context(), principal(c).TenantID, id)
-	case "tenant_profile", "tenant_qris":
+	case "tenant_profile", "tenant_qris", "tenant_metadata":
 		// These events are generated only into this tenant's active spaces.
+		// Metadata is emitted by migration/tenant setup and management changes,
+		// so it must also be available during the first pull after enrollment.
 		var payload any
 		if err := json.Unmarshal(change.Payload, &payload); err != nil {
 			return nil, domain.WrapInternal(err, "decode synced tenant configuration")
