@@ -1,4 +1,4 @@
-name: sewa-motor-pos
+name: telomoyo-pos
 
 services:
   postgres:

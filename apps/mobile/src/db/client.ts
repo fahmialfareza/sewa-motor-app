@@ -20,8 +20,8 @@ export interface DatabaseConnection {
 }
 
 export const databaseNames: Record<DataMode, string> = {
-  production: "sewa-motor-pos.db",
-  sandbox: "sewa-motor-pos-sandbox.db",
+  production: "telomoyo-pos.db",
+  sandbox: "telomoyo-pos-sandbox.db",
 };
 
 const connectionPromises: Record<
@@ -65,7 +65,7 @@ export function databaseName(scope: LocalScope): string {
   const value = databaseScope(scope);
   return value.tenantId === INITIAL_TENANT_ID
     ? databaseNames[value.dataMode]
-    : `sewa-motor-pos-${value.tenantId}-${value.dataMode}.db`;
+    : `telomoyo-pos-${value.tenantId}-${value.dataMode}.db`;
 }
 
 export function getDatabase(

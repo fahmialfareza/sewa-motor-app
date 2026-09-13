@@ -5,7 +5,7 @@ const ANDROID_APPLICATION_ID = "com.fahmialfareza.sewamotorpos";
 export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: "Telomoyo POS",
-  slug: "sewa-motor-pos",
+  slug: "telomoyo-pos",
   version: "0.2.0",
   icon: "./assets/branding/app-icon.png",
   orientation: "portrait",

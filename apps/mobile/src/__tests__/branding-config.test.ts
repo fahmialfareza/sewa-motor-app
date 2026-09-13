@@ -17,7 +17,7 @@ describe("Telomoyo POS application identity", () => {
   it("preserves identifiers required for an in-place upgrade", () => {
     expect(config.android?.package).toBe("com.fahmialfareza.sewamotorpos");
     expect(config.ios?.bundleIdentifier).toBe("com.fahmialfareza.sewamotorpos");
-    expect(config.slug).toBe("sewa-motor-pos");
+    expect(config.slug).toBe("telomoyo-pos");
     expect(config.scheme).toBe("sewamotor");
   });
 });

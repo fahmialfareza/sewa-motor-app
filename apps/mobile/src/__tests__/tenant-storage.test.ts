@@ -94,17 +94,17 @@ describe("tenant-scoped encrypted storage", () => {
       { ...session, tenantId: secondTenant, dataMode: "sandbox" as const },
     ];
     expect(scopes.map(databaseName)).toEqual([
-      "sewa-motor-pos.db",
-      "sewa-motor-pos-sandbox.db",
-      `sewa-motor-pos-${secondTenant}-production.db`,
-      `sewa-motor-pos-${secondTenant}-sandbox.db`,
+      "telomoyo-pos.db",
+      "telomoyo-pos-sandbox.db",
+      `telomoyo-pos-${secondTenant}-production.db`,
+      `telomoyo-pos-${secondTenant}-sandbox.db`,
     ]);
     for (const scope of scopes) await getOrCreateDatabaseKey(scope);
     expect(mockGetItemAsync.mock.calls.map(([key]) => key)).toEqual([
-      "sewa-motor.database-key.v1",
-      "sewa-motor.database-key.sandbox.v1",
-      `sewa-motor.database-key.tenant.${secondTenant}.production.v1`,
-      `sewa-motor.database-key.tenant.${secondTenant}.sandbox.v1`,
+      "telomoyo.database-key.v1",
+      "telomoyo.database-key.sandbox.v1",
+      `telomoyo.database-key.tenant.${secondTenant}.production.v1`,
+      `telomoyo.database-key.tenant.${secondTenant}.sandbox.v1`,
     ]);
     expect(mockSetItemAsync).not.toHaveBeenCalled();
     expect(mockDeleteItemAsync).not.toHaveBeenCalled();
@@ -124,12 +124,12 @@ describe("tenant-scoped encrypted storage", () => {
     expect(sandbox).not.toBe(second);
     await Promise.all([original, second, sandbox]);
     expect(mockOpenDatabaseAsync).toHaveBeenCalledTimes(3);
-    expect(mockOpenDatabaseAsync).toHaveBeenCalledWith("sewa-motor-pos.db");
+    expect(mockOpenDatabaseAsync).toHaveBeenCalledWith("telomoyo-pos.db");
     expect(mockOpenDatabaseAsync).toHaveBeenCalledWith(
-      `sewa-motor-pos-${secondTenant}-production.db`,
+      `telomoyo-pos-${secondTenant}-production.db`,
     );
     expect(mockOpenDatabaseAsync).toHaveBeenCalledWith(
-      `sewa-motor-pos-${secondTenant}-sandbox.db`,
+      `telomoyo-pos-${secondTenant}-sandbox.db`,
     );
   });
 
@@ -194,7 +194,7 @@ describe("tenant-scoped encrypted storage", () => {
 
     expect(mockDeleteDatabaseAsync).toHaveBeenCalledTimes(1);
     expect(mockDeleteDatabaseAsync).toHaveBeenCalledWith(
-      `sewa-motor-pos-${secondTenant}-sandbox.db`,
+      `telomoyo-pos-${secondTenant}-sandbox.db`,
     );
     expect(retiredSandbox.sqlite.closeAsync).toHaveBeenCalledTimes(1);
     expect(original.sqlite.closeAsync).not.toHaveBeenCalled();
@@ -209,7 +209,7 @@ describe("tenant-scoped encrypted storage", () => {
   it("uses the supplied tenant for database deletion even when another tenant is active", async () => {
     setModeFromSession({ ...session, tenantId: secondTenant });
     await clearLocalDatabase(session);
-    expect(mockDeleteDatabaseAsync).toHaveBeenCalledWith("sewa-motor-pos.db");
+    expect(mockDeleteDatabaseAsync).toHaveBeenCalledWith("telomoyo-pos.db");
   });
 
   it("only normalizes genuinely legacy sessions and preserves their immutable origin identity", async () => {
@@ -247,7 +247,7 @@ describe("tenant-scoped encrypted storage", () => {
       identity,
     );
     expect(mockGetItemAsync).toHaveBeenCalledWith(
-      "sewa-motor.terminal-identity.v1",
+      "telomoyo.terminal-identity.v1",
     );
     const secondIdentity = {
       ...identity,
@@ -259,12 +259,12 @@ describe("tenant-scoped encrypted storage", () => {
     await preserveTerminalIdentity(identity, INITIAL_TENANT_ID);
     expect(mockSetItemAsync.mock.calls).toEqual([
       [
-        `sewa-motor.terminal-identity.v1.${secondTenant}`,
+        `telomoyo.terminal-identity.v1.${secondTenant}`,
         JSON.stringify(secondIdentity),
         expect.any(Object),
       ],
       [
-        `sewa-motor.terminal-identity.v1.${INITIAL_TENANT_ID}.retired.terminal-a`,
+        `telomoyo.terminal-identity.v1.${INITIAL_TENANT_ID}.retired.terminal-a`,
         JSON.stringify(identity),
         expect.any(Object),
       ],
