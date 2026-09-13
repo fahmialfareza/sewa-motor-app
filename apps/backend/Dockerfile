@@ -59,6 +59,19 @@ RUN --mount=type=cache,id=s/331944f1-96e7-4f7e-8ef0-2a436edf861a-/go/pkg/mod,tar
         -o /out/account-admin \
         ./cmd/account-admin
 
+FROM build-base AS build-seed-superadmin
+ARG TARGETOS=linux
+ARG TARGETARCH
+RUN --mount=type=cache,id=s/331944f1-96e7-4f7e-8ef0-2a436edf861a-/go/pkg/mod,target=/go/pkg/mod \
+    --mount=type=cache,id=s/331944f1-96e7-4f7e-8ef0-2a436edf861a-/root/.cache/go-build,target=/root/.cache/go-build \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build \
+        -mod=readonly \
+        -trimpath \
+        -ldflags="-s -w -buildid=" \
+        -o /out/seed-superadmin \
+        ./cmd/seed-superadmin
+
 # Multi-platform index digest resolved from the official registry on 2026-07-29.
 FROM gcr.io/distroless/static-debian13:nonroot@sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6 AS runtime
 WORKDIR /app
