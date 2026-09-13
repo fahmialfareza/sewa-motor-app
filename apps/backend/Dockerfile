@@ -103,6 +103,14 @@ COPY --from=build-account-admin \
     /app/account-admin
 ENTRYPOINT ["/app/account-admin"]
 
+FROM runtime AS seed-superadmin
+COPY --from=build-seed-superadmin \
+    --chown=65532:65532 \
+    --chmod=0555 \
+    /out/seed-superadmin \
+    /app/seed-superadmin
+ENTRYPOINT ["/app/seed-superadmin"]
+
 # Keep the API last so a plain `docker build` still produces the serving image.
 FROM runtime AS api
 COPY --from=build-api \
