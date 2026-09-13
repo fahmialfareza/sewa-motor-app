@@ -119,9 +119,9 @@ func (s *Store) SwitchSession(
 
 	var sessionID uuid.UUID
 	if err = tx.QueryRow(ctx, `
-		INSERT INTO sessions (user_id, terminal_id, token_hash, data_space_id)
-		VALUES ($1,$2,$3,$4)
-		RETURNING id`, current.UserID, current.TerminalID, replacementTokenHash, dataSpaceID,
+		INSERT INTO sessions (user_id, terminal_id, token_hash, data_space_id,tenant_id,membership_id,context_kind,legacy_origin,protocol_version,sandbox_qris_policy)
+		SELECT user_id,terminal_id,$2,$3,tenant_id,membership_id,'tenant',false,protocol_version,sandbox_qris_policy FROM sessions WHERE id=$1
+		RETURNING id`, current.SessionID, replacementTokenHash, dataSpaceID,
 	).Scan(&sessionID); err != nil {
 		return domain.Principal{}, dbError(err, "create switched session")
 	}
@@ -180,11 +180,12 @@ func (s *Store) RecoverRetiredSandboxSession(
 	if err = tx.QueryRow(ctx, `SELECT is_active AND deleted_at IS NULL AND NOT must_change_password FROM users WHERE id = $1 FOR SHARE`, current.UserID).Scan(&recoveryAccountActive); err != nil || !recoveryAccountActive {
 		return domain.Principal{}, unauthorized()
 	}
-	var recoveryTenantStatus, recoveryMembershipStatus string
+	var recoveryTenantStatus string
 	if err = tx.QueryRow(ctx, `SELECT status FROM tenants WHERE id = $1 FOR SHARE`, current.TenantID).Scan(&recoveryTenantStatus); err != nil || recoveryTenantStatus != "active" {
 		return domain.Principal{}, unauthorized()
 	}
-	if err = tx.QueryRow(ctx, `SELECT status FROM tenant_memberships WHERE id = $1 AND user_id = $2 AND tenant_id = $3 FOR SHARE`, current.MembershipID, current.UserID, current.TenantID).Scan(&recoveryMembershipStatus); err != nil || recoveryMembershipStatus != "active" {
+	var recoveryMembershipID uuid.UUID
+	if err = tx.QueryRow(ctx, `SELECT id FROM tenant_memberships WHERE id = $1 AND user_id = $2 AND tenant_id = $3 FOR SHARE`, current.MembershipID, current.UserID, current.TenantID).Scan(&recoveryMembershipID); err != nil {
 		return domain.Principal{}, unauthorized()
 	}
 	if _, err = tx.Exec(ctx,
@@ -300,10 +301,10 @@ func (s *Store) RecoverRetiredSandboxSession(
 
 	var replacementSessionID uuid.UUID
 	if err = tx.QueryRow(ctx, `
-		INSERT INTO sessions (user_id, terminal_id, token_hash, data_space_id)
-		VALUES ($1,$2,$3,$4)
+		INSERT INTO sessions (user_id, terminal_id, token_hash, data_space_id,tenant_id,membership_id,context_kind,legacy_origin,protocol_version,sandbox_qris_policy)
+		SELECT user_id,terminal_id,$2,$3,tenant_id,membership_id,'tenant',false,protocol_version,sandbox_qris_policy FROM sessions WHERE id=$1
 		RETURNING id`,
-		current.UserID, oldTerminalID, replacementTokenHash, dataSpaceID,
+		current.SessionID, replacementTokenHash, dataSpaceID,
 	).Scan(&replacementSessionID); err != nil {
 		return domain.Principal{}, dbError(err, "create recovered session")
 	}
@@ -741,6 +742,12 @@ func (s *Store) CleanupExpiredSandboxes(ctx context.Context, now time.Time) (dom
 
 func seedSharedSyncChanges(ctx context.Context, tx pgx.Tx, dataSpaceID uuid.UUID) error {
 	defer observability.StartSegment(ctx, "Postgres.seedSharedSyncChanges")()
+	if _, err := tx.Exec(ctx, `INSERT INTO sync_changes(data_space_id,aggregate,aggregate_id,action,revision,payload,tombstone)
+	 SELECT ds.id,'tenant_metadata',t.id::text,'created',t.management_revision,
+	 jsonb_build_object('id',t.id,'name',t.name,'slug',t.slug,'status',t.status,'revision',t.management_revision,'profileRevision',t.profile_revision,'qrisRevision',t.qris_revision),false
+	 FROM data_spaces ds JOIN tenants t ON t.id=ds.tenant_id WHERE ds.id=$1`, dataSpaceID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO sync_changes (
 			data_space_id, aggregate, aggregate_id, action, payload, tombstone
@@ -748,16 +755,16 @@ func seedSharedSyncChanges(ctx context.Context, tx pgx.Tx, dataSpaceID uuid.UUID
 		SELECT $1, 'user', u.id::text, 'created',
 		       jsonb_build_object(
 			'id', u.id, 'fullName', u.full_name, 'username', u.username,
-			'role', m.role, 'active', m.status = 'active' AND u.is_active,
-			'membershipId', m.id, 'tenantId', m.tenant_id,
+			'role', u.role, 'active', u.is_active,
+			'membershipId', m.id, 'tenantId', ds.tenant_id,
 			'mustChangePassword', u.must_change_password,
 			'createdAt', u.created_at, 'updatedAt', u.updated_at,
 			'deletedAt', u.deleted_at
 		       ), false
 		FROM users u
-		JOIN tenant_memberships m ON m.user_id = u.id
-		JOIN data_spaces ds ON ds.tenant_id = m.tenant_id AND ds.id = $1
-		WHERE u.is_active AND u.deleted_at IS NULL AND m.status = 'active'
+		JOIN data_spaces ds ON ds.id = $1
+		LEFT JOIN tenant_memberships m ON m.user_id = u.id AND m.tenant_id = ds.tenant_id
+		WHERE u.is_active AND u.deleted_at IS NULL
 		ORDER BY u.id`, dataSpaceID); err != nil {
 		return err
 	}

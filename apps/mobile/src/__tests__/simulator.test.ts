@@ -1,4 +1,5 @@
 import { SimulatorPrinter } from "@/printer/simulator";
+import { formatReceipt } from "@/printer/receipt";
 import type { ReceiptDocument } from "@/printer/types";
 
 const document: ReceiptDocument = {
@@ -23,6 +24,26 @@ const document: ReceiptDocument = {
 };
 
 describe("printer simulator", () => {
+  it.each([32, 48] as const)(
+    "simulates the exact full-value Sandbox preview at %s columns",
+    async (columns) => {
+      const sandbox = {
+        ...document,
+        dataMode: "sandbox" as const,
+        paymentMethod: "qris" as const,
+      };
+      const printer = new SimulatorPrinter("success", columns);
+      await printer.connect();
+      await expect(printer.print(sandbox)).resolves.toEqual({
+        status: "success",
+      });
+      expect(printer.lastOutput).toBe(formatReceipt(sandbox, columns));
+      expect(printer.lastOutput).toContain("TEST - MODE UJI");
+      expect(printer.lastOutput).toContain("BUKAN STRUK RESMI");
+      expect(printer.lastOutput).toContain("Rp 70.000");
+      await printer.disconnect();
+    },
+  );
   it("requires a connection before printing", async () => {
     const printer = new SimulatorPrinter();
     await expect(printer.print(document)).resolves.toEqual({

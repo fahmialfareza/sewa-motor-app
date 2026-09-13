@@ -351,12 +351,14 @@ describe("payment-aware transaction repository", () => {
     expect(transactionInsert?.[16]).toBe(QRIS_PAYLOAD_HASH);
   });
 
-  it("stores the fixed Rp1.000 charge for a Sandbox QRIS transaction", async () => {
+  it("stores the full Sandbox package total for a compatible QRIS transaction", async () => {
     const sandboxSession: Session = {
       ...session,
       dataMode: "sandbox",
       dataSpaceId: "00000000-0000-4000-8000-000000000200",
       sandboxGeneration: 1,
+      protocolVersion: 3,
+      sandboxQrisPolicy: "transaction_total",
     };
     setModeFromSession(sandboxSession);
     const created = await createTransaction(
@@ -381,11 +383,24 @@ describe("payment-aware transaction repository", () => {
     );
 
     expect(created.total).toBe(140_000);
-    expect(created.paymentAmount).toBe(1_000);
+    expect(created.paymentAmount).toBe(140_000);
     const transactionInsert = mockRunAsync.mock.calls.find(([sql]) =>
       String(sql).includes("INSERT INTO transactions"),
     );
-    expect(transactionInsert?.[6]).toBe(1_000);
+    expect(transactionInsert?.[6]).toBe(140_000);
+  });
+
+  it("does not create or sign new Sandbox entries from a legacy session", async () => {
+    const legacy: Session = {
+      ...session,
+      dataMode: "sandbox",
+      sandboxGeneration: 1,
+    };
+    setModeFromSession(legacy);
+    await expect(
+      createTransaction([], "qris", QRIS_PAYLOAD_HASH, legacy),
+    ).rejects.toThrow("Sesi Mode Uji perlu diperbarui");
+    expect(mockRunAsync).not.toHaveBeenCalled();
   });
 
   it("blocks printing until payment succeeds for the current revision", async () => {
@@ -992,6 +1007,76 @@ describe("payment-aware transaction repository", () => {
       "Konflik berubah saat diproses",
     );
     expect(mockRunAsync).not.toHaveBeenCalled();
+  });
+
+  it("uses the new full-value session when retrying a legacy Sandbox correction", async () => {
+    const upgraded: Session = {
+      ...session,
+      sessionId: "upgraded-session",
+      dataMode: "sandbox",
+      sandboxGeneration: 1,
+      protocolVersion: 3,
+      sandboxQrisPolicy: "transaction_total",
+    };
+    setModeFromSession(upgraded);
+    const legacy = {
+      ...conflict,
+      localSnapshot: {
+        ...conflict.localSnapshot,
+        paymentMethod: "qris" as const,
+        qrisPayloadHash: QRIS_PAYLOAD_HASH,
+        paymentAmount: 1000,
+      },
+    };
+    const original = JSON.stringify({
+      ...correctionOperation,
+      payload: {
+        ...correctionOperation.payload,
+        paymentMethod: "qris",
+        qrisPayloadHash: QRIS_PAYLOAD_HASH,
+      },
+    });
+    mockGetFirstAsync
+      .mockResolvedValueOnce({
+        operation_id: "legacy-operation",
+        operation_json: original,
+      })
+      .mockResolvedValueOnce({ operation_json: original })
+      .mockResolvedValueOnce({
+        id: legacy.id,
+        local_json: JSON.stringify(legacy.localSnapshot),
+        server_json: JSON.stringify(legacy.serverSnapshot),
+      });
+    await resolveConflict(legacy, "retry-local", upgraded);
+    const revision = mockRunAsync.mock.calls.find(([sql]) =>
+      String(sql).includes("INSERT INTO transaction_revisions"),
+    );
+    expect(JSON.parse(String(revision?.[5]))).toMatchObject({
+      paymentAmount: 70000,
+      paymentStatus: "pending",
+      paymentConfirmedRevision: null,
+    });
+    const queued = mockRunAsync.mock.calls.find(([sql]) =>
+      String(sql).includes("INSERT INTO outbox_operations"),
+    );
+    expect(JSON.parse(String(queued?.[6]))).toMatchObject({
+      originSessionId: upgraded.sessionId,
+    });
+    expect(legacy.localSnapshot.paymentAmount).toBe(1000);
+  });
+
+  it("blocks a new Sandbox conflict retry under a legacy session before changing evidence", async () => {
+    const legacy: Session = {
+      ...session,
+      dataMode: "sandbox",
+      sandboxGeneration: 1,
+    };
+    setModeFromSession(legacy);
+    await expect(
+      resolveConflict(conflict, "retry-local", legacy),
+    ).rejects.toThrow("Sesi Mode Uji perlu diperbarui");
+    expect(mockRunAsync).not.toHaveBeenCalled();
+    expect(mockGetFirstAsync).not.toHaveBeenCalled();
   });
 
   it("archives a locally created transaction rejected by the server", async () => {

@@ -162,8 +162,8 @@ export default function SyncCenterScreen() {
           </Text>
           <Text style={styles.detail}>
             Identitas dan tanda tangan asli tetap disimpan. Hanya akun asal
-            dengan keanggotaan dan terminal yang kembali diizinkan dapat
-            melanjutkan pengiriman.
+            dengan akun dan terminal yang kembali diizinkan dapat melanjutkan
+            pengiriman.
           </Text>
           <Button
             disabled={!runtime.online || runtime.syncing}

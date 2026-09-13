@@ -25,6 +25,42 @@ func TestResolvePaymentAmount(t *testing.T) {
 	}
 }
 
+func TestPaymentPolicyIsSessionBoundAndLegacyByDefault(t *testing.T) {
+	t.Parallel()
+	for _, total := range []int64{500, 1_000, 25_000, 150_000} {
+		for _, policy := range []SandboxQRISPolicy{SandboxQRISPolicyFixed1000, SandboxQRISPolicyTransactionTotal} {
+			want := int64(1_000)
+			if policy == SandboxQRISPolicyTransactionTotal {
+				want = total
+			}
+			if got := ResolvePaymentAmount(DataModeSandbox, PaymentMethodQRIS, total, policy); got != want {
+				t.Fatalf("policy %s total %d: amount %d, want %d", policy, total, got, want)
+			}
+			for _, mode := range []DataMode{DataModeProduction, DataModeSandbox} {
+				if got := ResolvePaymentAmount(mode, PaymentMethodCash, total, policy); got != total {
+					t.Fatalf("cash unexpectedly affected by policy: %s %s %d", mode, policy, got)
+				}
+			}
+			if got := ResolvePaymentAmount(DataModeProduction, PaymentMethodQRIS, total, policy); got != total {
+				t.Fatalf("Production QRIS unexpectedly affected by policy: %s %d", policy, got)
+			}
+		}
+	}
+	if got := (Principal{ProtocolVersion: 3}).EffectiveSandboxQRISPolicy(); got != SandboxQRISPolicyFixed1000 {
+		t.Fatalf("protocol alone must not invent a missing session policy: %s", got)
+	}
+	for _, version := range []int{0, 1, 2, 3, 4} {
+		negotiated := NegotiatedClientProtocolVersion(version)
+		want := SandboxQRISPolicyFixed1000
+		if version >= 3 {
+			want = SandboxQRISPolicyTransactionTotal
+		}
+		if got := SandboxQRISPolicyForProtocol(negotiated); got != want {
+			t.Fatalf("requested protocol %d negotiated policy %s, want %s", version, got, want)
+		}
+	}
+}
+
 func TestDataModeContract(t *testing.T) {
 	t.Parallel()
 

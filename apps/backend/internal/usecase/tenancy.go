@@ -2,9 +2,7 @@ package usecase
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"regexp"
 	"strings"
@@ -22,18 +20,14 @@ type Tenancy struct {
 }
 
 func RequirePlatform(p domain.Principal) error {
-	if err := RequireReady(p); err != nil {
-		return err
-	}
-	if p.ContextKind != domain.ContextPlatform || !p.IsPlatformAdmin {
-		return domain.NewError(domain.CodeForbidden, "Akses pengelola platform diperlukan")
-	}
-	return nil
+	return RequireManagement(p)
 }
 
 func (t Tenancy) Contexts(ctx context.Context, p domain.Principal) (domain.AvailableContexts, error) {
 	defer observability.StartSegment(ctx, "Usecase.Tenancy.Contexts")()
-	return t.Repo.AvailableContexts(ctx, p.UserID)
+	result, err := t.Repo.AvailableContexts(ctx, p.UserID)
+	result.TenantProvisioningEnabled = t.ProvisioningEnabled
+	return result, err
 }
 
 func (t Tenancy) Create(ctx context.Context, p domain.Principal, input domain.CreateTenantInput) (domain.CreateTenantResult, error) {
@@ -49,90 +43,22 @@ func (t Tenancy) Create(ctx context.Context, p domain.Principal, input domain.Cr
 	if input.Name == "" || len(input.Name) > 160 || !regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,62}$`).MatchString(input.Slug) {
 		return domain.CreateTenantResult{}, domain.Validation("Nama dan kode bisnis tidak valid", nil)
 	}
-	code, hash, err := newInvitationCode()
-	if err != nil {
-		return domain.CreateTenantResult{}, err
-	}
-	result, err := t.Repo.CreateTenant(ctx, p, input, hash)
-	if err == nil {
-		result.Invitation.Code = code
-	}
-	return result, err
+	return t.Repo.CreateTenant(ctx, p, input, nil)
 }
 
 func (t Tenancy) Invite(ctx context.Context, p domain.Principal, tenantID uuid.UUID, role domain.Role, owner bool) (domain.Invitation, error) {
 	defer observability.StartSegment(ctx, "Usecase.Tenancy.Invite")()
-	if owner {
-		if err := RequirePlatform(p); err != nil {
-			return domain.Invitation{}, err
-		}
-		role = domain.RoleSuperadmin
-	} else {
-		if err := RequireProduction(p); err != nil {
-			return domain.Invitation{}, err
-		}
-		if err := RequireSuperadmin(p); err != nil {
-			return domain.Invitation{}, err
-		}
-		tenantID = p.TenantID
-	}
-	if !role.Valid() {
-		return domain.Invitation{}, domain.Validation("Peran undangan tidak valid", nil)
-	}
-	code, hash, err := newInvitationCode()
-	if err != nil {
-		return domain.Invitation{}, err
-	}
-	result, err := t.Repo.CreateTenantInvitation(ctx, p, tenantID, role, owner, hash)
-	if err == nil {
-		result.Code = code
-	}
-	return result, err
-}
-
-func newInvitationCode() (string, []byte, error) {
-	var value [24]byte
-	if _, err := rand.Read(value[:]); err != nil {
-		return "", nil, domain.WrapInternal(err, "generate invitation")
-	}
-	code := base64.RawURLEncoding.EncodeToString(value[:])
-	return code, invitationHash(code), nil
-}
-func invitationHash(code string) []byte {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(code)))
-	return sum[:]
+	return domain.Invitation{}, domain.NewError("INVITATIONS_REMOVED", "Undangan tidak lagi digunakan. Semua akun aktif dapat memilih setiap bisnis.")
 }
 
 func (t Tenancy) Accept(ctx context.Context, p domain.Principal, code string) (domain.TenantContext, error) {
 	defer observability.StartSegment(ctx, "Usecase.Tenancy.Accept")()
-	if err := RequireReady(p); err != nil {
-		return domain.TenantContext{}, err
-	}
-	if len(strings.TrimSpace(code)) != 32 {
-		return domain.TenantContext{}, domain.NewError(domain.CodeInvitationInvalid, "Kode undangan tidak valid")
-	}
-	if p.IsTenantContext() && p.DataMode == domain.DataModeSandbox {
-		return domain.TenantContext{}, domain.NewError(domain.CodeForbidden, "Beralih ke produksi atau akun sebelum menerima undangan")
-	}
-	return t.Repo.AcceptTenantInvitation(ctx, p, invitationHash(code))
+	return domain.TenantContext{}, domain.NewError("INVITATIONS_REMOVED", "Undangan tidak lagi digunakan. Semua akun aktif dapat memilih setiap bisnis.")
 }
 
 func (t Tenancy) Register(ctx context.Context, input domain.RegisterInvitationInput) (uuid.UUID, error) {
 	defer observability.StartSegment(ctx, "Usecase.Tenancy.Register")()
-	input.Username = domain.NormalizeUsername(input.Username)
-	input.FullName = strings.TrimSpace(input.FullName)
-	input.Code = strings.TrimSpace(input.Code)
-	if !regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,63}$`).MatchString(input.Username) || input.FullName == "" || len(input.FullName) > 160 || len(input.Code) != 32 {
-		return uuid.Nil, domain.Validation("Data pendaftaran atau undangan tidak valid", nil)
-	}
-	if err := domain.ValidatePassword(input.Password); err != nil {
-		return uuid.Nil, err
-	}
-	hash, err := t.Passwords.Hash(input.Password)
-	if err != nil {
-		return uuid.Nil, domain.WrapInternal(err, "hash invited password")
-	}
-	return t.Repo.RegisterTenantInvitation(ctx, input, hash, invitationHash(input.Code))
+	return uuid.Nil, domain.NewError("INVITATIONS_REMOVED", "Pendaftaran melalui undangan telah dihapus. Hubungi Superadmin untuk membuat akun.")
 }
 
 func (t Tenancy) UpdateProfile(ctx context.Context, p domain.Principal, input domain.UpdateTenantProfileInput) (domain.TenantProfile, error) {

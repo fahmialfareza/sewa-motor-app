@@ -119,7 +119,7 @@ func (s *Server) createTenant(c *gin.Context) {
 		writeError(c, err)
 		return
 	}
-	writeData(c, http.StatusCreated, result)
+	writeData(c, http.StatusCreated, result.Tenant)
 }
 
 func (s *Server) setTenantStatus(c *gin.Context) {

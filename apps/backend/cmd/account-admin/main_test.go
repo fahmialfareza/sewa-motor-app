@@ -9,15 +9,15 @@ import (
 )
 
 func TestParseOptionsRequiresExplicitAuditedTarget(t *testing.T) {
-	valid := []string{"--username", "  Owner  ", "--action", "grant-platform", "--operator", "on-call@example.test", "--reason", "Approved initial platform operator"}
+	valid := []string{"--username", "  Owner  ", "--action", "grant-superadmin", "--operator", "on-call@example.test", "--reason", "Approved organization Superadmin"}
 	got, err := parseOptions(valid)
 	if err != nil || got.username != "owner" || got.operator != "on-call@example.test" {
 		t.Fatalf("parse explicit target = %+v, %v", got, err)
 	}
 	for _, args := range [][]string{
 		nil,
-		{"--username", "owner", "--action", "grant-platform", "--reason", "Approved"},
-		{"--username", "owner", "--action", "grant-platform", "--operator", "operator"},
+		{"--username", "owner", "--action", "grant-superadmin", "--reason", "Approved"},
+		{"--username", "owner", "--action", "grant-superadmin", "--operator", "operator"},
 		append(append([]string{}, valid...), "unexpected"),
 		append(append([]string{}, valid...), "--password", "do-not-echo-this"),
 		{"--username", "owner", "--action", "delete-tenant", "--operator", "operator", "--reason", "Approved"},
@@ -26,6 +26,17 @@ func TestParseOptionsRequiresExplicitAuditedTarget(t *testing.T) {
 			t.Fatalf("accepted invalid options: %v", args)
 		} else if strings.Contains(err.Error(), "do-not-echo-this") {
 			t.Fatal("argument parser exposed a supplied credential")
+		}
+	}
+}
+
+func TestRetiredPlatformActionsFailBeforeReadingCredentials(t *testing.T) {
+	for _, action := range []string{"grant-platform", "revoke-platform"} {
+		args := []string{"--username", "owner", "--action", action, "--operator", "operator", "--reason", "Approved"}
+		var output bytes.Buffer
+		err := run(args, panicReader{}, &output)
+		if err == nil || !strings.Contains(err.Error(), "platform permission has been removed") || output.Len() != 0 {
+			t.Fatalf("retired action did not fail closed: %v", err)
 		}
 	}
 }

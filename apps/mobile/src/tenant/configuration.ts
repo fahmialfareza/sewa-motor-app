@@ -17,7 +17,7 @@ export const LEGACY_BUSINESS_PROFILE: BusinessProfile = {
 };
 
 export async function readTenantConfiguration<T>(
-  kind: "profile" | "qris",
+  kind: "profile" | "qris" | "metadata",
   scope?: LocalScope,
 ): Promise<T | null> {
   const { sqlite } = await getDatabase(scope);
@@ -29,7 +29,7 @@ export async function readTenantConfiguration<T>(
 }
 
 export async function cacheTenantConfiguration(
-  kind: "profile" | "qris",
+  kind: "profile" | "qris" | "metadata",
   payload: unknown,
   scope: LocalScope,
 ): Promise<void> {

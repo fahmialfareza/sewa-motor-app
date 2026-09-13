@@ -11,9 +11,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// The same global account has independent authority and device enrollment in
-// each tenant. Exercise business repositories, not only SQL constraints.
-func TestTenantDataPlaneIsolationAndMembershipAuthority(t *testing.T) {
+// Global authority does not collapse independent tenant data and enrollments.
+// Exercise business repositories, not only SQL constraints.
+func TestTenantDataPlaneIsolationAndGlobalAuthority(t *testing.T) {
 	store := openSandboxLifecycleStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -65,16 +65,28 @@ func TestTenantDataPlaneIsolationAndMembershipAuthority(t *testing.T) {
 		t.Fatalf("wrong merchant receipt: %+v", tb.ReceiptIdentity)
 	}
 
-	// Membership authority is read again inside the write transaction. The
-	// principal deliberately retains its stale superadmin role.
-	if _, err = store.Pool.Exec(ctx, `UPDATE tenant_memberships SET role='admin' WHERE id=$1`, b.MembershipID); err != nil {
+	// Historical membership role/status must no longer authorize or deny access.
+	if _, err = store.Pool.Exec(ctx, `UPDATE tenant_memberships SET role='admin',status='inactive' WHERE id=$1`, b.MembershipID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.UpdatePackage(ctx, b, pb.ID, domain.UpdatePackageInput{Name: "Forbidden", UnitPrice: 1, ChangeReason: "stale role"}); !domain.IsCode(err, domain.CodeForbidden) {
-		t.Fatalf("global superadmin bypassed tenant admin: %v", err)
+	if _, err = store.UpdatePackage(ctx, b, pb.ID, domain.UpdatePackageInput{Name: "Global owner", UnitPrice: 40000, ChangeReason: "global role"}); err != nil {
+		t.Fatalf("historical membership blocked global Superadmin: %v", err)
 	}
-	if _, err = store.UpdatePackage(ctx, a, pa.ID, domain.UpdatePackageInput{Name: "Still owner", UnitPrice: 25000, ChangeReason: "own tenant"}); err != nil {
-		t.Fatalf("other tenant role affected: %v", err)
+	// Read the global role again inside the mutation transaction, even when both
+	// cached principals still advertise Superadmin.
+	if _, err = store.Pool.Exec(ctx, `UPDATE users SET role='admin' WHERE id=$1`, a.UserID); err != nil {
+		t.Fatal(err)
+	}
+	for _, pair := range []struct {
+		actor domain.Principal
+		pack  domain.Package
+	}{{a, pa}, {b, pb}} {
+		if _, err = store.UpdatePackage(ctx, pair.actor, pair.pack.ID, domain.UpdatePackageInput{Name: "Forbidden", UnitPrice: 1, ChangeReason: "stale role"}); !domain.IsCode(err, domain.CodeForbidden) {
+			t.Fatalf("stale global role authorized tenant %s: %v", pair.actor.TenantID, err)
+		}
+	}
+	if _, err = store.Pool.Exec(ctx, `UPDATE users SET role='superadmin' WHERE id=$1`, a.UserID); err != nil {
+		t.Fatal(err)
 	}
 	confirmPayment(t, ctx, store, b, tb.ID, 1, now)
 	confirmPayment(t, ctx, store, a, ta.ID, 1, now)
@@ -178,7 +190,7 @@ func seedSecondTenantPrincipal(t *testing.T, ctx context.Context, store *Store, 
 	return principal
 }
 
-func TestTenantChangeFanoutRebuildsMemberProjection(t *testing.T) {
+func TestTenantChangeFanoutRebuildsGlobalAccountProjection(t *testing.T) {
 	store := openSandboxLifecycleStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -189,7 +201,7 @@ func TestTenantChangeFanoutRebuildsMemberProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	if err = addTenantChange(ctx, tx, b.TenantID, "user", a.UserID.String(), "updated", nil, map[string]any{"role": "superadmin", "passwordHash": "do not copy"}, false); err != nil {
+	if err = addTenantChange(ctx, tx, b.TenantID, "user", a.UserID.String(), "updated", nil, map[string]any{"role": "admin", "passwordHash": "do not copy"}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -207,7 +219,7 @@ func TestTenantChangeFanoutRebuildsMemberProjection(t *testing.T) {
 	if err = json.Unmarshal(payload, &projected); err != nil {
 		t.Fatal(err)
 	}
-	if projected["role"] != "admin" || projected["membershipId"] != b.MembershipID.String() || projected["passwordHash"] != nil {
+	if projected["role"] != "superadmin" || projected["membershipId"] != b.MembershipID.String() || projected["passwordHash"] != nil {
 		t.Fatalf("unsafe membership projection: %s", payload)
 	}
 	tx, err = store.Pool.Begin(ctx)
@@ -229,7 +241,29 @@ func TestTenantChangeFanoutRebuildsMemberProjection(t *testing.T) {
 	if err = store.Pool.QueryRow(ctx, `SELECT action,tombstone FROM sync_changes WHERE data_space_id=$1 AND aggregate='user' ORDER BY cursor DESC LIMIT 1`, b.DataSpaceID).Scan(&action, &tombstone); err != nil {
 		t.Fatal(err)
 	}
-	if action != "deleted" || !tombstone {
-		t.Fatalf("inactive projection action=%s tombstone=%v", action, tombstone)
+	if action != "updated" || tombstone {
+		t.Fatalf("historical membership status hid global account: action=%s tombstone=%v", action, tombstone)
+	}
+	tx, err = store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `UPDATE users SET is_active=false WHERE id=$1`, a.UserID); err != nil {
+		t.Fatal(err)
+	}
+	if err = addSharedChange(ctx, tx, "user", a.UserID.String(), "updated", nil, nil, false); err != nil {
+		t.Fatal(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []uuid.UUID{a.DataSpaceID, b.DataSpaceID} {
+		if err = store.Pool.QueryRow(ctx, `SELECT action,tombstone FROM sync_changes WHERE data_space_id=$1 AND aggregate='user' ORDER BY cursor DESC LIMIT 1`, id).Scan(&action, &tombstone); err != nil {
+			t.Fatal(err)
+		}
+		if action != "deleted" || !tombstone {
+			t.Fatalf("inactive account remains visible in %s", id)
+		}
 	}
 }

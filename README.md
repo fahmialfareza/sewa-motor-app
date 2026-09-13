@@ -1,6 +1,6 @@
 # Telomoyo POS
 
-Android-first, local-first point of sale for independent businesses with
+Android-first, local-first point of sale for Pengelola Wisata Telomoyo business units with
 multiple physical terminals. The mobile app remains usable through connectivity
 loss; PostgreSQL is the durable source of truth and Redis is disposable cache and
 rate-limit infrastructure.
@@ -27,10 +27,11 @@ customers, rental schedules, tax, shifts, photos, targets, or cancellations.
 - Admins can create/read transactions, correct and confirm payment for their own
   transactions, view statistics/exports, read packages, and change their own
   password.
-- Tenant superadmins additionally manage memberships/invitations/packages and perform online-only
-  transaction deletion, and may correct or confirm payment for every
-  transaction. Self-demotion/deactivation/deletion and removal of the final
-  active superadmin are forbidden.
+- Global Superadmins additionally manage staff, tenants, packages, merchant
+  configuration, and terminal enrollment. They may correct or confirm payment
+  for every transaction and perform online-only transaction deletion.
+  Self-demotion/deactivation and removal of the final active Superadmin are
+  forbidden. Accounts and tenants are retained rather than deleted.
 
 ## Repository
 
@@ -58,18 +59,17 @@ The production deployment can optionally expose a first-class Sandbox Mode.
 Server-owned data spaces and generations keep test transactions out of
 production history, revenue, exports, audit streams, and sync cursors. Sandbox
 is disabled by default; every signed-in staff member can switch modes, while
-only a production-mode tenant superadmin can reset that tenant's shared sandbox
+only a production-mode global Superadmin can reset the selected tenant's shared Sandbox
 generation.
 
 ## Multi-tenant operation
 
 The migrated installation is the **Telomoyo** tenant. Existing accounts, IDs,
 encrypted databases, terminal keys, and already-signed queues are preserved.
-Accounts can belong to several businesses with independent admin/superadmin
-roles. Each business owns its catalog, transactions, terminals, merchant QRIS,
-receipt identity, and Sandbox lifecycle. An account or platform-management
-context has no business-data access; a platform administrator still needs an
-explicit tenant membership to enter a business.
+Every active account can enter every active business with the same global
+Admin/Superadmin role, without invitations. Each business owns its catalog,
+transactions, terminals, merchant QRIS, receipt identity, and Sandbox lifecycle.
+Account context hosts global management and has no business-data access.
 
 Provisioning is disabled by default (`TENANT_PROVISIONING_ENABLED=false`).
 Do not enable it until the tenant-aware backend and compatible mobile app are
@@ -77,11 +77,17 @@ deployed and every old backend replica has stopped. The rollout, operator
 commands, compatibility boundaries, and release acceptance checklist are in
 [the multi-tenant operations guide](docs/multi-tenant-operations.md).
 
-Platform administrators provision businesses using one-use, seven-day owner
-invitations. Tenant superadmins invite staff rather than create or reset global
-accounts. Global password recovery and the first platform-admin assignment are
-explicit, audited operator actions; existing superadmins are not automatically
-promoted.
+Superadmins manage tenants and global staff accounts in the mobile app. New
+tenants are immediately active; new/reset passwords require a password change.
+Role/status changes and password recovery revoke all account sessions. The
+separate platform permission and invitation flows are removed. Operator recovery
+is explicitly authorized and audited; tenant/account deletion is unavailable.
+
+In Settings, **Bisnis & tenant** provides **Ganti bisnis**, **Kelola tenant**,
+and **Identitas struk** according to role. The persistent business label also
+opens the chooser. Superadmins enroll each physical installation separately in
+each business; Admins can then use its existing enrollment. Switching keeps
+tenant keys/caches separate and waits for queued synchronization and printing.
 
 ## Rebrand compatibility
 
@@ -103,7 +109,7 @@ issued QRIS payload; the app never rewrites it.
 - pnpm 9.0.0
 - Go 1.26
 - Docker with Compose
-- JDK 17 and Android SDK for a mobile development build
+- JDK 21 and Android SDK for the verified Android development-build workflow
 - EAS access for signed preview/production Android artifacts
 
 Expo Go cannot load SQLCipher or the local Kotlin printer module. Use an Expo
@@ -185,14 +191,15 @@ mobile build, confirm no old backend replicas remain, verify production queries
 and New Relic alerts use `data.mode = 'production'`, and only then enable it.
 Enabling Sandbox performs an advisory-locked, idempotent generation activation
 and package clone before the API starts accepting traffic; activation failure
-stops startup. Cleanup failures never affect production readiness. The Rp1.000
-sandbox QRIS amount is fixed and is generated from the configured real merchant
-payload, so test transfers require manual merchant reconciliation.
+stops startup. Cleanup failures never affect production readiness. Protocol-v3
+Sandbox QRIS uses the full Sandbox package total and the real merchant payload,
+so test transfers require manual reconciliation. Legacy origin sessions retain
+their Rp1.000 policy and historical payments/reprints. Drain their outbox before
+upgrading the session; never rewrite signed queues.
 
-Physical PostgreSQL snapshots and PITR necessarily include Sandbox rows because
-both modes share a cluster. For production-only long-lived artifacts, follow the
-scratch-restore, guarded sanitization, verification, and restore-test procedure
-in `apps/backend/README.md`; never sanitize the live database.
+Infrastructure backups are operator-only full shared-database recovery copies
+containing every tenant and both modes. Encrypt and restrict them and rehearse
+restores. Never distribute a raw snapshot to staff or sanitize live data.
 
 The backend Dockerfile exposes separate `migrate`, `bootstrap`, and `api`
 targets. Production should run the migration image as a one-shot pre-deploy

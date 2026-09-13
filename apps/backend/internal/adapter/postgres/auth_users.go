@@ -28,6 +28,13 @@ func (s *Store) CreateSession(ctx context.Context, userID uuid.UUID, terminalID 
 		return domain.Principal{}, dbError(err, "begin session")
 	}
 	defer tx.Rollback(ctx)
+	var tenantID uuid.UUID
+	if err = tx.QueryRow(ctx, `SELECT tenant_id FROM data_spaces WHERE id=$1`, dataSpaceID).Scan(&tenantID); err != nil {
+		return domain.Principal{}, dbError(err, "find session tenant")
+	}
+	if _, err = ensureAccountTenantLink(ctx, tx, tenantID, userID); err != nil {
+		return domain.Principal{}, dbError(err, "link account tenant")
+	}
 
 	if terminalID != nil {
 		var active bool
@@ -48,7 +55,7 @@ func (s *Store) CreateSession(ctx context.Context, userID uuid.UUID, terminalID 
 		SELECT $1,$2,$3,ds.id,ds.tenant_id,m.id,'tenant',false
 		FROM data_spaces ds
 		JOIN tenants t ON t.id = ds.tenant_id AND t.status = 'active'
-		JOIN tenant_memberships m ON m.tenant_id = ds.tenant_id AND m.user_id = $1 AND m.status = 'active'
+		JOIN tenant_memberships m ON m.tenant_id = ds.tenant_id AND m.user_id = $1
 		WHERE ds.id = $4 AND ds.status = 'active'
 		RETURNING id`,
 		userID, terminalID, tokenHash, domain.EffectiveDataSpaceID(dataSpaceID),
@@ -95,17 +102,17 @@ func principalBySessionRow(ctx context.Context, query rowQuerier, sessionID uuid
 	var membershipStatus, spaceStatus string
 	var retired bool
 	var revokedReason string
-	var terminalActive bool
+	var terminalActive, accountActive bool
 	err := query.QueryRow(ctx, `
-		SELECT u.id, s.id, s.terminal_id, u.full_name, u.username, COALESCE(m.role,''), u.must_change_password,
+		SELECT u.id, s.id, s.terminal_id, u.full_name, u.username, u.role, u.must_change_password,
 		       COALESCE(ds.id,'00000000-0000-0000-0000-000000000000'), COALESCE(ds.mode,''),
 		       CASE WHEN ds.mode = 'sandbox' THEN ds.generation ELSE 0 END,
 		       s.context_kind, COALESCE(s.tenant_id,'00000000-0000-0000-0000-000000000000'),
 		       COALESCE(s.membership_id,'00000000-0000-0000-0000-000000000000'),
-		       u.is_platform_admin, s.legacy_origin,
-		       COALESCE(t.name,''), COALESCE(t.slug,''), COALESCE(t.status,''), COALESCE(t.profile_revision,0),t.qris_revision,
+		       false, s.legacy_origin,s.protocol_version,s.sandbox_qris_policy,
+		       COALESCE(t.name,''), COALESCE(t.slug,''), COALESCE(t.status,''), COALESCE(t.profile_revision,0),t.qris_revision,COALESCE(t.management_revision,0),
 		       COALESCE(m.status,''),COALESCE(ds.status,''),s.revoked_at IS NOT NULL,
-		       COALESCE(s.revoked_reason,''),u.created_at,u.updated_at,
+		       COALESCE(s.revoked_reason,''),u.created_at,u.updated_at,u.is_active AND u.deleted_at IS NULL,
 		       s.terminal_id IS NULL OR EXISTS(SELECT 1 FROM terminals term WHERE term.id=s.terminal_id AND term.tenant_id=s.tenant_id AND term.is_active AND term.revoked_at IS NULL)
 		FROM sessions s
 		JOIN users u ON u.id = s.user_id
@@ -113,9 +120,8 @@ func principalBySessionRow(ctx context.Context, query rowQuerier, sessionID uuid
 		LEFT JOIN data_spaces ds ON ds.id = s.data_space_id AND ds.tenant_id=s.tenant_id
 		LEFT JOIN tenants t ON t.id=s.tenant_id
 		WHERE s.id = $1 AND s.token_hash = $2
-		  AND (s.revoked_at IS NULL OR s.revoked_reason IN ('membership_changed','tenant_suspended','terminal_revoked') OR (s.revoked_reason='sandbox_generation_retired'
+		  AND (s.revoked_at IS NULL OR s.revoked_reason IN ('membership_changed','tenant_suspended','terminal_revoked','account_access_changed','password_recovered') OR (s.revoked_reason='sandbox_generation_retired'
 		       AND ds.mode='sandbox' AND ds.status='retired' AND s.revoked_at=ds.retired_at))
-		  AND u.is_active AND u.deleted_at IS NULL
 		`,
 		sessionID, tokenHash,
 	).Scan(
@@ -123,25 +129,22 @@ func principalBySessionRow(ctx context.Context, query rowQuerier, sessionID uuid
 		&principal.FullName, &principal.Username, &principal.Role, &principal.MustChangePassword,
 		&principal.DataSpaceID, &principal.DataMode, &principal.SandboxGeneration,
 		&principal.ContextKind, &principal.TenantID, &principal.MembershipID,
-		&principal.IsPlatformAdmin, &principal.LegacyOrigin,
-		&tenant.Name, &tenant.Slug, &tenant.Status, &tenant.ProfileRevision, &tenant.QrisRevision,
+		&principal.IsPlatformAdmin, &principal.LegacyOrigin, &principal.ProtocolVersion, &principal.SandboxQRISPolicy,
+		&tenant.Name, &tenant.Slug, &tenant.Status, &tenant.ProfileRevision, &tenant.QrisRevision, &tenant.Revision,
 		&membershipStatus, &spaceStatus, &retired,
-		&revokedReason, &principal.UserCreatedAt, &principal.UserUpdatedAt, &terminalActive,
+		&revokedReason, &principal.UserCreatedAt, &principal.UserUpdatedAt, &accountActive, &terminalActive,
 	)
 	if err != nil {
 		return principal, err
 	}
-	if principal.ContextKind == domain.ContextPlatform && !principal.IsPlatformAdmin {
-		return domain.Principal{}, domain.NewError(domain.CodeUnauthorized, "Akses platform telah dicabut")
+	if !accountActive || revokedReason == "account_access_changed" || revokedReason == "password_recovered" {
+		return principal, domain.NewError(domain.CodeAccountAccessChanged, "Akses akun telah berubah. Data belum tersinkron tetap disimpan. Masuk kembali atau hubungi Superadmin")
 	}
 	if principal.ContextKind == domain.ContextTenant {
 		tenant.ID = principal.TenantID
 		principal.Tenant = &tenant
 		if tenant.Status != "active" {
-			return principal, domain.NewError(domain.CodeTenantSuspended, "Bisnis sedang dinonaktifkan. Hubungi pengelola platform")
-		}
-		if membershipStatus != "active" {
-			return principal, domain.NewError(domain.CodeMembershipRevoked, "Akses Anda ke bisnis ini telah dicabut")
+			return principal, domain.NewError(domain.CodeTenantSuspended, "Bisnis sedang dinonaktifkan. Hubungi Superadmin")
 		}
 		if revokedReason == "membership_changed" || revokedReason == "tenant_suspended" || revokedReason == "terminal_revoked" || !terminalActive {
 			return principal, domain.NewError(domain.CodeMembershipInactive, "Akses bisnis atau terminal telah berubah. Pilih bisnis kembali untuk melanjutkan")
@@ -227,8 +230,7 @@ func (s *Store) ListUsers(ctx context.Context, tenantID uuid.UUID, includeDelete
 		return nil, domain.NewError(domain.CodeContextRequired, "Pilih bisnis untuk melanjutkan")
 	}
 	query := s.ORM.WithContext(ctx).Table("users u").
-		Select("u.id, u.full_name, u.username, m.role, (u.is_active AND m.status = 'active') AS is_active, u.must_change_password, u.created_at, GREATEST(u.updated_at,m.updated_at) AS updated_at, u.deleted_at").
-		Joins("JOIN tenant_memberships m ON m.user_id = u.id AND m.tenant_id = ?", tenantID)
+		Select("u.id, u.full_name, u.username, u.role, u.is_active, u.must_change_password, u.created_at, u.updated_at, u.deleted_at")
 	if !includeDeleted {
 		query = query.Where("u.deleted_at IS NULL")
 	}
@@ -248,14 +250,14 @@ func (s *Store) GetUser(ctx context.Context, tenantID, id uuid.UUID) (domain.Use
 	if tenantID == uuid.Nil {
 		return domain.User{}, domain.NewError(domain.CodeContextRequired, "Pilih bisnis untuk melanjutkan")
 	}
-	user, err := scanAccountUser(s.Pool.QueryRow(ctx, `SELECT u.id,u.full_name,u.username,m.role,
-	 u.is_active AND m.status='active',u.must_change_password,u.created_at,GREATEST(u.updated_at,m.updated_at),u.deleted_at
-	 FROM users u JOIN tenant_memberships m ON m.user_id=u.id AND m.tenant_id=$1 WHERE u.id=$2`, tenantID, id))
+	user, err := scanAccountUser(s.Pool.QueryRow(ctx, `SELECT u.id,u.full_name,u.username,u.role,
+	 u.is_active,u.must_change_password,u.created_at,u.updated_at,u.deleted_at
+	 FROM users u WHERE u.id=$1`, id))
 	return user, dbError(err, "read tenant member")
 }
 
 // Obsolete global staff mutations are disabled even for direct repository callers.
-// Tenant administrators manage memberships/invitations, never global credentials.
+// Obsolete tenant-level user requests must never become global account edits.
 func (s *Store) CreateUser(ctx context.Context, actor domain.Principal, input domain.CreateUserInput, passwordHash string) (domain.User, error) {
 	defer observability.StartSegment(ctx, "Postgres.CreateUser")()
 	return domain.User{}, legacyUsersDisabled()
@@ -273,5 +275,5 @@ func (s *Store) DeleteUser(ctx context.Context, actor domain.Principal, targetID
 	return legacyUsersDisabled()
 }
 func legacyUsersDisabled() error {
-	return domain.NewError(domain.CodeClientUpdateRequired, "Perbarui aplikasi untuk mengelola anggota dan undangan bisnis. Akun pribadi hanya dapat diubah oleh pemiliknya")
+	return domain.NewError(domain.CodeClientUpdateRequired, "Perbarui aplikasi dan gunakan Pengguna pada pengelolaan organisasi untuk mengelola akun")
 }

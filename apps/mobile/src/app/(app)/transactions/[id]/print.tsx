@@ -5,6 +5,7 @@ import { StyleSheet, Text, View } from "react-native";
 import { useAuth } from "@/auth/AuthProvider";
 import { AppScreen } from "@/components/layout/AppScreen";
 import { PageHeader } from "@/components/layout/PageHeader";
+import { ReceiptPreview } from "@/components/transactions/ReceiptPreview";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { PaymentMethodBadge } from "@/components/ui/PaymentBadge";
@@ -17,7 +18,8 @@ import {
 import type { Transaction } from "@/domain/types";
 import { isPaymentConfirmedForCurrentRevision } from "@/domain/payments";
 import { getConfiguredPrinter } from "@/printer/service";
-import { receiptFromTransaction } from "@/printer/types";
+import { receiptFromTransaction, type ReceiptDocument } from "@/printer/types";
+import { readPrinterConfig, type PrinterConfig } from "@/security/secure-store";
 import { beginLocalMutation } from "@/mode/mutation-barrier";
 import { useModeStore } from "@/mode/mode-store";
 import { useSyncRuntime } from "@/sync/SyncProvider";
@@ -38,15 +40,24 @@ export default function PrintTransactionScreen() {
   const [transaction, setTransaction] = useState<Transaction | null>(null);
   const [printing, setPrinting] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [printerConfig, setPrinterConfig] = useState<PrinterConfig | null>(
+    null,
+  );
+  const [attemptDocument, setAttemptDocument] =
+    useState<ReceiptDocument | null>(null);
+  const [simulatedSuccess, setSimulatedSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const activeAttempt = useRef(false);
 
   useEffect(() => {
     let current = true;
     if (id && session) {
-      void getTransaction(id, session)
-        .then((value) => {
-          if (current) setTransaction(value);
+      void Promise.all([getTransaction(id, session), readPrinterConfig()])
+        .then(([value, config]) => {
+          if (!current) return;
+          setTransaction(value);
+          setPrinterConfig(config);
+          if (!value) setError("Transaksi tidak ditemukan pada bisnis ini.");
         })
         .catch((reason) => {
           if (current)
@@ -62,7 +73,20 @@ export default function PrintTransactionScreen() {
     };
   }, [id, session]);
 
-  if (!transaction || !session) return <AppScreen />;
+  if (!transaction || !session) {
+    return (
+      <AppScreen>
+        <PageHeader back title="Cetak struk" />
+        {error ? (
+          <StateView
+            icon="alert-circle-outline"
+            title="Struk belum dapat dibuka"
+            message={error}
+          />
+        ) : null}
+      </AppScreen>
+    );
+  }
   if (!isPaymentConfirmedForCurrentRevision(transaction)) {
     return (
       <AppScreen>
@@ -109,6 +133,8 @@ export default function PrintTransactionScreen() {
       Object.freeze(document.lines);
       Object.freeze(document);
       const { config, printer } = await getConfiguredPrinter();
+      setPrinterConfig(config);
+      setAttemptDocument(document);
       connectedPrinter = printer;
       attemptId = await beginPrintAttempt({
         transactionId: transaction.id,
@@ -140,6 +166,7 @@ export default function PrintTransactionScreen() {
           current ? { ...current, printState: "success" } : current,
         );
         setSuccess(true);
+        setSimulatedSuccess(config.adapter === "simulator");
       } else {
         router.replace({
           pathname: "/transactions/[id]/print-failure",
@@ -174,16 +201,31 @@ export default function PrintTransactionScreen() {
 
   return (
     <AppScreen>
-      <PageHeader back title={success ? "Struk tercetak" : "Cetak struk"} />
+      <PageHeader
+        back
+        title={
+          success
+            ? simulatedSuccess
+              ? "Simulasi selesai"
+              : "Struk tercetak"
+            : "Cetak struk"
+        }
+      />
       <View style={[styles.icon, success && styles.iconSuccess]}>
         <Text style={styles.iconGlyph}>{success ? "✓" : "✓"}</Text>
       </View>
       <Text style={styles.title}>
-        {success ? "Struk berhasil dicetak!" : "Pembayaran berhasil"}
+        {success
+          ? simulatedSuccess
+            ? "Simulasi cetak berhasil"
+            : "Struk berhasil dicetak!"
+          : "Pembayaran berhasil"}
       </Text>
       <Text style={styles.subtitle}>
         {success
-          ? "Penjualan tetap tercatat dan hasil cetak masuk ke antrean sinkron."
+          ? simulatedSuccess
+            ? "Simulator memproses struk tanpa mencetak kertas. Hasil simulasi masuk ke antrean sinkron."
+            : "Penjualan tetap tercatat dan hasil cetak masuk ke antrean sinkron."
           : "Pembayaran sudah dikonfirmasi untuk revisi transaksi ini. Struk siap dicetak."}
       </Text>
       {session.dataMode === "sandbox" ? (
@@ -228,6 +270,15 @@ export default function PrintTransactionScreen() {
           </View>
         ) : null}
       </Card>
+      {printerConfig ? (
+        <ReceiptPreview
+          columns={printerConfig.paperColumns}
+          document={
+            attemptDocument ??
+            receiptFromTransaction(transaction, isCopy, session.dataMode)
+          }
+        />
+      ) : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {success ? (
         <>
@@ -239,6 +290,8 @@ export default function PrintTransactionScreen() {
           </Button>
           <Button
             icon="printer-outline"
+            disabled={printing}
+            loading={printing}
             onPress={() => {
               setSuccess(false);
               void print(true);
@@ -252,6 +305,7 @@ export default function PrintTransactionScreen() {
         <>
           <Button
             icon="printer-outline"
+            disabled={!printerConfig}
             loading={printing}
             onPress={() => void print()}
           >

@@ -68,12 +68,7 @@ export interface AuthStore {
   switchingMode: boolean;
   scopeLocked: boolean;
   switchContext: (kind: ContextKind, tenantId?: string) => Promise<void>;
-  registerInvitation: (
-    code: string,
-    username: string,
-    fullName: string,
-    password: string,
-  ) => Promise<void>;
+  upgradeSession: () => Promise<void>;
   dismissNotice: () => Promise<void>;
   hydrate: () => Promise<void>;
   login: (username: string, password: string) => Promise<void>;
@@ -284,7 +279,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
         username: username.trim(),
         password,
         installationId,
-        protocolVersion: 2,
+        protocolVersion: 3,
       },
     });
     const session = sessionFromLoginResponse(result);
@@ -299,7 +294,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       const active = contexts.tenants.filter(
         (item) => item.tenant.status === "active",
       );
-      if (active.length === 1 && !contexts.platformAdmin)
+      if (active.length === 1)
         await get().switchContext("tenant", active[0]!.tenant.id);
       return;
     }
@@ -325,24 +320,69 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     set({ terminalEnrolled: false });
   },
 
-  registerInvitation: async (code, username, fullName, password) => {
-    const result = await apiRequest<LoginResponse>(
-      "/auth/register-invitation",
-      {
+  upgradeSession: async () => {
+    const session = get().session;
+    if (!session || get().scopeLocked)
+      throw new Error("Pilih konteks yang aktif sebelum memperbarui sesi.");
+    if (get().switchingMode) throw new Error(MODE_TRANSITION_BUSY_MESSAGE);
+    set({ switchingMode: true });
+    let lease: ModeTransitionLease | null = null;
+    let replacement: Session | null = null;
+    try {
+      lease = await beginModeTransition();
+      const network = await NetInfo.fetch();
+      if (!network.isConnected || network.isInternetReachable === false)
+        throw new Error(
+          "Pembaruan sesi memerlukan internet. Antrean dan data lama tetap tersimpan.",
+        );
+      const business = !session.contextKind || session.contextKind === "tenant";
+      if (business) {
+        await runSync(session);
+        if (await countPendingOutbox(session))
+          throw new Error(
+            "Selesaikan perubahan dan konflik di Pusat Sinkron sebelum memperbarui sesi.",
+          );
+      }
+      const result = await apiRequest<LoginResponse>("/auth/upgrade-session", {
         method: "POST",
-        body: {
-          code: code.trim(),
-          username: username.trim(),
-          fullName: fullName.trim(),
-          password,
-        },
-      },
-    );
-    await persistSession(sessionFromLoginResponse(result), set);
-    set({ scopeLocked: false, terminalEnrolled: false, notice: null });
+        token: session.token,
+        body: { protocolVersion: 3 },
+      });
+      replacement = sessionFromLoginResponse(result);
+      await persistSession(replacement, set);
+      if (
+        (replacement.protocolVersion ?? 2) < 3 ||
+        replacement.sandboxQrisPolicy !== "transaction_total"
+      )
+        throw new Error(
+          "Backend belum mendukung Mode Uji nominal penuh. Minta pengelola memperbarui backend; data lama tetap aman.",
+        );
+      if (business && get().terminalEnrolled) {
+        const summary = await runSync(replacement);
+        await hydrateSyncStateForSession(replacement, summary);
+      }
+      set({
+        notice:
+          "Sesi diperbarui. Transaksi Mode Uji baru menggunakan nominal penuh; transaksi lama tidak berubah.",
+      });
+    } catch (error) {
+      if (replacement)
+        set({
+          notice:
+            "Sesi baru sudah diterbitkan. Periksa koneksi dan lanjutkan sinkronisasi; jangan hapus data aplikasi.",
+        });
+      throw error;
+    } finally {
+      lease?.release();
+      set({ switchingMode: false });
+    }
   },
 
   switchContext: async (kind, tenantId) => {
+    if (kind === "platform")
+      throw new Error(
+        "Pengelolaan sekarang menggunakan konteks akun Superadmin.",
+      );
     const session = get().session;
     if (!session)
       throw new Error("Masuk terlebih dahulu untuk memilih bisnis.");
@@ -588,7 +628,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
         token: session.token,
         body: { fullName: fullName.trim() },
       });
-      // A global profile response must never replace the independent tenant role.
+      // Account roles are global, but profile editing changes only the owner's name.
       await persistSession(
         { ...session, user: { ...session.user, fullName: result.fullName } },
         set,
@@ -744,6 +784,31 @@ registerAccessFailureHandler(async (token, code) => {
   const auth = useAuthStore.getState();
   if (!SCOPE_ACCESS_CODES.has(code) || auth.session?.token !== token) return;
   const session = auth.session;
+  if (code === "ACCOUNT_ACCESS_CHANGED") {
+    // Account changes revoke all sessions. Keep every scoped queue/key intact,
+    // but require fresh credentials instead of trying another tenant with a
+    // revoked token. Other actors still need explicit origin revalidation.
+    const message =
+      "Akses akun atau kata sandi berubah. Masuk kembali untuk melanjutkan. Data yang belum tersinkron tetap diamankan pada bisnis asalnya.";
+    useModeStore.setState({ accessBlocked: true });
+    useAuthStore.setState({ scopeLocked: true, notice: message });
+    if (!session.contextKind || session.contextKind === "tenant")
+      await quarantineScope(session, code);
+    if (useAuthStore.getState().session?.token !== token) return;
+    await clearSession(token);
+    // An unrelated login can finish while local persistence is pending.
+    if (useAuthStore.getState().session?.token === token) {
+      setModeFromSession(null);
+      resetSyncStateForSession(null);
+      useAuthStore.setState({
+        session: null,
+        terminalEnrolled: false,
+        scopeLocked: false,
+        notice: message,
+      });
+    }
+    return;
+  }
   if (session.contextKind && session.contextKind !== "tenant") return;
   useAuthStore.setState({
     scopeLocked: true,

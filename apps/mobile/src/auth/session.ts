@@ -52,5 +52,10 @@ export function sessionFromLoginResponse(result: LoginResponse): Session {
         : null),
     isPlatformAdmin:
       result.isPlatformAdmin ?? principal.isPlatformAdmin ?? false,
+    protocolVersion: result.protocolVersion ?? 2,
+    sandboxQrisPolicy:
+      result.sandboxQrisPolicy === "transaction_total"
+        ? "transaction_total"
+        : "fixed_1000",
   };
 }

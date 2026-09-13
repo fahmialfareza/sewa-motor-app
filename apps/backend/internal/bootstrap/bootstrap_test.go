@@ -125,7 +125,7 @@ func TestApplyRemainsIdempotentForExistingSampleSuperadmin(t *testing.T) {
 	if hasher.password != "" {
 		t.Fatal("ordinary idempotent apply hashed a replacement password")
 	}
-	if len(tx.queries) != 1 || len(tx.execs) != 0 {
+	if len(tx.queries) != 1 || len(tx.execs) != 1 || !strings.Contains(tx.execs[0].statement, "organization-account-administration") {
 		t.Fatal("ordinary idempotent apply mutated the existing sample user")
 	}
 	if !tx.committed {
@@ -166,17 +166,20 @@ func TestApplyRefreshesActiveSpacesAfterSeparateGenerationLock(t *testing.T) {
 	if inserted != 1 || !tx.committed {
 		t.Fatalf("inserted = %d, committed = %v", inserted, tx.committed)
 	}
-	if len(tx.execs) != 5 {
-		t.Fatalf("exec count = %d, want account, membership, audit, generation lock, and sync", len(tx.execs))
+	if len(tx.execs) != 7 {
+		t.Fatalf("exec count = %d, want organization lock, account, membership, audit, generation lock, sync, and organization audit", len(tx.execs))
 	}
-	if !strings.Contains(tx.execs[1].statement, "INSERT INTO tenant_memberships") {
+	if !strings.Contains(tx.execs[0].statement, "organization-account-administration") {
+		t.Fatal("organization lock missing before account creation")
+	}
+	if !strings.Contains(tx.execs[2].statement, "INSERT INTO tenant_memberships") {
 		t.Fatal("initial tenant membership missing")
 	}
-	if !strings.Contains(tx.execs[3].statement, "pg_advisory_xact_lock_shared") {
+	if !strings.Contains(tx.execs[4].statement, "pg_advisory_xact_lock_shared") || !strings.Contains(tx.execs[4].statement, "ORDER BY id") {
 		t.Fatal("Sandbox generation lock was not acquired before sync fanout")
 	}
-	if strings.Contains(tx.execs[4].statement, "pg_advisory_xact_lock_shared") ||
-		!strings.Contains(tx.execs[4].statement, "FROM data_spaces") {
+	if strings.Contains(tx.execs[5].statement, "pg_advisory_xact_lock_shared") ||
+		!strings.Contains(tx.execs[5].statement, "FROM data_spaces") || strings.Contains(tx.execs[5].statement, "ds.tenant_id=$3") {
 		t.Fatal("sync fanout did not use a fresh statement snapshot after the generation lock")
 	}
 }
@@ -241,39 +244,42 @@ func TestResetSampleSuperadminPasswordIsExplicitAndTransactional(t *testing.T) {
 	if got := tx.queries[1].args[1]; got != "encoded-new-password" {
 		t.Fatalf("password update received %#v", got)
 	}
-	if len(tx.execs) != 4 {
-		t.Fatalf("exec count = %d, want session, audit, generation lock, and sync writes", len(tx.execs))
+	if len(tx.execs) != 6 {
+		t.Fatalf("exec count = %d, want organization lock, session, audit, generation lock, sync and organization audit writes", len(tx.execs))
 	}
-	if !strings.Contains(tx.execs[0].statement, "revoked_reason = 'password_reset'") {
-		t.Fatal("active sessions were not revoked with password_reset reason")
+	if !strings.Contains(tx.execs[0].statement, "organization-account-administration") {
+		t.Fatal("organization lock missing before account recovery")
 	}
-	if !strings.Contains(tx.execs[1].statement, "'user.password_reset'") {
+	if !strings.Contains(tx.execs[1].statement, "revoked_reason = 'password_recovered'") {
+		t.Fatal("active sessions were not revoked with the quarantine-compatible recovery reason")
+	}
+	if !strings.Contains(tx.execs[2].statement, "'user.password_reset'") {
 		t.Fatal("password reset audit event was not appended")
 	}
-	if !strings.Contains(tx.execs[2].statement, "pg_advisory_xact_lock_shared") {
+	if !strings.Contains(tx.execs[3].statement, "pg_advisory_xact_lock_shared") || !strings.Contains(tx.execs[3].statement, "ORDER BY id") {
 		t.Fatal("Sandbox generation lock was not acquired before password reset fanout")
 	}
-	if strings.Contains(tx.execs[3].statement, "pg_advisory_xact_lock_shared") ||
-		!strings.Contains(tx.execs[3].statement, "'updated'") {
+	if strings.Contains(tx.execs[4].statement, "pg_advisory_xact_lock_shared") ||
+		!strings.Contains(tx.execs[4].statement, "'updated'") || strings.Contains(tx.execs[4].statement, "ds.tenant_id=$3") {
 		t.Fatal("password reset sync change was not appended")
 	}
 
 	var auditAfter domain.User
-	if err := json.Unmarshal(tx.execs[1].args[2].([]byte), &auditAfter); err != nil {
+	if err := json.Unmarshal(tx.execs[2].args[2].([]byte), &auditAfter); err != nil {
 		t.Fatalf("decode audit after-values: %v", err)
 	}
 	if !auditAfter.MustChangePassword {
 		t.Fatal("audit after-values do not force a password change")
 	}
 	var metadata map[string]any
-	if err := json.Unmarshal(tx.execs[1].args[3].([]byte), &metadata); err != nil {
+	if err := json.Unmarshal(tx.execs[2].args[3].([]byte), &metadata); err != nil {
 		t.Fatalf("decode audit metadata: %v", err)
 	}
 	if metadata["command"] != "seed-superadmin" || metadata["explicit"] != true {
 		t.Fatalf("audit metadata = %#v", metadata)
 	}
 	var syncUser domain.User
-	if err := json.Unmarshal(tx.execs[3].args[1].([]byte), &syncUser); err != nil {
+	if err := json.Unmarshal(tx.execs[4].args[1].([]byte), &syncUser); err != nil {
 		t.Fatalf("decode sync payload: %v", err)
 	}
 	if syncUser.ID != userID || !syncUser.MustChangePassword {
@@ -303,7 +309,7 @@ func TestResetSampleSuperadminPasswordRollsBackOnLateFailure(t *testing.T) {
 	after.MustChangePassword = true
 	tx := &recordingSampleResetTx{
 		rows:       []pgx.Row{sampleUserRow{user: before}, sampleUserRow{user: after}},
-		failExecAt: 4,
+		failExecAt: 5,
 	}
 	hasher := &recordingPasswordHasher{hash: "encoded-new-password"}
 	manifest, err := NewSampleSuperadminManifest(
@@ -333,8 +339,8 @@ func TestResetSampleSuperadminPasswordRollsBackOnLateFailure(t *testing.T) {
 	if !tx.rolledBack {
 		t.Fatal("partially completed password reset was not rolled back")
 	}
-	if len(tx.execs) != 4 {
-		t.Fatalf("exec count before rollback = %d, want 4", len(tx.execs))
+	if len(tx.execs) != 5 {
+		t.Fatalf("exec count before rollback = %d, want 5", len(tx.execs))
 	}
 }
 
@@ -374,7 +380,7 @@ func TestResetSampleSuperadminPasswordRejectsIdentityMismatchBeforeHashing(t *te
 	if hasher.password != "" {
 		t.Fatal("identity mismatch was hashed before it was rejected")
 	}
-	if tx.committed || len(tx.execs) != 0 || len(tx.queries) != 1 {
+	if tx.committed || len(tx.execs) != 1 || !strings.Contains(tx.execs[0].statement, "organization-account-administration") || len(tx.queries) != 1 {
 		t.Fatal("identity mismatch mutated the transaction")
 	}
 	if !tx.rolledBack {

@@ -17,7 +17,7 @@ type Terminals struct {
 
 func (t Terminals) Enroll(ctx context.Context, principal domain.Principal, input domain.EnrollTerminalInput) (domain.Terminal, error) {
 	defer observability.StartSegment(ctx, "Usecase.Terminals.Enroll")()
-	if err := RequireTenant(principal); err != nil {
+	if err := RequireSuperadmin(principal); err != nil {
 		return domain.Terminal{}, err
 	}
 	if err := RequireProduction(principal); err != nil {

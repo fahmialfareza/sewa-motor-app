@@ -49,6 +49,7 @@ type Tenant struct {
 	Status          string    `json:"status"`
 	ProfileRevision int       `json:"profileRevision"`
 	QrisRevision    *int      `json:"qrisRevision"`
+	Revision        int       `json:"revision"`
 }
 
 type TenantContext struct {
@@ -58,8 +59,20 @@ type TenantContext struct {
 }
 
 type AvailableContexts struct {
-	Tenants       []TenantContext `json:"tenants"`
-	PlatformAdmin bool            `json:"platformAdmin"`
+	Tenants                   []TenantContext `json:"tenants"`
+	PlatformAdmin             bool            `json:"platformAdmin"`
+	CanManageOrganization     bool            `json:"canManageOrganization"`
+	TenantProvisioningEnabled bool            `json:"tenantProvisioningEnabled"`
+}
+
+type UpdateTenantInput struct {
+	Name             string `json:"name"`
+	ExpectedRevision int    `json:"expectedRevision"`
+}
+
+type UpdateManagedUserInput struct {
+	Role   *Role `json:"role"`
+	Active *bool `json:"active"`
 }
 
 type TenantMember struct {

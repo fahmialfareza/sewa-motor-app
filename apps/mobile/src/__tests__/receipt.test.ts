@@ -50,7 +50,7 @@ describe("thermal receipt", () => {
       48,
     );
     expect(sandbox).toContain(snapshot.businessName);
-    expect(sandbox.match(/MODE UJI/g)).toHaveLength(2);
+    expect(sandbox.match(/MODE UJI/g)).toHaveLength(1);
     expect(sandbox).toContain("Rp 1.000");
   });
 
@@ -77,7 +77,7 @@ describe("thermal receipt", () => {
     expect(Array.from(bytes.slice(-4))).toEqual([0x1d, 0x56, 0x41, 0]);
   });
 
-  it("permanently marks Sandbox output and separates simulated and real amounts", () => {
+  it("permanently marks Sandbox output compactly and preserves legacy amounts", () => {
     const sandboxReceipt = {
       ...receipt,
       dataMode: "sandbox" as const,
@@ -86,15 +86,64 @@ describe("thermal receipt", () => {
     const output = formatReceipt(sandboxReceipt, 48);
 
     expect(output).toContain("TEST-TRX-01ARZ3NDEKTSV4RRFFQ69G5FAV");
-    expect(output.match(/MODE UJI/g)).toHaveLength(2);
-    expect(output.match(/BUKAN STRUK RESMI/g)).toHaveLength(2);
-    expect(output).toContain("TOTAL SIMULASI");
+    expect(output.match(/TEST - MODE UJI/g)).toHaveLength(1);
+    expect(output.match(/BUKAN STRUK RESMI/g)).toHaveLength(1);
+    expect(output).toContain("TOTAL");
+    expect(output).not.toContain("TOTAL SIMULASI");
     expect(output).toContain("QRIS NYATA");
     expect(output).toContain("Rp 1.000");
 
     const bytes = Array.from(encodeEscPos(sandboxReceipt, 48));
     const doubleHeightCommand = [0x1d, 0x21, 0x10];
-    expect(countByteSequence(bytes, doubleHeightCommand)).toBe(4);
+    expect(countByteSequence(bytes, doubleHeightCommand)).toBe(0);
+    expect(countByteSequence(bytes, [0x1b, 0x45, 0x01])).toBe(2);
+  });
+
+  it.each([32, 48] as const)(
+    "uses the full Sandbox total and fits %s columns without losing the TEST ID",
+    (columns) => {
+      const output = formatReceipt(
+        { ...receipt, dataMode: "sandbox" },
+        columns,
+      );
+      expect(output).toContain("TEST - MODE UJI");
+      expect(output).toContain("BUKAN STRUK RESMI");
+      expect(output).toContain("Rp 200.000");
+      expect(output).not.toContain("QRIS NYATA");
+      expect(output.replace(/\n/g, "")).toContain(
+        "TEST-TRX-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      );
+      for (const line of output.trimEnd().split("\n")) {
+        expect(line.length).toBeLessThanOrEqual(columns);
+      }
+    },
+  );
+
+  it("keeps the exact Production text layout unchanged", () => {
+    expect(formatReceipt(receipt, 32)).toBe(
+      [
+        "          TELOMOYO POS",
+        "--------------------------------",
+        "TRX-01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "Revisi 2",
+        "2026-07-24T03:04:05.000Z",
+        "Kasir: Putu",
+        "Metode: QRIS",
+        "Status: LUNAS",
+        "--------------------------------",
+        "Paket Sunrise",
+        "2 x Rp 100.000        Rp 200.000",
+        "--------------------------------",
+        "Subtotal              Rp 200.000",
+        "TOTAL                 Rp 200.000",
+        "--------------------------------",
+        "          Terima kasih",
+        "",
+        "",
+        "",
+        "",
+      ].join("\n"),
+    );
   });
 });
 

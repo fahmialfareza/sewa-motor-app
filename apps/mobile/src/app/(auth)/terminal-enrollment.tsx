@@ -12,10 +12,49 @@ import { colors, spacing, textStyles } from "@/theme/tokens";
 
 export default function TerminalEnrollmentScreen() {
   const router = useRouter();
-  const { enrollTerminal, session, switchMode, switchingMode } = useAuth();
+  const { enrollTerminal, session, switchMode, switchingMode, logout } =
+    useAuth();
   const [label, setLabel] = useState("MPOS Utama");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  if (session?.user.role === "admin") {
+    return (
+      <AppScreen>
+        <StateView
+          icon="shield-lock-outline"
+          title="Pendaftaran oleh Superadmin"
+          message="Minta Superadmin masuk dan mendaftarkan perangkat untuk bisnis ini terlebih dahulu. Setelah itu, Admin dapat masuk dan bertransaksi dengan akunnya sendiri."
+        />
+        <Button variant="secondary" onPress={() => router.replace("/contexts")}>
+          Ganti bisnis
+        </Button>
+        <Button
+          loading={submitting}
+          onPress={() => {
+            setSubmitting(true);
+            void logout()
+              .then(() => router.replace("/(auth)/login"))
+              .catch((reason: unknown) => {
+                setError(
+                  reason instanceof Error
+                    ? reason.message
+                    : "Belum dapat keluar. Coba lagi.",
+                );
+              })
+              .finally(() => setSubmitting(false));
+          }}
+        >
+          Keluar untuk masuk sebagai Superadmin
+        </Button>
+        {error ? (
+          <Text accessibilityRole="alert" style={styles.error}>
+            {error}
+          </Text>
+        ) : null}
+      </AppScreen>
+    );
+  }
 
   if (session?.dataMode === "sandbox") {
     return (

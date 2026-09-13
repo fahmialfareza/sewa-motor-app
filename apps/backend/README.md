@@ -73,6 +73,31 @@ transaction.
 `sqlc/schema.sql` is a code-generation snapshot only. The backend never executes
 that SQL file as a migration.
 
+## Organization accounts and tenant scope
+
+Exactly two global roles are authoritative: `admin` and `superadmin`. Every
+active account may enter every active tenant without invitation or membership
+approval; historical membership links remain for attribution and constraints.
+Business APIs still derive tenant/data-space scope from the session, and
+cross-tenant identifiers return `404`. Account context has no business access.
+
+Account-context `/management/tenants`, `/management/users`, and
+`/management/audit` require a global Superadmin. New tenants are directly active
+with an empty catalog and initial receipt identity. Provisioning controls only
+creation; names can change independently of receipt identity, IDs/slugs cannot,
+and tenant deletion is unavailable. Global staff creation/recovery requires a
+temporary-password change. Role changes, deactivation, and recovery revoke all
+account sessions; self-demotion/deactivation and last-Superadmin removal are
+blocked. Old invitation and membership-mutation routes fail explicitly instead
+of becoming global account mutations.
+
+Only a Production-mode Superadmin can enroll/revoke a terminal or change tenant
+QRIS/receipt identity. Admins operate valid existing enrollments on shared
+devices and retain ownership-limited correction/payment permissions. Sessions,
+terminal keys, QRIS history, and signed queues stay tenant-scoped. See the
+[operations guide](../../docs/multi-tenant-operations.md) for operator recovery,
+safe switching/quarantine, migration rehearsal, and release gates.
+
 ## New Relic observability
 
 Production configuration requires:
@@ -101,12 +126,11 @@ trace/span correlation and forwards records through the Go agent when log
 forwarding is enabled. Do not place session tokens, passwords, terminal private
 keys, database URLs, or license keys in log fields.
 
-Every web transaction starts in the fail-closed Production scope, including
-health checks, login attempts, and authentication failures. A successful
-authenticated request replaces that scope with the session-authorized
-`data.mode`, `data.space_id`, and (for Sandbox) `data.generation`. The Sandbox
-initializer and janitor also report `data.mode = 'sandbox'`. These attributes
-are attached to New Relic transactions, noticed errors, and Logrus records.
+Authenticated tenant requests carry session-authorized `auth.context`,
+`tenant.id`, `data.mode`, `data.space_id`, generation, and payment-policy
+attributes. Account/public requests do not claim a business data space. Sandbox
+initializer and janitor work is separately classified. These attributes apply
+to New Relic transactions, noticed errors, and correlated Logrus records.
 
 Keep business alerts mode-specific. For example, a Production API error
 condition and a separate non-revenue Sandbox error view can start from:
@@ -146,6 +170,7 @@ cleanup conditions actually receive a test signal:
 SELECT count(*) FROM Transaction
 WHERE appName = 'sewa-motor-backend-production'
   AND transactionType = 'Web'
+  AND `auth.context` = 'tenant'
   AND `data.mode` IS NULL
 ```
 
@@ -161,12 +186,26 @@ SANDBOX_QRIS_AMOUNT=1000
 SANDBOX_CLEANUP_INTERVAL=24h
 ```
 
-`SANDBOX_QRIS_AMOUNT` is a fixed safety invariant; startup rejects any value
-other than Rp1.000. The client generates the Sandbox QR from the real configured
-merchant payload, warns that the transfer is real, and marks every sandbox
-screen, receipt, and export as test output.
+`SANDBOX_QRIS_AMOUNT=1000` is deprecated but accepted with a warning during
+transition; it does not override new session policy. Protocol-v3 Sandbox QRIS
+uses the full Sandbox package-price total, independently of Production prices,
+and the tenant's real merchant payload. Transfers are real and require manual
+payment confirmation/reconciliation. Screens, receipts, and exports remain
+marked as test output.
 
-Roll out in this order:
+Legacy sessions retain immutable `sandboxQrisPolicy=fixed_1000`. Signed mutation
+amounts are derived from the validated origin session, not the submitting app.
+Existing payments, QR codes, and reprints retain their stored amount. The new
+client drains the old outbox online before `/auth/upgrade-session` negotiates
+protocol 3 with `transaction_total`; failed upgrades must block new Sandbox
+creates/corrections. Never rewrite or re-sign historical queues. Follow the
+[internal operations guide](../../docs/multi-tenant-operations.md) for global-role
+migration, compatible rollout, and rollback boundaries.
+
+For first-time Sandbox activation, use the following sequence. An existing
+installation upgrading to global roles/full-value Sandbox must first follow
+the internal-organization rollout in the operations guide, including stopping
+all incompatible replicas before applying migration `000006`.
 
 1. Back up PostgreSQL and apply the forward-only GORM migration while
    `SANDBOX_ENABLED=false`. This migration only adds and backfills the data-space
@@ -200,114 +239,24 @@ to that retention policy.
 
 ### Backup and restore boundary
 
-Sandbox rows share the Production PostgreSQL cluster. Provider snapshots,
-continuous archiving, and PITR are physical recovery mechanisms and therefore
-include both modes; PostgreSQL cannot apply a row predicate to them. Treat those
-recovery copies as mixed-mode data with the same encryption and access controls
-as Production. Application cleanup does not retroactively remove rows from old
-snapshots, so align provider snapshot retention with the approved Sandbox-data
-policy. If policy forbids Sandbox rows in every recovery copy, do not enable a
-production-hosted Sandbox in that cluster.
+Infrastructure backups are operator-only recovery copies of the full shared
+database: all tenants, Production and Sandbox, credentials, and audit history.
+Encrypt and restrict snapshots, continuous archives, dumps, and restore
+environments. Never distribute raw snapshots to staff; report exports are not
+database backups. Tenant-specific backup delivery is outside this release.
 
-Use a production-only logical artifact for long-lived or externally transferred
-backups. `pg_dump` has no row-level `WHERE` option, so `--exclude-table-data`
-cannot safely express this boundary. The operator procedure is:
+Rehearse recovery in an isolated disposable database that no serving API or
+device can reach. Compare tenant/account counts, immutable IDs, revisions,
+payment amounts, QRIS bindings, sessions, and audit history against the captured
+recovery point before testing migrations there. Keep recovered credentials
+protected and prevent the rehearsal service from forwarding logs or acting on
+real merchant/printer integrations. Never sanitize the live database or use
+single-tenant filtering assumptions to remove other tenants' data.
 
-1. Capture one consistent full recovery point and restore it into an isolated,
-   disposable scratch database. Never run the sanitization below against the
-   live database, and never point an API replica at the scratch database.
-2. As the schema owner, retire and remove every Sandbox generation in the
-   scratch copy using the same guarded append-only exception as the janitor:
-
-   ```sql
-   BEGIN;
-
-   UPDATE data_spaces
-   SET status = 'retired',
-       retired_at = COALESCE(retired_at, transaction_timestamp()),
-       purge_after = LEAST(
-           COALESCE(purge_after, transaction_timestamp()),
-           transaction_timestamp()
-       ),
-       purged_at = NULL
-   WHERE mode = 'sandbox';
-
-   DO $sanitize$
-   DECLARE
-       sandbox_ids uuid[];
-       sandbox_id uuid;
-   BEGIN
-       SELECT COALESCE(array_agg(id), ARRAY[]::uuid[])
-       INTO sandbox_ids
-       FROM data_spaces
-       WHERE mode = 'sandbox';
-
-       FOREACH sandbox_id IN ARRAY sandbox_ids LOOP
-           PERFORM set_config(
-               'app.sandbox_purge_data_space_id',
-               sandbox_id::text,
-               true
-           );
-           DELETE FROM idempotency_records WHERE data_space_id = sandbox_id;
-           DELETE FROM sync_changes WHERE data_space_id = sandbox_id;
-           DELETE FROM audit_events WHERE data_space_id = sandbox_id;
-           DELETE FROM print_attempts WHERE data_space_id = sandbox_id;
-           DELETE FROM transaction_items WHERE data_space_id = sandbox_id;
-           DELETE FROM transaction_revisions WHERE data_space_id = sandbox_id;
-           DELETE FROM transactions WHERE data_space_id = sandbox_id;
-           DELETE FROM package_revisions WHERE data_space_id = sandbox_id;
-           DELETE FROM packages WHERE data_space_id = sandbox_id;
-           DELETE FROM sessions WHERE data_space_id = sandbox_id;
-           DELETE FROM data_spaces WHERE id = sandbox_id;
-       END LOOP;
-   END
-   $sanitize$;
-
-   COMMIT;
-   ```
-
-3. Run this verification query in the scratch copy. It must return no rows:
-
-   ```sql
-   WITH unexpected(table_name, row_count) AS (
-       SELECT 'production_data_space',
-              CASE WHEN count(*) = 1 THEN 0 ELSE 1 END
-       FROM data_spaces
-       WHERE id = '00000000-0000-4000-8000-000000000100'::uuid
-         AND mode = 'production'
-         AND generation = 1
-         AND status = 'active'
-       UNION ALL SELECT 'data_spaces', count(*) FROM data_spaces
-       WHERE id <> '00000000-0000-4000-8000-000000000100'::uuid
-          OR mode <> 'production'
-       UNION ALL SELECT 'sessions', count(*) FROM sessions
-       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
-       UNION ALL SELECT 'packages', count(*) FROM packages
-       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
-       UNION ALL SELECT 'package_revisions', count(*) FROM package_revisions
-       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
-       UNION ALL SELECT 'transactions', count(*) FROM transactions
-       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
-       UNION ALL SELECT 'transaction_revisions', count(*) FROM transaction_revisions
-       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
-       UNION ALL SELECT 'transaction_items', count(*) FROM transaction_items
-       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
-       UNION ALL SELECT 'print_attempts', count(*) FROM print_attempts
-       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
-       UNION ALL SELECT 'audit_events', count(*) FROM audit_events
-       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
-       UNION ALL SELECT 'sync_changes', count(*) FROM sync_changes
-       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
-       UNION ALL SELECT 'idempotency_records', count(*) FROM idempotency_records
-       WHERE data_space_id <> '00000000-0000-4000-8000-000000000100'::uuid
-   )
-   SELECT * FROM unexpected WHERE row_count <> 0;
-   ```
-
-4. Create and restore-test the logical `pg_dump` artifact from that verified
-   scratch database, record its checksum and recovery point, then destroy the
-   scratch database. On restore, repeat the query above before exposing the
-   database to an API replica.
+Sandbox cleanup does not retroactively remove evidence from retained recovery
+copies. Apply the operator's approved backup retention independently of the
+30-day retired-generation cleanup. Only release a restore after its tenant and
+payment-policy compatibility has been verified by an authorized operator.
 
 ## Bootstrap users
 

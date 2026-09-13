@@ -32,11 +32,13 @@ type Runtime struct {
 // to an authenticated session. It intentionally contains no domain types so
 // observability can remain below the HTTP and use-case layers.
 type DataScope struct {
-	TenantID    string
-	ContextKind string
-	Mode        string
-	SpaceID     string
-	Generation  int64
+	TenantID          string
+	ContextKind       string
+	Mode              string
+	SpaceID           string
+	Generation        int64
+	ProtocolVersion   int
+	SandboxQRISPolicy string
 }
 
 type dataScopeContextKey struct{}
@@ -117,6 +119,12 @@ func WithDataScope(ctx context.Context, scope DataScope) context.Context {
 		if scope.Generation > 0 {
 			transaction.AddAttribute("data.generation", scope.Generation)
 		}
+		if scope.ProtocolVersion > 0 {
+			transaction.AddAttribute("auth.protocol_version", scope.ProtocolVersion)
+		}
+		if scope.SandboxQRISPolicy != "" {
+			transaction.AddAttribute("payment.sandbox_qris_policy", scope.SandboxQRISPolicy)
+		}
 	}
 	return context.WithValue(ctx, dataScopeContextKey{}, scope)
 }
@@ -149,6 +157,12 @@ func DataScopeLogFields(ctx context.Context) logrus.Fields {
 	}
 	if scope.Generation > 0 {
 		fields["data.generation"] = scope.Generation
+	}
+	if scope.ProtocolVersion > 0 {
+		fields["auth.protocol_version"] = scope.ProtocolVersion
+	}
+	if scope.SandboxQRISPolicy != "" {
+		fields["payment.sandbox_qris_policy"] = scope.SandboxQRISPolicy
 	}
 	return fields
 }

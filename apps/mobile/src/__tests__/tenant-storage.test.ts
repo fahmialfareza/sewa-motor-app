@@ -145,15 +145,15 @@ describe("tenant-scoped encrypted storage", () => {
       setModeFromSession(nonBusiness);
       await prepareDatabaseForSession(nonBusiness);
       expect(() => getDatabase(nonBusiness)).toThrow(
-        "Konteks akun dan platform",
+        "Pilih bisnis terlebih dahulu",
       );
       expect(() => getDatabase()).toThrow("Pilih bisnis");
       await expect(getOrCreateDatabaseKey(nonBusiness)).rejects.toThrow(
-        "Konteks akun dan platform",
+        "Pilih bisnis terlebih dahulu",
       );
       await expect(
         getOrCreateDatabaseKey({ ...nonBusiness, tenantId: INITIAL_TENANT_ID }),
-      ).rejects.toThrow("Konteks akun dan platform");
+      ).rejects.toThrow("Pilih bisnis terlebih dahulu");
       expect(mockOpenDatabaseAsync).not.toHaveBeenCalled();
       expect(mockGetItemAsync).not.toHaveBeenCalled();
     },

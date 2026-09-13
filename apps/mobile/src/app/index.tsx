@@ -11,7 +11,7 @@ export default function IndexRoute() {
   }
   if (scopeLocked || session.contextKind === "account")
     return <Redirect href="/contexts" />;
-  if (session.contextKind === "platform") return <Redirect href="/platform" />;
+  if (session.contextKind === "platform") return <Redirect href="/contexts" />;
   if (!terminalEnrolled) {
     return <Redirect href="/(auth)/terminal-enrollment" />;
   }

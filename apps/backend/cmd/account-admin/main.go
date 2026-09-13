@@ -37,11 +37,11 @@ func parseOptions(args []string) (options, error) {
 	flags := flag.NewFlagSet("account-admin", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.StringVar(&opts.username, "username", "", "existing account username (required)")
-	flags.StringVar(&opts.action, "action", "", "grant-platform, revoke-platform, or reset-password (required)")
+	flags.StringVar(&opts.action, "action", "", "grant-superadmin, revoke-superadmin, or reset-password (required)")
 	flags.StringVar(&opts.reason, "reason", "", "audited reason (required; do not include credentials)")
 	flags.StringVar(&opts.operator, "operator", "", "responsible operator identity (required; recorded in audit)")
 	if err := flags.Parse(args); err != nil {
-		return opts, errors.New("use --username, --action grant-platform|revoke-platform|reset-password, --operator, and --reason; passwords are read only from stdin")
+		return opts, errors.New("use --username, --action grant-superadmin|revoke-superadmin|reset-password, --operator, and --reason; passwords are read only from stdin")
 	}
 	opts.username = domain.NormalizeUsername(opts.username)
 	opts.reason = strings.TrimSpace(opts.reason)
@@ -50,9 +50,11 @@ func parseOptions(args []string) (options, error) {
 		return opts, errors.New("an explicit username, operator identity, and reason of 1–1000 characters are required; positional arguments are not accepted")
 	}
 	switch opts.action {
-	case "grant-platform", "revoke-platform", "reset-password":
+	case "grant-superadmin", "revoke-superadmin", "reset-password":
+	case "grant-platform", "revoke-platform":
+		return opts, errors.New("platform permission has been removed; explicitly authorize grant-superadmin or revoke-superadmin for an organization-wide role change")
 	default:
-		return opts, errors.New("action must be grant-platform, revoke-platform, or reset-password")
+		return opts, errors.New("action must be grant-superadmin, revoke-superadmin, or reset-password")
 	}
 	return opts, nil
 }
@@ -102,7 +104,7 @@ func run(args []string, input io.Reader, output io.Writer) error {
 	if err = apply(ctx, store, opts, passwordHash); err != nil {
 		return err
 	}
-	_, err = fmt.Fprintf(output, "Account operation %s completed for %s and recorded in platform audit history.\n", opts.action, opts.username)
+	_, err = fmt.Fprintf(output, "Account operation %s completed for %s and recorded in organization audit history.\n", opts.action, opts.username)
 	return err
 }
 
@@ -113,14 +115,20 @@ func apply(ctx context.Context, store *postgres.Store, opts options, passwordHas
 		return errors.New("could not begin account operation")
 	}
 	defer tx.Rollback(ctx)
+	// Use the same lock as mobile account management, before any account rows.
+	// This makes concurrent last-Superadmin decisions atomic across both tools.
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('organization-account-administration',0))`); err != nil {
+		return errors.New("could not lock organization account administration")
+	}
 	var id uuid.UUID
-	var active, wasPlatformAdmin bool
-	err = tx.QueryRow(ctx, `SELECT id,is_active AND deleted_at IS NULL,is_platform_admin FROM users WHERE username=$1 FOR UPDATE`, opts.username).Scan(&id, &active, &wasPlatformAdmin)
+	var active bool
+	var previousRole domain.Role
+	err = tx.QueryRow(ctx, `SELECT id,is_active AND deleted_at IS NULL,role FROM users WHERE username=$1 FOR UPDATE`, opts.username).Scan(&id, &active, &previousRole)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return errors.New("account not found; this command does not create accounts")
 	}
 	if err != nil {
-		return errors.New("could not lock account; apply the tenant GORM migration before using this command")
+		return errors.New("could not lock account; apply the internal organization GORM migration before using this command")
 	}
 	if !active {
 		return errors.New("account is inactive or deleted")
@@ -128,16 +136,18 @@ func apply(ctx context.Context, store *postgres.Store, opts options, passwordHas
 	// Match the application lock order: account, then tenant (sorted), then
 	// membership/data space/resource. Holding the account exclusively prevents
 	// another request for this identity from entering during session revocation.
-	rows, err := tx.Query(ctx, `SELECT t.id FROM tenants t WHERE EXISTS(SELECT 1 FROM tenant_memberships m WHERE m.tenant_id=t.id AND m.user_id=$1) ORDER BY t.id FOR SHARE OF t`, id)
+	rows, err := tx.Query(ctx, `SELECT id FROM tenants ORDER BY id FOR SHARE`)
 	if err != nil {
 		return errors.New("could not lock account tenants")
 	}
+	var tenantIDs []uuid.UUID
 	for rows.Next() {
 		var tenantID uuid.UUID
 		if err = rows.Scan(&tenantID); err != nil {
 			rows.Close()
 			return errors.New("could not read account tenants")
 		}
+		tenantIDs = append(tenantIDs, tenantID)
 	}
 	err = rows.Err()
 	rows.Close()
@@ -145,9 +155,26 @@ func apply(ctx context.Context, store *postgres.Store, opts options, passwordHas
 		return errors.New("could not read account tenants")
 	}
 	var revoked int64
+	nextRole := previousRole
+	if opts.action == "grant-superadmin" {
+		nextRole = domain.RoleSuperadmin
+	} else if opts.action == "revoke-superadmin" {
+		nextRole = domain.RoleAdmin
+		if previousRole == domain.RoleSuperadmin {
+			var remaining int
+			if err = tx.QueryRow(ctx, `SELECT count(*) FROM users WHERE id<>$1 AND role='superadmin' AND is_active AND deleted_at IS NULL`, id).Scan(&remaining); err != nil {
+				return errors.New("could not verify remaining Superadmins")
+			}
+			if remaining == 0 {
+				return errors.New("cannot revoke the last active Superadmin")
+			}
+		}
+	}
 	switch opts.action {
-	case "grant-platform", "revoke-platform":
-		_, err = tx.Exec(ctx, `UPDATE users SET is_platform_admin=$2,updated_at=now() WHERE id=$1`, id, opts.action == "grant-platform")
+	case "grant-superadmin", "revoke-superadmin":
+		if previousRole != nextRole {
+			_, err = tx.Exec(ctx, `UPDATE users SET role=$2,updated_at=now() WHERE id=$1`, id, nextRole)
+		}
 	case "reset-password":
 		if passwordHash == "" {
 			return errors.New("a hashed temporary password is required")
@@ -159,23 +186,48 @@ func apply(ctx context.Context, store *postgres.Store, opts options, passwordHas
 	if err != nil {
 		return errors.New("could not update account")
 	}
-	if opts.action == "reset-password" || opts.action == "revoke-platform" {
-		query := `UPDATE sessions SET revoked_at=now(),revoked_reason='operator_password_reset' WHERE user_id=$1 AND revoked_at IS NULL`
-		if opts.action == "revoke-platform" {
-			query = `UPDATE sessions SET revoked_at=now(),revoked_reason='platform_access_revoked' WHERE user_id=$1 AND context_kind='platform' AND revoked_at IS NULL`
+	if opts.action == "reset-password" || previousRole != nextRole {
+		reason := "account_access_changed"
+		if opts.action == "reset-password" {
+			reason = "password_recovered"
 		}
-		result, e := tx.Exec(ctx, query, id)
+		result, e := tx.Exec(ctx, `UPDATE sessions SET revoked_at=now(),revoked_reason=$2 WHERE user_id=$1 AND revoked_at IS NULL`, id, reason)
 		if e != nil {
 			return errors.New("could not revoke account sessions")
 		}
 		revoked = result.RowsAffected()
+		if err = publishAccountChange(ctx, tx, id, tenantIDs); err != nil {
+			return err
+		}
 	}
-	metadata, _ := json.Marshal(map[string]any{"source": "account-admin", "operator": opts.operator, "reason": opts.reason, "targetUserId": id, "previousPlatformAdmin": wasPlatformAdmin, "revokedSessions": revoked})
+	metadata, _ := json.Marshal(map[string]any{"source": "account-admin", "operator": opts.operator, "reason": opts.reason, "targetUserId": id, "previousRole": previousRole, "role": nextRole, "revokedSessions": revoked})
 	if _, err = tx.Exec(ctx, `INSERT INTO platform_audit_events(event_type,metadata) VALUES($1,$2)`, "operator."+opts.action, metadata); err != nil {
 		return errors.New("could not record account audit event")
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return errors.New("could not commit account operation")
+	}
+	return nil
+}
+
+// Match the API's safe account projection and tenant-generation lock. Credentials
+// and historical membership permissions never enter synchronized cache records.
+func publishAccountChange(ctx context.Context, tx pgx.Tx, id uuid.UUID, tenantIDs []uuid.UUID) error {
+	defer observability.StartSegment(ctx, "Operator.PublishAccountChange")()
+	for _, tenantID := range tenantIDs {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))`, "sewa-motor-sandbox-generation:"+tenantID.String()); err != nil {
+			return errors.New("could not lock account projection generation")
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO sync_changes(data_space_id,aggregate,aggregate_id,action,payload)
+		 SELECT ds.id,'user',u.id::text,'updated',jsonb_build_object(
+		 'id',u.id,'fullName',u.full_name,'username',u.username,'role',u.role,'active',u.is_active,
+		 'membershipId',m.id,'tenantId',ds.tenant_id,'mustChangePassword',u.must_change_password,
+		 'createdAt',u.created_at,'updatedAt',u.updated_at,'deletedAt',u.deleted_at)
+		 FROM data_spaces ds JOIN users u ON u.id=$1
+		 LEFT JOIN tenant_memberships m ON m.tenant_id=ds.tenant_id AND m.user_id=u.id
+		 WHERE ds.tenant_id=$2 AND ds.status='active'`, id, tenantID); err != nil {
+			return errors.New("could not publish safe account projection")
+		}
 	}
 	return nil
 }

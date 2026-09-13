@@ -4,6 +4,7 @@ import { useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import { useAuth } from "@/auth/AuthProvider";
+import { toUserFacingErrorMessage } from "@/utils/errors";
 import { AppScreen } from "@/components/layout/AppScreen";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { ModeOperationCard } from "@/components/settings/ModeOperationCard";
@@ -22,7 +23,7 @@ const appVersion = Constants.expoConfig?.version ?? "0.2.0";
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { session, logout } = useAuth();
+  const { session, logout, switchContext } = useAuth();
   const [error, setError] = useState<string | null>(null);
 
   return (
@@ -46,18 +47,39 @@ export default function SettingsScreen() {
       </Card>
 
       <ModeOperationCard />
+      <Text style={styles.section}>BISNIS & TENANT</Text>
       <Card padded={false}>
         <MenuRow
           icon="store-outline"
-          title={session?.tenant?.name ?? "Bisnis aktif"}
-          detail="Pilih bisnis atau terima undangan"
+          title="Ganti bisnis"
+          detail={session?.tenant?.name ?? "Pilih bisnis aktif"}
           onPress={() => router.push("/contexts")}
         />
+        {session?.user.role === "superadmin" ? (
+          <MenuRow
+            icon="store-cog-outline"
+            title="Kelola tenant"
+            detail="Tambah bisnis, ubah nama, tangguhkan atau aktifkan"
+            onPress={() => {
+              setError(null);
+              void switchContext("account")
+                .then(() => router.replace("/management/tenants"))
+                .catch((reason) =>
+                  setError(
+                    toUserFacingErrorMessage(
+                      reason,
+                      "Pengelolaan belum dapat dibuka.",
+                    ),
+                  ),
+                );
+            }}
+          />
+        ) : null}
         {session?.user.role === "superadmin" &&
         session.dataMode === "production" ? (
           <MenuRow
             icon="card-account-details-outline"
-            title="Identitas bisnis"
+            title="Identitas struk"
             detail="Nama, alamat, dan telepon pada struk"
             onPress={() => router.push("/settings/business")}
           />

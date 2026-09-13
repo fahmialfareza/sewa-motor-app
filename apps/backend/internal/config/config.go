@@ -9,26 +9,27 @@ import (
 )
 
 type Config struct {
-	TenantProvisioningEnabled  bool
-	HTTPAddr                   string
-	DatabaseURL                string
-	RedisURL                   string
-	AutoMigrate                bool
-	SandboxEnabled             bool
-	SandboxRetentionDays       int
-	SandboxQRISAmount          int64
-	SandboxCleanupInterval     time.Duration
-	LogLevel                   string
-	ShutdownTimeout            time.Duration
-	SessionCacheTTL            time.Duration
-	LoginRateLimit             int
-	LoginRateWindow            time.Duration
-	TrustedProxies             []string
-	NewRelicEnabled            bool
-	NewRelicAppName            string
-	NewRelicLicenseKey         string
-	NewRelicDistributedTracing bool
-	NewRelicLogForwarding      bool
+	TenantProvisioningEnabled   bool
+	HTTPAddr                    string
+	DatabaseURL                 string
+	RedisURL                    string
+	AutoMigrate                 bool
+	SandboxEnabled              bool
+	SandboxRetentionDays        int
+	SandboxQRISAmount           int64
+	SandboxQRISAmountDeprecated bool
+	SandboxCleanupInterval      time.Duration
+	LogLevel                    string
+	ShutdownTimeout             time.Duration
+	SessionCacheTTL             time.Duration
+	LoginRateLimit              int
+	LoginRateWindow             time.Duration
+	TrustedProxies              []string
+	NewRelicEnabled             bool
+	NewRelicAppName             string
+	NewRelicLicenseKey          string
+	NewRelicDistributedTracing  bool
+	NewRelicLogForwarding       bool
 }
 
 func Load() (Config, error) {
@@ -67,8 +68,9 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("SANDBOX_RETENTION_DAYS must be an integer between 1 and 365")
 	}
 	if cfg.SandboxQRISAmount, err = strconv.ParseInt(env("SANDBOX_QRIS_AMOUNT", "1000"), 10, 64); err != nil || cfg.SandboxQRISAmount != 1_000 {
-		return Config{}, fmt.Errorf("SANDBOX_QRIS_AMOUNT must be exactly 1000")
+		return Config{}, fmt.Errorf("SANDBOX_QRIS_AMOUNT is deprecated; remove it or retain exactly 1000 for legacy session compatibility")
 	}
+	cfg.SandboxQRISAmountDeprecated = strings.TrimSpace(os.Getenv("SANDBOX_QRIS_AMOUNT")) != ""
 	if cfg.SandboxCleanupInterval, err = time.ParseDuration(env("SANDBOX_CLEANUP_INTERVAL", "24h")); err != nil || cfg.SandboxCleanupInterval < time.Minute {
 		return Config{}, fmt.Errorf("SANDBOX_CLEANUP_INTERVAL must be a duration of at least 1m")
 	}

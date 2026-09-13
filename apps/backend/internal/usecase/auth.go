@@ -54,30 +54,58 @@ func (a Auth) Login(ctx context.Context, input domain.LoginInput) (domain.LoginR
 	if err != nil {
 		return domain.LoginResult{}, domain.WrapInternal(err, "issue session token")
 	}
-	var terminalID *uuid.UUID
-	if tenancy, ok := a.Repo.(port.TenancyRepository); ok && input.ClientProtocolVersion >= 2 {
-		principal, createErr := tenancy.CreateAccountSession(ctx, user.ID, tokenHash)
-		if createErr != nil {
-			return domain.LoginResult{}, createErr
-		}
-		a.Sessions.Set(ctx, tokenHash, principal.SessionID)
-		return domain.LoginResult{Token: raw, Principal: principal}, nil
+	repo, ok := a.Repo.(port.VerifiedLoginSessionRepository)
+	if !ok {
+		return domain.LoginResult{}, domain.WrapInternal(fmt.Errorf("repository does not support credential-bound login sessions"), "issue session")
 	}
-	if input.InstallationID != nil {
-		terminalID, err = a.Repo.TerminalIDByInstallation(ctx, domain.InitialTenantID(), *input.InstallationID)
+	session := port.VerifiedLoginSession{
+		UserID: user.ID, VerifiedPasswordHash: user.PasswordHash, TokenHash: tokenHash,
+		ProtocolVersion: domain.NegotiatedClientProtocolVersion(input.ClientProtocolVersion),
+	}
+	if input.ClientProtocolVersion < 2 {
+		if input.InstallationID != nil {
+			session.TerminalID, err = a.Repo.TerminalIDByInstallation(ctx, domain.InitialTenantID(), *input.InstallationID)
+			if err != nil {
+				return domain.LoginResult{}, err
+			}
+		}
+		production, err := a.Repo.ActiveDataSpace(ctx, domain.InitialTenantID(), domain.DataModeProduction)
 		if err != nil {
 			return domain.LoginResult{}, err
 		}
+		session.DataSpaceID = production.ID
 	}
-	production, err := a.Repo.ActiveDataSpace(ctx, domain.InitialTenantID(), domain.DataModeProduction)
-	if err != nil {
-		return domain.LoginResult{}, err
-	}
-	principal, err := a.Repo.CreateSession(ctx, user.ID, terminalID, tokenHash, production.ID)
+	principal, err := repo.CreateVerifiedLoginSession(ctx, session)
 	if err != nil {
 		return domain.LoginResult{}, err
 	}
 	a.Sessions.Set(ctx, tokenHash, principal.SessionID)
+	return domain.LoginResult{Token: raw, Principal: principal}, nil
+}
+
+// UpgradeSession exchanges a token, never mutates its historical scope or policy.
+func (a Auth) UpgradeSession(ctx context.Context, authentication Authentication, protocol int) (domain.LoginResult, error) {
+	defer observability.StartSegment(ctx, "Usecase.Auth.UpgradeSession")()
+	if protocol != domain.CurrentClientProtocolVersion {
+		return domain.LoginResult{}, domain.Validation("Versi protokol pembaruan sesi tidak didukung", map[string]any{"field": "protocolVersion"})
+	}
+	if authentication.RecoverableRetiredSandbox || authentication.RecoverableTenantAccess {
+		return domain.LoginResult{}, domain.NewError(domain.CodeUnauthorized, "Pulihkan akses bisnis terlebih dahulu sebelum memperbarui sesi")
+	}
+	repo, ok := a.Repo.(port.SessionPolicyRepository)
+	if !ok {
+		return domain.LoginResult{}, domain.NewError(domain.CodeClientUpdateRequired, "Server belum mendukung sesi terbaru. Hubungi pengelola untuk memperbarui backend")
+	}
+	raw, hash, err := a.Tokens.New()
+	if err != nil {
+		return domain.LoginResult{}, domain.WrapInternal(err, "issue upgraded session token")
+	}
+	principal, err := repo.UpgradeSession(ctx, authentication.Principal, authentication.TokenHash, hash, protocol)
+	if err != nil {
+		return domain.LoginResult{}, err
+	}
+	a.Sessions.Delete(ctx, authentication.TokenHash)
+	a.Sessions.Set(ctx, hash, principal.SessionID)
 	return domain.LoginResult{Token: raw, Principal: principal}, nil
 }
 
@@ -259,7 +287,7 @@ func RequireTenant(principal domain.Principal) error {
 }
 
 func tenantAccessError(err error) bool {
-	return domain.IsCode(err, domain.CodeTenantSuspended) || domain.IsCode(err, domain.CodeMembershipInactive) || domain.IsCode(err, domain.CodeMembershipRevoked)
+	return domain.IsCode(err, domain.CodeAccountAccessChanged) || domain.IsCode(err, domain.CodeTenantSuspended) || domain.IsCode(err, domain.CodeMembershipInactive) || domain.IsCode(err, domain.CodeMembershipRevoked)
 }
 
 func (a Auth) SwitchContext(ctx context.Context, authentication Authentication, input domain.SwitchContextInput) (domain.LoginResult, error) {

@@ -35,8 +35,12 @@ func (s *Store) EnrollTerminal(ctx context.Context, principal domain.Principal, 
 		return domain.Terminal{}, dbError(err, "begin terminal enrollment")
 	}
 	defer tx.Rollback(ctx)
-	if _, err = lockTenantLifecycleAccess(ctx, tx, principal); err != nil {
+	role, err := lockTenantLifecycleAccess(ctx, tx, principal)
+	if err != nil {
 		return domain.Terminal{}, err
+	}
+	if role != domain.RoleSuperadmin {
+		return domain.Terminal{}, domain.NewError(domain.CodeForbidden, "Pendaftaran dan pengelolaan terminal hanya tersedia untuk Superadmin")
 	}
 	space, err := lockActiveDataSpace(ctx, tx, principal.DataSpaceID)
 	if err != nil {
@@ -193,7 +197,7 @@ func (s *Store) OriginSessionMatches(ctx context.Context, sessionID, actorID, te
 			JOIN tenants t ON t.id = s.tenant_id
 			JOIN users u ON u.id = s.user_id
 			WHERE s.id = $1 AND s.user_id = $2 AND s.terminal_id = $3 AND s.data_space_id = $4
-			  AND s.context_kind = 'tenant' AND m.status = 'active' AND t.status = 'active'
+			  AND s.context_kind = 'tenant' AND t.status = 'active'
 			  AND u.is_active AND u.deleted_at IS NULL
 		)`,
 		sessionID, actorID, terminalID, dataSpaceID,

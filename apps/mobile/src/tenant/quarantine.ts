@@ -7,6 +7,7 @@ export const SCOPE_ACCESS_CODES = new Set([
   "MEMBERSHIP_INACTIVE",
   "MEMBERSHIP_REVOKED",
   "TERMINAL_REVOKED",
+  "ACCOUNT_ACCESS_CHANGED",
 ]);
 
 export async function quarantineScope(
@@ -18,7 +19,9 @@ export async function quarantineScope(
     await sqlite.runAsync(
       "UPDATE scope_access SET blocked_reason = ?, blocked_actor_id = ?, blocked_at = ? WHERE singleton = 1",
       reason,
-      reason.startsWith("MEMBERSHIP_") ? session.user.id : null,
+      reason.startsWith("MEMBERSHIP_") || reason === "ACCOUNT_ACCESS_CHANGED"
+        ? session.user.id
+        : null,
       new Date().toISOString(),
     );
     // Do not rewrite signed evidence; each original actor/session/enrollment

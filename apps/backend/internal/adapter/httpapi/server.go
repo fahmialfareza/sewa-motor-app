@@ -67,7 +67,7 @@ func New(deps Dependencies) *gin.Engine {
 	api.GET("/health/live", server.live)
 	api.GET("/health/ready", server.ready)
 	api.POST("/auth/login", server.login)
-	api.POST("/auth/register-invitation", server.registerInvitation)
+	api.POST("/auth/register-invitation", server.invitationsRemoved)
 
 	protected := api.Group("")
 	protected.Use(server.authenticate())
@@ -77,25 +77,36 @@ func New(deps Dependencies) *gin.Engine {
 	protected.POST("/auth/logout", server.logout)
 	protected.GET("/auth/contexts", server.authContexts)
 	protected.POST("/auth/switch-context", server.switchContext)
-	protected.POST("/auth/invitations/accept", server.acceptInvitation)
+	protected.POST("/auth/invitations/accept", server.invitationsRemoved)
+	protected.POST("/auth/upgrade-session", server.upgradeSession)
 	protected.POST("/profile/password", server.changePassword)
 	protected.PATCH("/profile", server.updateOwnProfile)
-	protected.GET("/platform/tenants", server.platformTenants)
-	protected.POST("/platform/tenants", server.createTenant)
-	protected.POST("/platform/tenants/:tenantId/status", server.setTenantStatus)
-	protected.POST("/platform/tenants/:tenantId/invitation", server.ownerInvitation)
-	protected.GET("/platform/audit", server.platformAudit)
+	protected.GET("/platform/tenants", server.clientUpdateRequired)
+	protected.POST("/platform/tenants", server.clientUpdateRequired)
+	protected.POST("/platform/tenants/:tenantId/status", server.clientUpdateRequired)
+	protected.POST("/platform/tenants/:tenantId/invitation", server.invitationsRemoved)
+	protected.GET("/platform/audit", server.clientUpdateRequired)
+	protected.GET("/management/tenants", server.platformTenants)
+	protected.POST("/management/tenants", server.createTenant)
+	protected.PATCH("/management/tenants/:tenantId", server.updateManagedTenant)
+	protected.POST("/management/tenants/:tenantId/status", server.setTenantStatus)
+	protected.GET("/management/audit", server.platformAudit)
+	protected.GET("/management/users", server.managedUsers)
+	protected.POST("/management/users", server.createManagedUser)
+	protected.GET("/management/users/:userId", server.managedUser)
+	protected.PATCH("/management/users/:userId", server.updateManagedUser)
+	protected.POST("/management/users/:userId/reset-password", server.resetManagedPassword)
 	protected.POST("/auth/switch-mode", server.switchMode)
 	protected.GET("/profile", server.profile)
 	protected.GET("/sandbox/status", server.sandboxStatus)
 
 	operational := protected.Group("")
 	operational.Use(server.requireTenant(), server.requireSandboxEnabled())
-	operational.GET("/tenant/members", server.tenantMembers)
-	operational.PATCH("/tenant/members/:userId", server.updateTenantMember)
-	operational.GET("/tenant/invitations", server.tenantInvitations)
-	operational.POST("/tenant/invitations", server.inviteTenantMember)
-	operational.DELETE("/tenant/invitations/:invitationId", server.revokeInvitation)
+	operational.GET("/tenant/members", server.clientUpdateRequired)
+	operational.PATCH("/tenant/members/:userId", server.clientUpdateRequired)
+	operational.GET("/tenant/invitations", server.invitationsRemoved)
+	operational.POST("/tenant/invitations", server.invitationsRemoved)
+	operational.DELETE("/tenant/invitations/:invitationId", server.invitationsRemoved)
 	operational.GET("/tenant/profile", server.tenantProfile)
 	operational.PATCH("/tenant/profile", server.updateTenantProfile)
 	operational.GET("/tenant/qris", server.tenantQRIS)
@@ -245,6 +256,12 @@ func (s *Server) authenticate() gin.HandlerFunc {
 			return
 		}
 		auth, err := s.deps.Auth.Authenticate(c.Request.Context(), token)
+		// A recognized revoked/retired session still has a trusted immutable
+		// scope. Attribute its denied request/error before returning, without
+		// granting that principal access to the handler.
+		if auth.Principal.SessionID != uuid.Nil {
+			attachDataScope(c, auth.Principal)
+		}
 		if err != nil {
 			// A Sandbox reset revokes the old session, but the exact reset
 			// revocation may be consumed once by this endpoint to rotate into
@@ -287,6 +304,8 @@ func attachDataScope(c *gin.Context, current domain.Principal) {
 		scope.SpaceID = current.DataSpaceID.String()
 		scope.TenantID = current.TenantID.String()
 		scope.Generation = current.SandboxGeneration
+		scope.SandboxQRISPolicy = string(current.EffectiveSandboxQRISPolicy())
+		scope.ProtocolVersion = current.ProtocolVersion
 	}
 	c.Request = c.Request.WithContext(observability.WithDataScope(
 		c.Request.Context(),
@@ -306,7 +325,7 @@ func (s *Server) requireTenant() gin.HandlerFunc {
 }
 
 func (s *Server) clientUpdateRequired(c *gin.Context) {
-	writeError(c, domain.NewError(domain.CodeClientUpdateRequired, "Perbarui aplikasi untuk mengelola keanggotaan bisnis melalui undangan"))
+	writeError(c, domain.NewError(domain.CodeClientUpdateRequired, "Perbarui aplikasi untuk menggunakan pengelolaan organisasi. Undangan dan pengaturan anggota per bisnis tidak lagi digunakan"))
 }
 
 func (s *Server) requireProduction() gin.HandlerFunc {
@@ -397,8 +416,10 @@ func errorStatus(code string) int {
 	switch code {
 	case domain.CodeValidation:
 		return http.StatusUnprocessableEntity
-	case domain.CodeUnauthorized, domain.CodeInvalidCredentials:
+	case domain.CodeUnauthorized, domain.CodeInvalidCredentials, domain.CodeAccountAccessChanged:
 		return http.StatusUnauthorized
+	case "INVITATIONS_REMOVED":
+		return http.StatusGone
 	case domain.CodeForbidden, domain.CodePasswordChange, domain.CodeSignatureInvalid, domain.CodeContextRequired, domain.CodeTenantSuspended, domain.CodeMembershipInactive, domain.CodeMembershipRevoked:
 		return http.StatusForbidden
 	case domain.CodeNotFound:

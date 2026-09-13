@@ -41,8 +41,9 @@ export function formatReceipt(
     document.dataMode,
   );
   const output = [
-    sandbox ? center("MODE UJI", columns) : "",
-    sandbox ? center("BUKAN STRUK RESMI", columns) : "",
+    // Thermal printers use an ASCII code page. The dash is intentionally
+    // printable on every adapter instead of replacing an em dash with '?'.
+    sandbox ? center("TEST - MODE UJI", columns) : "",
     sandbox ? rule : "",
     center(document.receiptIdentity?.businessName ?? "TELOMOYO POS", columns),
     document.receiptIdentity?.address
@@ -53,7 +54,7 @@ export function formatReceipt(
       : "",
     document.isCopy ? center("*** SALINAN ***", columns) : "",
     rule,
-    displayId,
+    ...(sandbox ? wrapPrinterLine(displayId, columns) : [displayId]),
     `Revisi ${document.revision}`,
     new Date(document.occurredAt).toISOString(),
     `Kasir: ${sanitize(document.cashierName)}`,
@@ -76,22 +77,14 @@ export function formatReceipt(
   output.push(
     rule,
     twoColumns("Subtotal", rupiah(document.subtotal), columns),
-    twoColumns(
-      sandbox ? "TOTAL SIMULASI" : "TOTAL",
-      rupiah(document.total),
-      columns,
-    ),
-    ...(sandbox && document.paymentMethod === "qris"
+    twoColumns("TOTAL", rupiah(document.total), columns),
+    ...(sandbox &&
+    document.paymentMethod === "qris" &&
+    document.paymentAmount !== document.total
       ? [twoColumns("QRIS NYATA", rupiah(document.paymentAmount), columns)]
       : []),
     rule,
-    ...(sandbox
-      ? [
-          center("MODE UJI", columns),
-          center("BUKAN STRUK RESMI", columns),
-          rule,
-        ]
-      : []),
+    ...(sandbox ? [center("BUKAN STRUK RESMI", columns), rule] : []),
     center("Terima kasih", columns),
     ...(document.receiptIdentity ? [center("Telomoyo POS", columns)] : []),
     "",
@@ -99,6 +92,15 @@ export function formatReceipt(
     "",
   );
   return `${output.join("\n")}\n`;
+}
+
+function wrapPrinterLine(value: string, columns: number): string[] {
+  const clean = sanitize(value);
+  const lines: string[] = [];
+  for (let offset = 0; offset < clean.length; offset += columns) {
+    lines.push(clean.slice(offset, offset + columns));
+  }
+  return lines;
 }
 
 export function encodeEscPos(
@@ -110,23 +112,18 @@ export function encodeEscPos(
   const leftAlign = Uint8Array.from([0x1b, 0x61, 0x00]);
   const boldOn = Uint8Array.from([0x1b, 0x45, 0x01]);
   const boldOff = Uint8Array.from([0x1b, 0x45, 0x00]);
-  // GS ! 0x10 doubles height without making the 18-character warning too
-  // wide for 58 mm paper.
-  const doubleHeight = Uint8Array.from([0x1d, 0x21, 0x10]);
-  const normalSize = Uint8Array.from([0x1d, 0x21, 0x00]);
   const cut = Uint8Array.from([0x1d, 0x56, 0x41, 0x00]);
   const chunks: Uint8Array[] = [initialize];
   for (const line of formatReceipt(document, columns).split("\n")) {
     const warning =
       document.dataMode === "sandbox" &&
-      (line.trim() === "MODE UJI" || line.trim() === "BUKAN STRUK RESMI");
+      (line.trim() === "TEST - MODE UJI" ||
+        line.trim() === "BUKAN STRUK RESMI");
     if (warning) {
       chunks.push(
         centerAlign,
         boldOn,
-        doubleHeight,
         encodePrinterText(`${line.trim()}\n`),
-        normalSize,
         boldOff,
         leftAlign,
       );

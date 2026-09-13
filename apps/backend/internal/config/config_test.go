@@ -36,6 +36,9 @@ func TestLoadUsesProductionSafeSandboxDefaults(t *testing.T) {
 	if cfg.SandboxEnabled {
 		t.Fatal("sandbox must be disabled unless explicitly enabled")
 	}
+	if cfg.SandboxQRISAmountDeprecated {
+		t.Fatal("an absent legacy amount setting must not cause a deprecation warning")
+	}
 	if cfg.SandboxRetentionDays != 30 || cfg.SandboxQRISAmount != 1_000 {
 		t.Fatalf(
 			"sandbox defaults = retention %d, QRIS %d",
@@ -61,7 +64,7 @@ func TestLoadAcceptsExplicitSandboxConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if !cfg.SandboxEnabled || cfg.SandboxRetentionDays != 45 ||
+	if !cfg.SandboxQRISAmountDeprecated || !cfg.SandboxEnabled || cfg.SandboxRetentionDays != 45 ||
 		cfg.SandboxQRISAmount != 1_000 || cfg.SandboxCleanupInterval != 6*time.Hour {
 		t.Fatalf("unexpected sandbox config: %+v", cfg)
 	}

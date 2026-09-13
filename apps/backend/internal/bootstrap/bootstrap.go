@@ -116,6 +116,9 @@ func apply(
 		return 0, fmt.Errorf("begin bootstrap: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('organization-account-administration',0))`); err != nil {
+		return 0, fmt.Errorf("lock organization bootstrap: %w", err)
+	}
 	inserted := 0
 	for _, user := range manifest.Users {
 		var existingRole domain.Role
@@ -162,20 +165,22 @@ func apply(
 		); err != nil {
 			return 0, fmt.Errorf("audit bootstrap user %q: %w", user.Username, err)
 		}
-		if _, err = tx.Exec(ctx, `
-			SELECT pg_advisory_xact_lock_shared(
-				hashtextextended($1, 0)
-			)`, "sewa-motor-sandbox-generation:"+domain.InitialTenantIDString); err != nil {
+		if _, err = tx.Exec(ctx, lockOrganizationGenerationsSQL); err != nil {
 			return 0, fmt.Errorf("lock Sandbox generation for bootstrap user %q: %w", user.Username, err)
 		}
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO sync_changes (data_space_id, aggregate, aggregate_id, action, payload)
-			SELECT ds.id, 'user', $1, 'created', $2
+			SELECT ds.id, 'user', $1, 'created', $2::jsonb || jsonb_build_object('tenantId',ds.tenant_id,'membershipId',m.id)
 			FROM data_spaces ds
-			WHERE ds.status = 'active' AND ds.tenant_id=$3`,
-			id.String(), payload, domain.InitialTenantID(),
+			LEFT JOIN tenant_memberships m ON m.tenant_id=ds.tenant_id AND m.user_id::text=$1
+			WHERE ds.status = 'active'`,
+			id.String(), payload,
 		); err != nil {
 			return 0, fmt.Errorf("sync bootstrap user %q: %w", user.Username, err)
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO platform_audit_events(event_type,metadata)
+		 VALUES('account.bootstrapped',jsonb_build_object('source','bootstrap','accountId',$1::text,'role',$2::text))`, id.String(), string(user.Role)); err != nil {
+			return 0, fmt.Errorf("audit organization bootstrap: %w", err)
 		}
 		inserted++
 	}
@@ -213,6 +218,13 @@ type bootstrapTx interface {
 
 type beginBootstrapTx func(context.Context, pgx.TxOptions) (bootstrapTx, error)
 
+// Explicit loop order avoids acquiring multiple tenant generation locks in a
+// planner-dependent order. The organization lock is always acquired first.
+const lockOrganizationGenerationsSQL = `DO $$ DECLARE tenant uuid; BEGIN
+ FOR tenant IN SELECT id FROM tenants ORDER BY id LOOP
+  PERFORM pg_advisory_xact_lock_shared(hashtextextended('sewa-motor-sandbox-generation:' || tenant::text,0));
+ END LOOP; END $$`
+
 func resetSampleSuperadminPassword(
 	ctx context.Context,
 	begin beginBootstrapTx,
@@ -237,6 +249,9 @@ func resetSampleSuperadminPassword(
 		return fmt.Errorf("begin sample superadmin password reset: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('organization-account-administration',0))`); err != nil {
+		return fmt.Errorf("lock organization password recovery: %w", err)
+	}
 
 	before, err := scanSampleUser(tx.QueryRow(ctx, `
 		SELECT id, full_name, username, role, is_active, must_change_password,
@@ -273,7 +288,7 @@ func resetSampleSuperadminPassword(
 	}
 	if _, err = tx.Exec(ctx, `
 		UPDATE sessions
-		SET revoked_at = now(), revoked_reason = 'password_reset'
+		SET revoked_at = now(), revoked_reason = 'password_recovered'
 		WHERE user_id = $1 AND revoked_at IS NULL`,
 		before.ID,
 	); err != nil {
@@ -304,20 +319,22 @@ func resetSampleSuperadminPassword(
 	); err != nil {
 		return fmt.Errorf("audit sample superadmin password reset: %w", err)
 	}
-	if _, err = tx.Exec(ctx, `
-		SELECT pg_advisory_xact_lock_shared(
-			hashtextextended($1, 0)
-		)`, "sewa-motor-sandbox-generation:"+domain.InitialTenantIDString); err != nil {
+	if _, err = tx.Exec(ctx, lockOrganizationGenerationsSQL); err != nil {
 		return fmt.Errorf("lock Sandbox generation for sample superadmin reset: %w", err)
 	}
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO sync_changes (data_space_id, aggregate, aggregate_id, action, payload)
-		SELECT ds.id, 'user', $1, 'updated', $2
+		SELECT ds.id, 'user', $1, 'updated', $2::jsonb || jsonb_build_object('tenantId',ds.tenant_id,'membershipId',m.id)
 		FROM data_spaces ds
-		WHERE ds.status = 'active' AND ds.tenant_id=$3`,
-		after.ID.String(), afterJSON, domain.InitialTenantID(),
+		LEFT JOIN tenant_memberships m ON m.tenant_id=ds.tenant_id AND m.user_id::text=$1
+		WHERE ds.status = 'active'`,
+		after.ID.String(), afterJSON,
 	); err != nil {
 		return fmt.Errorf("sync sample superadmin password reset: %w", err)
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO platform_audit_events(event_type,metadata)
+	 VALUES('account.password_recovered',jsonb_build_object('source','seed-superadmin','accountId',$1::text,'mustChangePassword',true))`, after.ID.String()); err != nil {
+		return fmt.Errorf("audit organization password recovery: %w", err)
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit sample superadmin password reset: %w", err)

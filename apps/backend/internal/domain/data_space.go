@@ -8,11 +8,49 @@ import (
 
 const SandboxQRISPaymentAmount int64 = 1_000
 
-// ResolvePaymentAmount returns the amount actually presented for payment. A
-// sandbox QRIS payment intentionally charges a fixed Rp1,000 while transaction
-// totals continue to model the real sale for analytics testing.
-func ResolvePaymentAmount(mode DataMode, method PaymentMethod, total int64) int64 {
-	if mode == DataModeSandbox && method == PaymentMethodQRIS {
+type SandboxQRISPolicy string
+
+const (
+	SandboxQRISPolicyFixed1000        SandboxQRISPolicy = "fixed_1000"
+	SandboxQRISPolicyTransactionTotal SandboxQRISPolicy = "transaction_total"
+	CurrentClientProtocolVersion                        = 3
+)
+
+func (policy SandboxQRISPolicy) Valid() bool {
+	return policy == SandboxQRISPolicyFixed1000 || policy == SandboxQRISPolicyTransactionTotal
+}
+
+func NegotiatedClientProtocolVersion(requested int) int {
+	if requested >= CurrentClientProtocolVersion {
+		return CurrentClientProtocolVersion
+	}
+	return 2
+}
+
+func SandboxQRISPolicyForProtocol(protocol int) SandboxQRISPolicy {
+	if protocol >= CurrentClientProtocolVersion {
+		return SandboxQRISPolicyTransactionTotal
+	}
+	return SandboxQRISPolicyFixed1000
+}
+
+func (principal Principal) EffectiveSandboxQRISPolicy() SandboxQRISPolicy {
+	if principal.SandboxQRISPolicy.Valid() {
+		return principal.SandboxQRISPolicy
+	}
+	// Missing fields represent a persisted legacy session, never a new capability.
+	return SandboxQRISPolicyFixed1000
+}
+
+// ResolvePaymentAmount defaults to the legacy policy for old callers. Production
+// and cash always use the total. Mutation handlers must pass the policy persisted
+// on the signed origin session, not the session uploading an offline operation.
+func ResolvePaymentAmount(mode DataMode, method PaymentMethod, total int64, policies ...SandboxQRISPolicy) int64 {
+	policy := SandboxQRISPolicyFixed1000
+	if len(policies) > 0 {
+		policy = policies[0]
+	}
+	if mode == DataModeSandbox && method == PaymentMethodQRIS && policy != SandboxQRISPolicyTransactionTotal {
 		return SandboxQRISPaymentAmount
 	}
 	return total

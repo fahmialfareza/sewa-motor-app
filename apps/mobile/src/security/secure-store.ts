@@ -89,12 +89,41 @@ export async function readSession(): Promise<Session | null> {
   };
 }
 
-export async function writeSession(session: Session): Promise<void> {
-  await writeJson(keys.session, session);
+// Serialize local auth writes so delayed background work cannot overwrite or
+// clear a newer login while SecureStore's native operations are in flight.
+let sessionWrites: Promise<void> = Promise.resolve();
+
+function serializeSessionWrite(work: () => Promise<void>): Promise<void> {
+  const next = sessionWrites.then(work, work);
+  sessionWrites = next.catch(() => undefined);
+  return next;
 }
 
-export async function clearSession(): Promise<void> {
-  await SecureStore.deleteItemAsync(keys.session);
+export async function writeSession(
+  session: Session,
+  expectedSessionId?: string,
+): Promise<void> {
+  await serializeSessionWrite(async () => {
+    if (expectedSessionId) {
+      const current = await readJson<Session>(keys.session);
+      if (
+        current?.sessionId !== expectedSessionId ||
+        current.token !== session.token
+      )
+        return;
+    }
+    await writeJson(keys.session, session);
+  });
+}
+
+export async function clearSession(expectedToken?: string): Promise<void> {
+  await serializeSessionWrite(async () => {
+    if (expectedToken) {
+      const current = await readJson<Session>(keys.session);
+      if (current?.token !== expectedToken) return;
+    }
+    await SecureStore.deleteItemAsync(keys.session);
+  });
 }
 
 export async function getOrCreateDatabaseKey(
@@ -107,7 +136,7 @@ export async function getOrCreateDatabaseKey(
     scope.contextKind !== "tenant"
   ) {
     throw new Error(
-      "Konteks akun dan platform tidak memiliki kunci database bisnis.",
+      "Pilih bisnis terlebih dahulu untuk menggunakan penyimpanan operasional.",
     );
   }
   const mode = typeof scope === "string" ? scope : scope.dataMode;

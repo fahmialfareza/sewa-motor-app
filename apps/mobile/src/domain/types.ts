@@ -1,5 +1,6 @@
 export type Role = "admin" | "superadmin";
 export type DataMode = "production" | "sandbox";
+export type SandboxQrisPolicy = "fixed_1000" | "transaction_total";
 export type ContextKind = "account" | "tenant" | "platform";
 export const INITIAL_TENANT_ID = "00000000-0000-4000-8000-000000000200";
 export interface TenantSummary {
@@ -7,6 +8,7 @@ export interface TenantSummary {
   name: string;
   slug: string;
   status: "pending_setup" | "active" | "suspended";
+  revision?: number;
 }
 export interface BusinessProfile {
   businessName: string;
@@ -54,6 +56,9 @@ export interface Session {
   membershipId?: string | null;
   tenant?: TenantSummary | null;
   isPlatformAdmin?: boolean;
+  /** Optional only for sessions persisted before protocol 3. */
+  protocolVersion?: number;
+  sandboxQrisPolicy?: SandboxQrisPolicy;
 }
 
 export interface RentalPackage {

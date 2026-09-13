@@ -49,6 +49,9 @@ func run() error {
 	}
 	defer telemetry.Shutdown(5 * time.Second)
 	logger := telemetry.Logger
+	if cfg.SandboxQRISAmountDeprecated {
+		logger.Warn("SANDBOX_QRIS_AMOUNT is deprecated and applies only to legacy sessions; protocol 3 Sandbox payments use the transaction total")
+	}
 	if err := telemetry.WaitForConnection(5 * time.Second); err != nil {
 		logger.WithError(err).Warn("New Relic connection is not ready; telemetry will retry in the background")
 	}

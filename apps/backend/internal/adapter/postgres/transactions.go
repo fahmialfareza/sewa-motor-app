@@ -78,7 +78,11 @@ func (s *Store) createTransactionTx(ctx context.Context, tx pgx.Tx, input domain
 	if err != nil {
 		return domain.Transaction{}, err
 	}
-	paymentAmount := domain.ResolvePaymentAmount(space.Mode, input.PaymentMethod, total)
+	policy, err := originSandboxQRISPolicy(ctx, tx, input.Identity)
+	if err != nil {
+		return domain.Transaction{}, err
+	}
+	paymentAmount := domain.ResolvePaymentAmount(space.Mode, input.PaymentMethod, total, policy)
 	if err := validateMerchantBinding(ctx, tx, input.Identity, input.PaymentMethod, input.QrisPayloadHash); err != nil {
 		return domain.Transaction{}, err
 	}
@@ -216,7 +220,7 @@ func (s *Store) correctTransactionTx(ctx context.Context, tx pgx.Tx, input domai
 		JOIN transaction_revisions r
 		  ON r.transaction_id = t.id AND r.revision = t.current_revision
 		 AND r.data_space_id = t.data_space_id
-		JOIN tenant_memberships correcting_actor ON correcting_actor.user_id = $2 AND correcting_actor.tenant_id = t.tenant_id AND correcting_actor.status = 'active'
+		JOIN users correcting_actor ON correcting_actor.id = $2 AND correcting_actor.is_active AND correcting_actor.deleted_at IS NULL
 		WHERE t.id = $1 AND t.data_space_id = $3
 		FOR UPDATE OF t`,
 		input.ID, input.Identity.OriginActorID, dataSpaceID,
@@ -267,8 +271,12 @@ func (s *Store) correctTransactionTx(ctx context.Context, tx pgx.Tx, input domai
 	if err != nil {
 		return domain.Transaction{}, err
 	}
+	policy, err := originSandboxQRISPolicy(ctx, tx, input.Identity)
+	if err != nil {
+		return domain.Transaction{}, err
+	}
 	if currentRevision != input.BaseRevision {
-		localPaymentAmount := domain.ResolvePaymentAmount(space.Mode, input.PaymentMethod, total)
+		localPaymentAmount := domain.ResolvePaymentAmount(space.Mode, input.PaymentMethod, total, policy)
 		localStatus, localConfirmedRevision, _ := correctedPaymentState(
 			input.LegacyPaymentCompatibility,
 			input.BaseRevision+1,
@@ -297,7 +305,7 @@ func (s *Store) correctTransactionTx(ctx context.Context, tx pgx.Tx, input domai
 		}
 	}
 	nextRevision := currentRevision + 1
-	nextPaymentAmount := domain.ResolvePaymentAmount(space.Mode, input.PaymentMethod, total)
+	nextPaymentAmount := domain.ResolvePaymentAmount(space.Mode, input.PaymentMethod, total, policy)
 	nextPaymentStatus, nextPaymentConfirmedRevision, paymentReset := correctedPaymentState(
 		input.LegacyPaymentCompatibility,
 		nextRevision,
@@ -556,18 +564,15 @@ func getTransactionWith(ctx context.Context, query queryer, dataSpaceID uuid.UUI
 		       t.qris_payload_hash, t.payment_confirmed_revision,
 		       t.print_state, t.latest_printed_revision,
 		       t.terminal_id, t.deleted_at, t.delete_reason, t.updated_at,
-		       origin.id, origin.full_name, origin.username, origin_membership.role,
-		       updater.id, updater.full_name, updater.username, updater_membership.role,
-		       deleter.id, deleter.full_name, deleter.username, deleter_membership.role,
+		       origin.id, origin.full_name, origin.username, origin.role,
+		       updater.id, updater.full_name, updater.username, updater.role,
+		       deleter.id, deleter.full_name, deleter.username, deleter.role,
 		       t.data_space_id, ds.mode, t.receipt_profile_revision, t.receipt_identity
 		FROM transactions t
 		JOIN data_spaces ds ON ds.id = t.data_space_id
 		JOIN users origin ON origin.id = t.origin_actor_id
 		JOIN users updater ON updater.id = t.updated_by
 		LEFT JOIN users deleter ON deleter.id = t.deleted_by
-		JOIN tenant_memberships origin_membership ON origin_membership.user_id = origin.id AND origin_membership.tenant_id = ds.tenant_id
-		JOIN tenant_memberships updater_membership ON updater_membership.user_id = updater.id AND updater_membership.tenant_id = ds.tenant_id
-		LEFT JOIN tenant_memberships deleter_membership ON deleter_membership.user_id = deleter.id AND deleter_membership.tenant_id = ds.tenant_id
 		WHERE t.id = $1 AND t.data_space_id = $2`
 	if !includeDeleted {
 		sql += ` AND t.deleted_at IS NULL`

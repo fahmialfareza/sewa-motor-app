@@ -11,11 +11,12 @@ import (
 )
 
 const (
-	initialMigrationVersion  = "000001_initial"
-	paymentMigrationVersion  = "000002_transaction_payments"
-	qrisBindingVersion       = "000003_qris_payload_binding"
-	sandboxDataSpacesVersion = "000004_sandbox_data_spaces"
-	tenantsVersion           = "000005_tenants"
+	initialMigrationVersion     = "000001_initial"
+	paymentMigrationVersion     = "000002_transaction_payments"
+	qrisBindingVersion          = "000003_qris_payload_binding"
+	sandboxDataSpacesVersion    = "000004_sandbox_data_spaces"
+	tenantsVersion              = "000005_tenants"
+	internalOrganizationVersion = "000006_internal_organization"
 )
 
 type migration struct {
@@ -29,6 +30,7 @@ var orderedMigrations = []migration{
 	{version: qrisBindingVersion, up: migrateQrisPayloadBinding},
 	{version: sandboxDataSpacesVersion, up: migrateSandboxDataSpaces},
 	{version: tenantsVersion, up: migrateTenants},
+	{version: internalOrganizationVersion, up: migrateInternalOrganization},
 }
 
 // Apply runs every pending migration through GORM in one PostgreSQL transaction.

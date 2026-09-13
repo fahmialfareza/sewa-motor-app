@@ -193,7 +193,12 @@ export default function CorrectTransactionScreen() {
         const staticQris = validateStaticQris(qrisConfig.staticPayload);
         createDynamicQris(
           staticQris.payload,
-          resolvePaymentAmount(session.dataMode, paymentMethod, total),
+          resolvePaymentAmount(
+            session.dataMode,
+            paymentMethod,
+            total,
+            session.sandboxQrisPolicy,
+          ),
         );
         qrisPayloadHash = await fingerprintStaticQris(staticQris.payload);
       }

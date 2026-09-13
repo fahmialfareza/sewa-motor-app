@@ -26,6 +26,7 @@ func TestDisabledRuntimeStillProvidesStructuredLogger(t *testing.T) {
 	ctx := WithDataScope(context.Background(), DataScope{
 		TenantID: "00000000-0000-4000-8000-000000000201", ContextKind: "tenant",
 		Mode: "sandbox", SpaceID: "11111111-1111-4111-8111-111111111111", Generation: 7,
+		ProtocolVersion: 3, SandboxQRISPolicy: "transaction_total",
 	})
 	defer StartSegment(ctx, "test.segment")()
 	NoticeError(ctx, errors.New("test failure"), "test.operation")
@@ -43,6 +44,8 @@ func TestDisabledRuntimeStillProvidesStructuredLogger(t *testing.T) {
 		`"data.mode":"sandbox"`,
 		`"data.space_id":"11111111-1111-4111-8111-111111111111"`,
 		`"data.generation":7`,
+		`"auth.protocol_version":3`,
+		`"payment.sandbox_qris_policy":"transaction_total"`,
 	} {
 		if !strings.Contains(log, field) {
 			t.Fatalf("log does not contain %s: %s", field, log)
@@ -80,6 +83,7 @@ func TestLoggerHookAddsAuthorizedDataScopeToEveryContextLog(t *testing.T) {
 	ctx := WithDataScope(context.Background(), DataScope{
 		TenantID: "00000000-0000-4000-8000-000000000200", ContextKind: "tenant",
 		Mode: "production", SpaceID: "00000000-0000-4000-8000-000000000100", Generation: 1,
+		ProtocolVersion: 2, SandboxQRISPolicy: "fixed_1000",
 	})
 	runtime.Logger.WithContext(ctx).Info("scoped log")
 
@@ -90,6 +94,8 @@ func TestLoggerHookAddsAuthorizedDataScopeToEveryContextLog(t *testing.T) {
 		`"data.mode":"production"`,
 		`"data.space_id":"00000000-0000-4000-8000-000000000100"`,
 		`"data.generation":1`,
+		`"auth.protocol_version":2`,
+		`"payment.sandbox_qris_policy":"fixed_1000"`,
 	} {
 		if !strings.Contains(log, field) {
 			t.Fatalf("log does not contain %s: %s", field, log)

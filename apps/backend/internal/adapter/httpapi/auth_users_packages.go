@@ -117,6 +117,7 @@ func (s *Server) sessionView(c *gin.Context, current domain.Principal) (gin.H, e
 		"dataMode": mode, "dataSpaceId": space, "sandboxGeneration": current.SandboxGeneration,
 		"contextKind": current.ContextKind, "tenantId": tenantID, "membershipId": membershipID,
 		"tenant": current.Tenant, "isPlatformAdmin": current.IsPlatformAdmin,
+		"protocolVersion": current.ProtocolVersion, "sandboxQrisPolicy": current.EffectiveSandboxQRISPolicy(),
 	}, nil
 }
 

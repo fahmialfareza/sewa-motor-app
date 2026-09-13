@@ -17,7 +17,10 @@ import type {
   TransactionDraftLine,
   TransactionItem,
 } from "@/domain/types";
-import { resolvePaymentAmount } from "@/domain/payments";
+import {
+  assertSandboxSessionCurrent,
+  resolvePaymentAmount,
+} from "@/domain/payments";
 import {
   canCorrectTransaction,
   canManageTransactionPayment,
@@ -210,6 +213,7 @@ async function createTransactionLocal(
   session: Session,
 ): Promise<Transaction> {
   const selected = lines.filter((line) => line.quantity > 0);
+  assertSandboxSessionCurrent(session);
   if (selected.length === 0) {
     throw new Error("Pilih minimal satu paket.");
   }
@@ -248,6 +252,7 @@ async function createTransactionLocal(
     session.dataMode,
     paymentMethod,
     total,
+    session.sandboxQrisPolicy,
   );
   if (paymentMethod === "qris") validateQrisAmount(paymentAmount);
   const receiptIdentity = await receiptProfileForSession(session);
@@ -354,6 +359,7 @@ async function correctTransactionLocal(
     transactionId,
   );
   if (!before) throw new Error("Transaksi tidak ditemukan.");
+  assertSandboxSessionCurrent(session);
   if (before.deletedAt) {
     throw new Error("Transaksi yang diarsipkan tidak dapat dikoreksi.");
   }
@@ -409,6 +415,7 @@ async function correctTransactionLocal(
     session.dataMode,
     paymentMethod,
     total,
+    session.sandboxQrisPolicy,
   );
   if (paymentMethod === "qris") validateQrisAmount(paymentAmount);
   const corrected: Transaction = {
@@ -1618,6 +1625,7 @@ async function resolveConflictLocal(
   resolution: "server" | "retry-local",
   session: Session,
 ): Promise<void> {
+  if (resolution === "retry-local") assertSandboxSessionCurrent(session);
   if (!canCorrectTransaction(session, conflict.serverSnapshot))
     throw new Error(CORRECTION_FORBIDDEN_MESSAGE);
   const { sqlite } = await getDatabase(session);
@@ -1737,6 +1745,14 @@ async function resolveConflictLocal(
       };
       const rebased: Transaction = {
         ...conflict.localSnapshot,
+        // A retry is a new, explicitly attributed correction. Its amount must
+        // follow the replacement origin session, not the old optimistic row.
+        paymentAmount: resolvePaymentAmount(
+          session.dataMode,
+          conflict.localSnapshot.paymentMethod,
+          conflict.localSnapshot.total,
+          session.sandboxQrisPolicy,
+        ),
         receiptIdentity: conflict.serverSnapshot.receiptIdentity,
         updatedActorName: session.user.fullName,
         revision: conflict.serverSnapshot.revision + 1,

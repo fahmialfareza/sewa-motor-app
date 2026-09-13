@@ -15,7 +15,7 @@ const selectAuthRuntime = (state: AuthStore): AuthRuntime => ({
   switchingMode: state.switchingMode,
   scopeLocked: state.scopeLocked,
   switchContext: state.switchContext,
-  registerInvitation: state.registerInvitation,
+  upgradeSession: state.upgradeSession,
   dismissNotice: state.dismissNotice,
   login: state.login,
   demoLogin: state.demoLogin,

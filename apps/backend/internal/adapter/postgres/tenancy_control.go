@@ -40,12 +40,12 @@ func controlAudit(ctx context.Context, tx pgx.Tx, actorID *uuid.UUID, tenantID *
 func lockControlAccount(ctx context.Context, tx pgx.Tx, actor domain.Principal, platform bool) error {
 	defer observability.StartSegment(ctx, "Postgres.lockControlAccount")()
 	var active, admin, mustChange bool
-	err := tx.QueryRow(ctx, `SELECT is_active AND deleted_at IS NULL,is_platform_admin,must_change_password FROM users WHERE id=$1 FOR SHARE`, actor.UserID).Scan(&active, &admin, &mustChange)
+	err := tx.QueryRow(ctx, `SELECT is_active AND deleted_at IS NULL,role='superadmin',must_change_password FROM users WHERE id=$1 FOR SHARE`, actor.UserID).Scan(&active, &admin, &mustChange)
 	if err != nil {
 		return err
 	}
-	if !active || platform && (!admin || actor.ContextKind != domain.ContextPlatform) {
-		return domain.NewError(domain.CodeForbidden, "Akses pengelola platform diperlukan")
+	if !active || platform && (!admin || actor.ContextKind != domain.ContextAccount) {
+		return domain.NewError(domain.CodeForbidden, "Masuk ke pengelolaan organisasi sebagai Superadmin")
 	}
 	if mustChange {
 		return domain.NewError(domain.CodePasswordChange, "Ganti kata sandi sementara sebelum melanjutkan")
@@ -85,7 +85,7 @@ func lockTenantOwner(ctx context.Context, tx pgx.Tx, actor domain.Principal) err
 		return domain.NewError(domain.CodeTenantSuspended, "Bisnis sedang dinonaktifkan")
 	}
 	var role domain.Role
-	if err := tx.QueryRow(ctx, `SELECT role FROM tenant_memberships WHERE id=$1 AND tenant_id=$2 AND user_id=$3 AND status='active' FOR SHARE`, actor.MembershipID, actor.TenantID, actor.UserID).Scan(&role); err != nil {
+	if err := tx.QueryRow(ctx, `SELECT u.role FROM users u JOIN tenant_memberships m ON m.user_id=u.id WHERE m.id=$1 AND m.tenant_id=$2 AND u.id=$3 FOR SHARE OF u,m`, actor.MembershipID, actor.TenantID, actor.UserID).Scan(&role); err != nil {
 		return err
 	}
 	if role != domain.RoleSuperadmin {
@@ -107,7 +107,7 @@ func lockTenantOwner(ctx context.Context, tx pgx.Tx, actor domain.Principal) err
 
 func scanTenant(row pgx.Row) (domain.Tenant, error) {
 	var t domain.Tenant
-	err := row.Scan(&t.ID, &t.Name, &t.Slug, &t.Status, &t.ProfileRevision, &t.QrisRevision)
+	err := row.Scan(&t.ID, &t.Name, &t.Slug, &t.Status, &t.ProfileRevision, &t.QrisRevision, &t.Revision)
 	return t, err
 }
 
@@ -146,17 +146,19 @@ func (s *Store) CreateAccountSession(ctx context.Context, userID uuid.UUID, hash
 func (s *Store) AvailableContexts(ctx context.Context, userID uuid.UUID) (domain.AvailableContexts, error) {
 	defer observability.StartSegment(ctx, "Postgres.AvailableContexts")()
 	result := domain.AvailableContexts{Tenants: []domain.TenantContext{}}
-	if err := s.Pool.QueryRow(ctx, `SELECT is_platform_admin FROM users WHERE id=$1 AND is_active AND deleted_at IS NULL`, userID).Scan(&result.PlatformAdmin); err != nil {
+	if err := s.Pool.QueryRow(ctx, `SELECT role='superadmin' FROM users WHERE id=$1 AND is_active AND deleted_at IS NULL`, userID).Scan(&result.CanManageOrganization); err != nil {
 		return result, dbError(err, "load account contexts")
 	}
-	rows, err := s.Pool.Query(ctx, `SELECT t.id,t.name,t.slug,t.status,t.profile_revision,t.qris_revision,m.id,m.role FROM tenant_memberships m JOIN tenants t ON t.id=m.tenant_id WHERE m.user_id=$1 AND m.status='active' ORDER BY t.name,t.id`, userID)
+	rows, err := s.Pool.Query(ctx, `SELECT t.id,t.name,t.slug,t.status,t.profile_revision,t.qris_revision,t.management_revision,COALESCE(m.id,'00000000-0000-0000-0000-000000000000'),u.role
+	 FROM users u CROSS JOIN tenants t LEFT JOIN tenant_memberships m ON m.tenant_id=t.id AND m.user_id=u.id
+	 WHERE u.id=$1 AND u.is_active AND u.deleted_at IS NULL AND t.status='active' ORDER BY t.name,t.id`, userID)
 	if err != nil {
 		return result, dbError(err, "list tenant contexts")
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var c domain.TenantContext
-		if err = rows.Scan(&c.Tenant.ID, &c.Tenant.Name, &c.Tenant.Slug, &c.Tenant.Status, &c.Tenant.ProfileRevision, &c.Tenant.QrisRevision, &c.MembershipID, &c.Role); err != nil {
+		if err = rows.Scan(&c.Tenant.ID, &c.Tenant.Name, &c.Tenant.Slug, &c.Tenant.Status, &c.Tenant.ProfileRevision, &c.Tenant.QrisRevision, &c.Tenant.Revision, &c.MembershipID, &c.Role); err != nil {
 			return result, err
 		}
 		result.Tenants = append(result.Tenants, c)
@@ -181,24 +183,20 @@ func (s *Store) SwitchContextSession(ctx context.Context, current domain.Princip
 		switch input.Kind {
 		case domain.ContextAccount:
 		case domain.ContextPlatform:
-			var allowed bool
-			if e := tx.QueryRow(ctx, `SELECT is_platform_admin FROM users WHERE id=$1`, current.UserID).Scan(&allowed); e != nil {
-				return e
-			}
-			if !allowed {
-				return domain.NewError(domain.CodeForbidden, "Akses platform tidak tersedia")
-			}
+			return domain.NewError(domain.CodeClientUpdateRequired, "Perbarui aplikasi untuk pengelolaan organisasi melalui akun Superadmin")
 		case domain.ContextTenant:
 			var status string
-			if e := tx.QueryRow(ctx, `SELECT status FROM tenants WHERE id=$1 AND EXISTS(SELECT 1 FROM tenant_memberships WHERE tenant_id=$1 AND user_id=$2 AND status='active') FOR SHARE`, input.TenantID, current.UserID).Scan(&status); e != nil {
+			if e := tx.QueryRow(ctx, `SELECT status FROM tenants WHERE id=$1 FOR SHARE`, input.TenantID).Scan(&status); e != nil {
 				return e
 			}
 			if status != "active" {
 				return domain.NewError(domain.CodeTenantSuspended, "Bisnis belum aktif atau sedang dinonaktifkan")
 			}
 			var member, space uuid.UUID
-			if e := tx.QueryRow(ctx, `SELECT id FROM tenant_memberships WHERE tenant_id=$1 AND user_id=$2 AND status='active' FOR SHARE`, input.TenantID, current.UserID).Scan(&member); e != nil {
-				return domain.NewError(domain.CodeNotFound, "Bisnis tidak ditemukan")
+			var e error
+			member, e = ensureAccountTenantLink(ctx, tx, input.TenantID, current.UserID)
+			if e != nil {
+				return e
 			}
 			if e := tx.QueryRow(ctx, `SELECT id FROM data_spaces WHERE tenant_id=$1 AND mode='production' AND status='active'`, input.TenantID).Scan(&space); e != nil {
 				return e
@@ -225,7 +223,8 @@ func (s *Store) SwitchContextSession(ctx context.Context, current domain.Princip
 		if _, e := tx.Exec(ctx, `UPDATE sessions SET revoked_at=now(),revoked_reason='context_switched' WHERE id=$1`, current.SessionID); e != nil {
 			return e
 		}
-		if e := tx.QueryRow(ctx, `INSERT INTO sessions(user_id,token_hash,context_kind,tenant_id,membership_id,data_space_id,terminal_id,legacy_origin) VALUES($1,$2,$3,$4,$5,$6,$7,false) RETURNING id`, current.UserID, replacementHash, input.Kind, tenantID, membershipID, spaceID, terminalID).Scan(&id); e != nil {
+		if e := tx.QueryRow(ctx, `INSERT INTO sessions(user_id,token_hash,context_kind,tenant_id,membership_id,data_space_id,terminal_id,legacy_origin,protocol_version,sandbox_qris_policy)
+		 SELECT $1,$2,$3,$4,$5,$6,$7,false,protocol_version,sandbox_qris_policy FROM sessions WHERE id=$8 RETURNING id`, current.UserID, replacementHash, input.Kind, tenantID, membershipID, spaceID, terminalID, current.SessionID).Scan(&id); e != nil {
 			return e
 		}
 		var e error
@@ -237,92 +236,20 @@ func (s *Store) SwitchContextSession(ctx context.Context, current domain.Princip
 
 func (s *Store) TenantMembers(ctx context.Context, actor domain.Principal) ([]domain.TenantMember, error) {
 	defer observability.StartSegment(ctx, "Postgres.TenantMembers")()
-	if !actor.IsTenantContext() || !actor.IsSuperadmin() {
-		return nil, domain.NewError(domain.CodeForbidden, "Akses superadmin bisnis diperlukan")
-	}
-	rows, err := s.Pool.Query(ctx, `SELECT u.id,m.id,u.full_name,u.username,m.role,m.status='active' AND u.is_active AND u.deleted_at IS NULL FROM tenant_memberships m JOIN users u ON u.id=m.user_id WHERE m.tenant_id=$1 ORDER BY u.full_name,u.id`, actor.TenantID)
-	if err != nil {
-		return nil, dbError(err, "list tenant members")
-	}
-	defer rows.Close()
-	result := []domain.TenantMember{}
-	for rows.Next() {
-		var m domain.TenantMember
-		if err = rows.Scan(&m.ID, &m.MembershipID, &m.FullName, &m.Username, &m.Role, &m.Active); err != nil {
-			return nil, err
-		}
-		result = append(result, m)
-	}
-	return result, dbError(rows.Err(), "read tenant members")
+	return nil, legacyUsersDisabled()
 }
 
 func (s *Store) UpdateTenantMember(ctx context.Context, actor domain.Principal, userID uuid.UUID, input domain.UpdateMembershipInput) (result domain.TenantMember, err error) {
 	defer observability.StartSegment(ctx, "Postgres.UpdateTenantMember")()
-	if input.Role != nil && !input.Role.Valid() {
-		return result, domain.Validation("Peran tidak valid", nil)
-	}
-	err = s.controlTx(ctx, func(tx pgx.Tx) error {
-		if e := lockTenantOwner(ctx, tx, actor); e != nil {
-			return e
-		}
-		if _, e := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('tenant-members:' || $1,0))`, actor.TenantID.String()); e != nil {
-			return e
-		}
-		var role domain.Role
-		var status string
-		if e := tx.QueryRow(ctx, `SELECT role,status FROM tenant_memberships WHERE tenant_id=$1 AND user_id=$2 FOR UPDATE`, actor.TenantID, userID).Scan(&role, &status); e != nil {
-			return e
-		}
-		if input.Role != nil {
-			role = *input.Role
-		}
-		if input.Active != nil {
-			if *input.Active {
-				status = "active"
-			} else {
-				status = "inactive"
-			}
-		}
-		if userID == actor.UserID && (role != domain.RoleSuperadmin || status != "active") {
-			return domain.NewError(domain.CodeSelfMutation, "Anda tidak dapat menurunkan atau menonaktifkan akses sendiri")
-		}
-		if role != domain.RoleSuperadmin || status != "active" {
-			var count int
-			if e := tx.QueryRow(ctx, `SELECT count(*) FROM tenant_memberships m JOIN users u ON u.id=m.user_id WHERE m.tenant_id=$1 AND m.user_id<>$2 AND m.role='superadmin' AND m.status='active' AND u.is_active AND u.deleted_at IS NULL`, actor.TenantID, userID).Scan(&count); e != nil {
-				return e
-			}
-			if count == 0 {
-				return domain.NewError(domain.CodeFinalSuperadmin, "Setidaknya satu superadmin aktif harus tetap tersedia di bisnis ini")
-			}
-		}
-		if _, e := tx.Exec(ctx, `UPDATE tenant_memberships SET role=$3,status=$4,updated_at=now() WHERE tenant_id=$1 AND user_id=$2`, actor.TenantID, userID, role, status); e != nil {
-			return e
-		}
-		if _, e := tx.Exec(ctx, `UPDATE sessions SET revoked_at=now(),revoked_reason='membership_changed' WHERE tenant_id=$1 AND user_id=$2 AND revoked_at IS NULL`, actor.TenantID, userID); e != nil {
-			return e
-		}
-		if e := tx.QueryRow(ctx, `SELECT u.id,m.id,u.full_name,u.username,m.role,m.status='active' FROM tenant_memberships m JOIN users u ON u.id=m.user_id WHERE m.tenant_id=$1 AND m.user_id=$2`, actor.TenantID, userID).Scan(&result.ID, &result.MembershipID, &result.FullName, &result.Username, &result.Role, &result.Active); e != nil {
-			return e
-		}
-		if e := controlAudit(ctx, tx, &actor.UserID, &actor.TenantID, "membership.updated", result); e != nil {
-			return e
-		}
-		if role != domain.RoleSuperadmin || status != "active" {
-			if _, e := tx.Exec(ctx, `UPDATE tenant_invitations SET revoked_at=now() WHERE tenant_id=$1 AND created_by=$2 AND accepted_at IS NULL AND revoked_at IS NULL`, actor.TenantID, userID); e != nil {
-				return e
-			}
-		}
-		return addTenantChange(ctx, tx, actor.TenantID, "user", userID.String(), "updated", nil, result, false)
-	})
-	return
+	return result, legacyUsersDisabled()
 }
 
 func (s *Store) ListTenants(ctx context.Context, actor domain.Principal) ([]domain.Tenant, error) {
 	defer observability.StartSegment(ctx, "Postgres.ListTenants")()
-	if actor.ContextKind != domain.ContextPlatform || !actor.IsPlatformAdmin {
-		return nil, domain.NewError(domain.CodeForbidden, "Akses platform diperlukan")
+	if err := s.authorizeManagement(ctx, actor); err != nil {
+		return nil, err
 	}
-	rows, err := s.Pool.Query(ctx, `SELECT id,name,slug,status,profile_revision,qris_revision FROM tenants ORDER BY name,id`)
+	rows, err := s.Pool.Query(ctx, `SELECT id,name,slug,status,profile_revision,qris_revision,management_revision FROM tenants ORDER BY name,id`)
 	if err != nil {
 		return nil, dbError(err, "list tenants")
 	}
@@ -330,7 +257,7 @@ func (s *Store) ListTenants(ctx context.Context, actor domain.Principal) ([]doma
 	result := []domain.Tenant{}
 	for rows.Next() {
 		var t domain.Tenant
-		if err = rows.Scan(&t.ID, &t.Name, &t.Slug, &t.Status, &t.ProfileRevision, &t.QrisRevision); err != nil {
+		if err = rows.Scan(&t.ID, &t.Name, &t.Slug, &t.Status, &t.ProfileRevision, &t.QrisRevision, &t.Revision); err != nil {
 			return nil, err
 		}
 		result = append(result, t)
@@ -341,11 +268,11 @@ func (s *Store) ListTenants(ctx context.Context, actor domain.Principal) ([]doma
 func (s *Store) CreateTenant(ctx context.Context, actor domain.Principal, input domain.CreateTenantInput, codeHash []byte) (result domain.CreateTenantResult, err error) {
 	defer observability.StartSegment(ctx, "Postgres.CreateTenant")()
 	err = s.controlTx(ctx, func(tx pgx.Tx) error {
-		if e := lockControlAccount(ctx, tx, actor, true); e != nil {
+		if e := lockManagedAccounts(ctx, tx, actor, uuid.Nil); e != nil {
 			return e
 		}
 		var e error
-		result.Tenant, e = scanTenant(tx.QueryRow(ctx, `INSERT INTO tenants(name,slug,status) VALUES($1,$2,'pending_setup') RETURNING id,name,slug,status,profile_revision,qris_revision`, input.Name, input.Slug))
+		result.Tenant, e = scanTenant(tx.QueryRow(ctx, `INSERT INTO tenants(name,slug,status,created_by) VALUES($1,$2,'active',$3) RETURNING id,name,slug,status,profile_revision,qris_revision,management_revision`, input.Name, input.Slug, actor.UserID))
 		if e != nil {
 			return e
 		}
@@ -355,8 +282,7 @@ func (s *Store) CreateTenant(ctx context.Context, actor domain.Principal, input 
 		if _, e = tx.Exec(ctx, `INSERT INTO data_spaces(tenant_id,mode,generation,status) VALUES($1,'production',1,'active')`, result.Tenant.ID); e != nil {
 			return e
 		}
-		result.Invitation, e = insertInvitation(ctx, tx, actor.UserID, result.Tenant.ID, domain.RoleSuperadmin, true, codeHash)
-		if e != nil {
+		if e = seedOrganizationConfiguration(ctx, tx, result.Tenant.ID); e != nil {
 			return e
 		}
 		return controlAudit(ctx, tx, &actor.UserID, &result.Tenant.ID, "tenant.created", map[string]any{"name": input.Name, "slug": input.Slug})
@@ -377,11 +303,8 @@ func (s *Store) SetTenantStatus(ctx context.Context, actor domain.Principal, id 
 		if e := tx.QueryRow(ctx, `SELECT status FROM tenants WHERE id=$1 FOR UPDATE`, id).Scan(&before); e != nil {
 			return e
 		}
-		if before == "pending_setup" {
-			return domain.NewError(domain.CodeConflict, "Pemilik harus menerima undangan sebelum bisnis diaktifkan")
-		}
 		var e error
-		result, e = scanTenant(tx.QueryRow(ctx, `UPDATE tenants SET status=$2,updated_at=now() WHERE id=$1 RETURNING id,name,slug,status,profile_revision,qris_revision`, id, status))
+		result, e = scanTenant(tx.QueryRow(ctx, `UPDATE tenants SET status=$2,management_revision=management_revision+1,updated_at=now() WHERE id=$1 RETURNING id,name,slug,status,profile_revision,qris_revision,management_revision`, id, status))
 		if e != nil {
 			return e
 		}
@@ -390,173 +313,41 @@ func (s *Store) SetTenantStatus(ctx context.Context, actor domain.Principal, id 
 				return e
 			}
 		}
+		if e = addTenantChange(ctx, tx, id, "tenant_metadata", id.String(), "updated", &result.Revision, result, false); e != nil {
+			return e
+		}
 		return controlAudit(ctx, tx, &actor.UserID, &id, "tenant.status_changed", map[string]any{"before": before, "status": status})
 	})
 	return
 }
 
-func insertInvitation(ctx context.Context, tx pgx.Tx, actorID, tenantID uuid.UUID, role domain.Role, owner bool, hash []byte) (result domain.Invitation, err error) {
-	defer observability.StartSegment(ctx, "Postgres.insertInvitation")()
-	err = tx.QueryRow(ctx, `INSERT INTO tenant_invitations(tenant_id,role,code_hash,expires_at,created_by,is_initial_owner) VALUES($1,$2,$3,now()+interval '7 days',$4,$5) RETURNING id,tenant_id,role,expires_at,created_at,accepted_at,revoked_at,is_initial_owner`, tenantID, role, hash, actorID, owner).Scan(&result.ID, &result.TenantID, &result.Role, &result.ExpiresAt, &result.CreatedAt, &result.AcceptedAt, &result.RevokedAt, &result.InitialOwner)
-	return
-}
-
 func (s *Store) CreateTenantInvitation(ctx context.Context, actor domain.Principal, tenantID uuid.UUID, role domain.Role, owner bool, hash []byte) (result domain.Invitation, err error) {
 	defer observability.StartSegment(ctx, "Postgres.CreateTenantInvitation")()
-	err = s.controlTx(ctx, func(tx pgx.Tx) error {
-		if owner {
-			if e := lockControlAccount(ctx, tx, actor, true); e != nil {
-				return e
-			}
-			var status string
-			if e := tx.QueryRow(ctx, `SELECT status FROM tenants WHERE id=$1 FOR UPDATE`, tenantID).Scan(&status); e != nil {
-				return e
-			}
-			if status != "pending_setup" {
-				return domain.NewError(domain.CodeConflict, "Undangan pemilik hanya dapat diganti sebelum aktivasi")
-			}
-			if _, e := tx.Exec(ctx, `UPDATE tenant_invitations SET revoked_at=now() WHERE tenant_id=$1 AND is_initial_owner AND accepted_at IS NULL AND revoked_at IS NULL`, tenantID); e != nil {
-				return e
-			}
-		} else {
-			if tenantID != actor.TenantID {
-				return domain.NewError(domain.CodeNotFound, "Bisnis tidak ditemukan")
-			}
-			if e := lockTenantOwner(ctx, tx, actor); e != nil {
-				return e
-			}
-		}
-		var e error
-		result, e = insertInvitation(ctx, tx, actor.UserID, tenantID, role, owner, hash)
-		if e != nil {
-			return e
-		}
-		return controlAudit(ctx, tx, &actor.UserID, &tenantID, "invitation.created", map[string]any{"invitationId": result.ID, "role": role, "initialOwner": owner})
-	})
-	return
+	return result, invitationsDisabled()
+}
+
+func invitationsDisabled() error {
+	return domain.NewError("INVITATIONS_REMOVED", "Undangan tidak lagi digunakan. Semua akun aktif dapat memilih setiap bisnis. Hubungi Superadmin untuk membuat akun.")
 }
 
 func (s *Store) ListTenantInvitations(ctx context.Context, actor domain.Principal) ([]domain.Invitation, error) {
 	defer observability.StartSegment(ctx, "Postgres.ListTenantInvitations")()
-	if !actor.IsTenantContext() || !actor.IsSuperadmin() {
-		return nil, domain.NewError(domain.CodeForbidden, "Akses superadmin bisnis diperlukan")
-	}
-	rows, err := s.Pool.Query(ctx, `SELECT id,tenant_id,role,expires_at,created_at,accepted_at,revoked_at,is_initial_owner FROM tenant_invitations WHERE tenant_id=$1 ORDER BY created_at DESC`, actor.TenantID)
-	if err != nil {
-		return nil, dbError(err, "list invitations")
-	}
-	defer rows.Close()
-	result := []domain.Invitation{}
-	for rows.Next() {
-		var i domain.Invitation
-		if err = rows.Scan(&i.ID, &i.TenantID, &i.Role, &i.ExpiresAt, &i.CreatedAt, &i.AcceptedAt, &i.RevokedAt, &i.InitialOwner); err != nil {
-			return nil, err
-		}
-		result = append(result, i)
-	}
-	return result, rows.Err()
+	return nil, invitationsDisabled()
 }
 
 func (s *Store) RevokeTenantInvitation(ctx context.Context, actor domain.Principal, id uuid.UUID) error {
 	defer observability.StartSegment(ctx, "Postgres.RevokeTenantInvitation")()
-	return s.controlTx(ctx, func(tx pgx.Tx) error {
-		if e := lockTenantOwner(ctx, tx, actor); e != nil {
-			return e
-		}
-		tag, e := tx.Exec(ctx, `UPDATE tenant_invitations SET revoked_at=now() WHERE id=$1 AND tenant_id=$2 AND accepted_at IS NULL AND revoked_at IS NULL`, id, actor.TenantID)
-		if e != nil {
-			return e
-		}
-		if tag.RowsAffected() != 1 {
-			return domain.NewError(domain.CodeNotFound, "Undangan aktif tidak ditemukan")
-		}
-		return controlAudit(ctx, tx, &actor.UserID, &actor.TenantID, "invitation.revoked", map[string]any{"invitationId": id})
-	})
-}
-
-func acceptInvitationTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, hash []byte) (result domain.TenantContext, err error) {
-	defer observability.StartSegment(ctx, "Postgres.acceptInvitationTx")()
-	var tenantID uuid.UUID
-	if err = tx.QueryRow(ctx, `SELECT tenant_id FROM tenant_invitations WHERE code_hash=$1`, hash).Scan(&tenantID); err != nil {
-		return result, domain.NewError(domain.CodeInvitationInvalid, "Undangan tidak valid atau sudah kedaluwarsa")
-	}
-	var active bool
-	if err = tx.QueryRow(ctx, `SELECT is_active AND deleted_at IS NULL FROM users WHERE id=$1 FOR SHARE`, userID).Scan(&active); err != nil {
-		return
-	}
-	if !active {
-		return result, domain.NewError(domain.CodeUnauthorized, "Akun tidak aktif")
-	}
-	result.Tenant, err = scanTenant(tx.QueryRow(ctx, `SELECT id,name,slug,status,profile_revision,qris_revision FROM tenants WHERE id=$1 FOR UPDATE`, tenantID))
-	if err != nil {
-		return
-	}
-	var invitationID uuid.UUID
-	var initial bool
-	if err = tx.QueryRow(ctx, `SELECT id,role,is_initial_owner FROM tenant_invitations WHERE code_hash=$1 AND accepted_at IS NULL AND revoked_at IS NULL AND expires_at>now() FOR UPDATE`, hash).Scan(&invitationID, &result.Role, &initial); err != nil {
-		return result, domain.NewError(domain.CodeInvitationInvalid, "Undangan tidak valid atau sudah kedaluwarsa")
-	}
-	if result.Tenant.Status == "suspended" || initial && result.Tenant.Status != "pending_setup" || !initial && result.Tenant.Status != "active" {
-		return result, domain.NewError(domain.CodeConflict, "Bisnis belum tersedia untuk menerima undangan")
-	}
-	if err = tx.QueryRow(ctx, `INSERT INTO tenant_memberships(tenant_id,user_id,role,status) VALUES($1,$2,$3,'active') ON CONFLICT(tenant_id,user_id) DO UPDATE SET status='active',role=CASE WHEN tenant_memberships.status='active' THEN tenant_memberships.role ELSE EXCLUDED.role END,updated_at=now() RETURNING id,role`, tenantID, userID, result.Role).Scan(&result.MembershipID, &result.Role); err != nil {
-		return
-	}
-	if _, err = tx.Exec(ctx, `UPDATE tenant_invitations SET accepted_by=$2,accepted_at=now() WHERE id=$1`, invitationID, userID); err != nil {
-		return
-	}
-	if initial {
-		if _, err = tx.Exec(ctx, `UPDATE tenants SET status='active',updated_at=now() WHERE id=$1`, tenantID); err != nil {
-			return
-		}
-		result.Tenant.Status = "active"
-		var spaceID uuid.UUID
-		if err = tx.QueryRow(ctx, `SELECT id FROM data_spaces WHERE tenant_id=$1 AND mode='production' AND status='active'`, tenantID).Scan(&spaceID); err != nil {
-			return
-		}
-		if err = seedSharedSyncChanges(ctx, tx, spaceID); err != nil {
-			return
-		}
-	}
-	if err = controlAudit(ctx, tx, &userID, &tenantID, "invitation.accepted", map[string]any{"invitationId": invitationID, "membershipId": result.MembershipID}); err != nil {
-		return
-	}
-	return
+	return invitationsDisabled()
 }
 
 func (s *Store) AcceptTenantInvitation(ctx context.Context, actor domain.Principal, hash []byte) (result domain.TenantContext, err error) {
 	defer observability.StartSegment(ctx, "Postgres.AcceptTenantInvitation")()
-	if actor.IsTenantContext() && actor.DataMode == domain.DataModeSandbox {
-		return result, domain.NewError(domain.CodeForbidden, "Beralih ke produksi atau akun sebelum menerima undangan")
-	}
-	userID := actor.UserID
-	err = s.controlTx(ctx, func(tx pgx.Tx) error {
-		if e := lockControlAccount(ctx, tx, actor, false); e != nil {
-			return e
-		}
-		var e error
-		result, e = acceptInvitationTx(ctx, tx, userID, hash)
-		if e != nil {
-			return e
-		}
-		return addTenantChange(ctx, tx, result.Tenant.ID, "user", userID.String(), "created", nil, map[string]any{"id": userID}, false)
-	})
-	return
+	return result, invitationsDisabled()
 }
 
 func (s *Store) RegisterTenantInvitation(ctx context.Context, input domain.RegisterInvitationInput, passwordHash string, codeHash []byte) (userID uuid.UUID, err error) {
 	defer observability.StartSegment(ctx, "Postgres.RegisterTenantInvitation")()
-	err = s.controlTx(ctx, func(tx pgx.Tx) error {
-		if e := tx.QueryRow(ctx, `INSERT INTO users(full_name,username,password_hash,role,must_change_password) VALUES($1,$2,$3,'admin',false) RETURNING id`, input.FullName, input.Username, passwordHash).Scan(&userID); e != nil {
-			return domain.NewError(domain.CodeConflict, "Username tidak tersedia. Masuk dengan akun yang sudah ada atau pilih username lain")
-		}
-		result, e := acceptInvitationTx(ctx, tx, userID, codeHash)
-		if e != nil {
-			return e
-		}
-		return addTenantChange(ctx, tx, result.Tenant.ID, "user", userID.String(), "created", nil, map[string]any{"id": userID}, false)
-	})
-	return
+	return uuid.Nil, invitationsDisabled()
 }
 
 func (s *Store) GetTenantProfile(ctx context.Context, tenantID uuid.UUID) (p domain.TenantProfile, err error) {
@@ -582,7 +373,7 @@ func (s *Store) UpdateTenantProfile(ctx context.Context, actor domain.Principal,
 		if _, e := tx.Exec(ctx, `INSERT INTO tenant_profile_revisions(tenant_id,revision,business_name,address,phone,created_by) VALUES($1,$2,$3,$4,$5,$6)`, result.TenantID, result.Revision, result.BusinessName, result.Address, result.Phone, actor.UserID); e != nil {
 			return e
 		}
-		if _, e := tx.Exec(ctx, `UPDATE tenants SET profile_revision=$2,name=$3,updated_at=now() WHERE id=$1`, actor.TenantID, result.Revision, result.BusinessName); e != nil {
+		if _, e := tx.Exec(ctx, `UPDATE tenants SET profile_revision=$2,updated_at=now() WHERE id=$1`, actor.TenantID, result.Revision); e != nil {
 			return e
 		}
 		if e := controlAudit(ctx, tx, &actor.UserID, &actor.TenantID, "tenant.profile_updated", map[string]any{"revision": result.Revision}); e != nil {

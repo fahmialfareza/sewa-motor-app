@@ -56,7 +56,7 @@ func Open(ctx context.Context, databaseURL string, options ...Option) (*Store, e
 	if err != nil {
 		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
 	}
-	config.ConnConfig.Tracer = nrpgx5.NewTracer(nrpgx5.WithQueryParameters(false))
+	configureConnectionTracing(config)
 	config.MaxConns = 20
 	config.MinConns = 2
 	config.MaxConnLifetime = time.Hour
@@ -105,6 +105,16 @@ func Open(ctx context.Context, databaseURL string, options ...Option) (*Store, e
 		Logger: settings.logger,
 		Now:    func() time.Time { return time.Now().UTC() },
 	}, nil
+}
+
+func configureConnectionTracing(config *pgxpool.Config) {
+	// pgxpool supplies a separate copied configuration to BeforeConnect for each
+	// connection. nrpgx5 initializes mutable connection metadata in its tracer,
+	// so sharing one tracer across parallel pool connections races that metadata.
+	config.BeforeConnect = func(_ context.Context, connection *pgx.ConnConfig) error {
+		connection.Tracer = nrpgx5.NewTracer(nrpgx5.WithQueryParameters(false))
+		return nil
+	}
 }
 
 func (s *Store) Close() {
@@ -212,7 +222,7 @@ func addChange(ctx context.Context, tx pgx.Tx, dataSpaceID uuid.UUID, aggregate,
 	return err
 }
 
-// addSharedChange projects shared accounts only into their own memberships.
+// addSharedChange projects organization accounts into every tenant.
 // Terminal events are restricted to the tenant owning that enrollment.
 func addSharedChange(ctx context.Context, tx pgx.Tx, aggregate, aggregateID, action string, revision *int, payload any, tombstone bool) error {
 	defer observability.StartSegment(ctx, "Postgres.addSharedChange")()
@@ -220,7 +230,7 @@ func addSharedChange(ctx context.Context, tx pgx.Tx, aggregate, aggregateID, act
 		return domain.NewError(domain.CodeForbidden, "Perubahan wajib memiliki ruang usaha")
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT tenant_id FROM tenant_memberships WHERE $1 = 'user' AND user_id::text = $2
+		SELECT id AS tenant_id FROM tenants WHERE $1 = 'user'
 		UNION SELECT tenant_id FROM terminals WHERE $1 = 'terminal' AND id::text = $2
 		ORDER BY tenant_id`, aggregate, aggregateID)
 	if err != nil {
@@ -249,7 +259,7 @@ func addSharedChange(ctx context.Context, tx pgx.Tx, aggregate, aggregateID, act
 }
 
 // addTenantChange never copies a caller's user projection into another tenant.
-// Membership fields are rebuilt from durable account/membership state. Shared
+// Roles come from global accounts; membership IDs are historical links. Shared
 // generation locks make the fanout atomic with Sandbox activation and reset.
 func addTenantChange(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, aggregate, aggregateID, action string, revision *int, payload any, tombstone bool) error {
 	defer observability.StartSegment(ctx, "Postgres.addTenantChange")()
@@ -266,22 +276,22 @@ func addTenantChange(ctx context.Context, tx pgx.Tx, tenantID uuid.UUID, aggrega
 	_, err = tx.Exec(ctx, `
 		INSERT INTO sync_changes (data_space_id, aggregate, aggregate_id, action, revision, payload, tombstone)
 		SELECT ds.id, $1, $2,
-		       CASE WHEN $6 OR ($1 = 'user' AND (m.status <> 'active' OR NOT u.is_active OR u.deleted_at IS NOT NULL)) THEN 'deleted' ELSE $3 END,
+		       CASE WHEN $6 OR ($1 = 'user' AND (NOT u.is_active OR u.deleted_at IS NOT NULL)) THEN 'deleted' ELSE $3 END,
 		       $4,
 		       CASE WHEN $1 = 'user' THEN jsonb_build_object(
 		         'id',u.id,'fullName',u.full_name,'username',u.username,
-		         'role', m.role, 'active', m.status = 'active' AND u.is_active AND u.deleted_at IS NULL,
+		         'role', u.role, 'active', u.is_active AND u.deleted_at IS NULL,
 		         'membershipId', m.id, 'tenantId', ds.tenant_id,
 		         'mustChangePassword',u.must_change_password,'createdAt',u.created_at,'updatedAt',u.updated_at,'deletedAt',u.deleted_at)
 		       ELSE $5::jsonb END,
-		       $6 OR ($1 = 'user' AND (m.status <> 'active' OR NOT u.is_active OR u.deleted_at IS NOT NULL))
+		       $6 OR ($1 = 'user' AND (NOT u.is_active OR u.deleted_at IS NOT NULL))
 		FROM data_spaces ds
 		LEFT JOIN tenant_memberships m ON $1 = 'user' AND m.tenant_id = ds.tenant_id AND m.user_id::text = $2
-		LEFT JOIN users u ON u.id = m.user_id
+		LEFT JOIN users u ON $1 = 'user' AND u.id::text=$2
 		WHERE ds.tenant_id = $7 AND ds.status = 'active' AND (
-		  ($1 = 'user' AND m.id IS NOT NULL) OR
+		  ($1 = 'user' AND u.id IS NOT NULL) OR
 		  ($1 = 'terminal' AND EXISTS (SELECT 1 FROM terminals t WHERE t.id::text = $2 AND t.tenant_id = ds.tenant_id)) OR
-		  $1 IN ('tenant_profile','tenant_qris'))`,
+		  $1 IN ('tenant_profile','tenant_qris','tenant_metadata'))`,
 		aggregate, aggregateID, action, revision, body, tombstone, tenantID,
 	)
 	return err
@@ -356,15 +366,11 @@ func lockMutationIdentityWithTenantLock(ctx context.Context, tx pgx.Tx, identity
 	var originRole domain.Role
 	for _, actorID := range actorIDs {
 		var role domain.Role
-		var status string
-		if err := tx.QueryRow(ctx, `SELECT role, status FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2 FOR SHARE`, identity.TenantID, actorID).Scan(&role, &status); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT u.role FROM users u JOIN tenant_memberships m ON m.user_id=u.id WHERE m.tenant_id = $1 AND u.id = $2 FOR SHARE OF u,m`, identity.TenantID, actorID).Scan(&role); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return "", domain.NewError(domain.CodeMembershipInactive, "Keanggotaan asal atau pengirim tidak aktif. Data belum terkirim tetap disimpan")
+				return "", domain.NewError(domain.CodeMembershipInactive, "Identitas bisnis asal atau pengirim tidak tersedia. Data belum terkirim tetap disimpan")
 			}
 			return "", dbError(err, "lock mutation membership")
-		}
-		if status != "active" {
-			return "", domain.NewError(domain.CodeMembershipInactive, "Keanggotaan asal atau pengirim tidak aktif. Data belum terkirim tetap disimpan")
 		}
 		if actorID == identity.OriginActorID {
 			originRole = role

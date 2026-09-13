@@ -109,7 +109,7 @@ func syncError(ctx context.Context, result domain.SyncOperationResult, err error
 	switch domainErr.Code {
 	case domain.CodeValidation:
 		result.Status = http.StatusUnprocessableEntity
-	case domain.CodeUnauthorized:
+	case domain.CodeUnauthorized, domain.CodeAccountAccessChanged:
 		result.Status = http.StatusUnauthorized
 	case domain.CodeForbidden, domain.CodePasswordChange,
 		domain.CodeTenantSuspended, domain.CodeMembershipInactive, domain.CodeMembershipRevoked, domain.CodeContextRequired:

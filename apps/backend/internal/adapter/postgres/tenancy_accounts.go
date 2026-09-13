@@ -9,11 +9,17 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// Account owners may update global profile/credentials from account or platform
-// context, or an authorized Production context. The account lock also coordinates
+// Account owners may update global profile/credentials from account (including
+// historical platform sessions) or authorized Production context. This coordinates
 // operator recovery and all business mutations from that account.
 func lockOwnAccount(ctx context.Context, tx pgx.Tx, actor domain.Principal, allowTemporary bool) error {
 	defer observability.StartSegment(ctx, "Postgres.lockOwnAccount")()
+	// A tenant created concurrently must seed the post-change user projection,
+	// or be visible to this mutation's fanout. Lock before account rows, matching
+	// central account administration and provisioning.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtextextended('organization-account-administration',0))`); err != nil {
+		return err
+	}
 	var active, temporary bool
 	if err := tx.QueryRow(ctx, `SELECT is_active AND deleted_at IS NULL,must_change_password FROM users WHERE id=$1 FOR UPDATE`, actor.UserID).Scan(&active, &temporary); err != nil {
 		return err
@@ -37,7 +43,7 @@ func lockOwnAccount(ctx context.Context, tx pgx.Tx, actor domain.Principal, allo
 		}
 		var valid bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM tenant_memberships m JOIN data_spaces ds ON ds.tenant_id=m.tenant_id
-   WHERE m.id=$1 AND m.user_id=$2 AND m.tenant_id=$3 AND m.status='active' AND ds.id=$4 AND ds.mode='production' AND ds.status='active')
+   WHERE m.id=$1 AND m.user_id=$2 AND m.tenant_id=$3 AND ds.id=$4 AND ds.mode='production' AND ds.status='active')
    AND ($5::uuid IS NULL OR EXISTS(SELECT 1 FROM terminals WHERE id=$5 AND tenant_id=$3 AND is_active AND revoked_at IS NULL))`, actor.MembershipID, actor.UserID, actor.TenantID, actor.DataSpaceID, actor.TerminalID).Scan(&valid); err != nil {
 			return err
 		}
@@ -73,8 +79,8 @@ func (s *Store) UpdateOwnProfile(ctx context.Context, actor domain.Principal, na
 
 func (s *Store) ListPlatformAudit(ctx context.Context, actor domain.Principal, limit int) ([]domain.PlatformAuditEvent, error) {
 	defer observability.StartSegment(ctx, "Postgres.ListPlatformAudit")()
-	if actor.ContextKind != domain.ContextPlatform || !actor.IsPlatformAdmin {
-		return nil, domain.NewError(domain.CodeForbidden, "Akses platform diperlukan")
+	if err := s.authorizeManagement(ctx, actor); err != nil {
+		return nil, err
 	}
 	if limit < 1 || limit > 200 {
 		limit = 50
@@ -115,7 +121,7 @@ func (s *Store) RevalidateOrigins(ctx context.Context, actor domain.Principal, o
 			if origin.OriginActorID == actor.UserID && origin.TerminalID == *actor.TerminalID {
 				if e := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM sessions s JOIN tenant_memberships m ON m.id=s.membership_id
      WHERE s.id=$1 AND s.user_id=$2 AND s.terminal_id=$3 AND s.tenant_id=$4 AND s.data_space_id=$5
-      AND s.context_kind='tenant' AND s.membership_id=$6 AND m.status='active')`, origin.OriginSessionID, actor.UserID, origin.TerminalID, actor.TenantID, actor.DataSpaceID, actor.MembershipID).Scan(&result.Allowed); e != nil {
+      AND s.context_kind='tenant' AND s.membership_id=$6)`, origin.OriginSessionID, actor.UserID, origin.TerminalID, actor.TenantID, actor.DataSpaceID, actor.MembershipID).Scan(&result.Allowed); e != nil {
 					return e
 				}
 			}

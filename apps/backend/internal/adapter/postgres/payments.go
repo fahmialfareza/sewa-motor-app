@@ -68,7 +68,7 @@ func (s *Store) setTransactionPaymentStatusTx(
 		JOIN transaction_revisions r
 		  ON r.transaction_id = t.id AND r.revision = t.current_revision
 		 AND r.data_space_id = t.data_space_id
-		JOIN tenant_memberships acting_user ON acting_user.user_id = $2 AND acting_user.tenant_id = t.tenant_id AND acting_user.status = 'active'
+		JOIN users acting_user ON acting_user.id = $2 AND acting_user.is_active AND acting_user.deleted_at IS NULL
 		WHERE t.id = $1 AND t.data_space_id = $3
 		FOR UPDATE OF t`,
 		input.ID, input.Identity.OriginActorID, dataSpaceID,

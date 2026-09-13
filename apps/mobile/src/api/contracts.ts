@@ -3,6 +3,7 @@ import type {
   BusinessProfile,
   ContextKind,
   Role,
+  SandboxQrisPolicy,
   TenantSummary,
 } from "@/domain/types";
 
@@ -24,10 +25,14 @@ export type LoginResponse = ApiSchema["LoginResult"] & {
   membershipId?: string | null;
   tenant?: TenantSummary | null;
   isPlatformAdmin?: boolean;
+  protocolVersion?: number;
+  sandboxQrisPolicy?: SandboxQrisPolicy;
 };
 export interface AuthContextsResponse {
   tenants: { tenant: TenantSummary; membershipId: string; role: Role }[];
-  platformAdmin: boolean;
+  platformAdmin?: boolean;
+  canManageOrganization?: boolean;
+  tenantProvisioningEnabled?: boolean;
 }
 export interface TenantQrisResponse {
   revision: number;

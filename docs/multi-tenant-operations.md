@@ -1,82 +1,108 @@
-# Multi-tenant operations and release acceptance
+# Internal Telomoyo POS operations and release acceptance
 
-## Scope and defaults
+## Scope and permissions
 
-Telomoyo POS uses one PostgreSQL database with tenant-owned shared tables.
-Tenant UUID `00000000-0000-4000-8000-000000000200` is the migrated **Telomoyo**
-business. Production space `00000000-0000-4000-8000-000000000100` and all existing
-entity IDs remain unchanged. New businesses start with an empty catalog, IDR,
-`Asia/Jakarta`, and shared app branding. Custom logos, billing, tenant deletion,
-branches, and cross-business reporting are outside this release.
+Tenants are business units of **Pengelola Wisata Telomoyo**, not separate staff
+organizations. Exactly two global roles exist: `admin` and `superadmin`.
+Every active account can select every active tenant, including newly created
+ones. Historical membership rows remain attribution/constraint links, not role
+or access grants. There is no independent Platform Admin permission or User role,
+and invitations are removed.
+
+Admin can use dashboards, history, reports, transactions, and successful-payment
+printing; corrections and payment confirmation are limited to their own
+transactions. Superadmin can handle any transaction in the selected tenant and
+manage catalogs, merchant configuration, terminals, Sandbox resets, tenants, and
+global staff accounts. Account context is used for organization management and
+must not open a business database.
+
+Tenant UUID `00000000-0000-4000-8000-000000000200` is migrated **Telomoyo**.
+Production space `00000000-0000-4000-8000-000000000100`, existing IDs, encrypted
+files/keys, and signed evidence remain unchanged. Catalogs, transactions, QRIS,
+receipt identity, reports, terminals, sync, and Sandbox remain tenant-isolated:
+cross-tenant identifiers return `404` even when the account may separately
+switch to that business. New tenants start active with an empty catalog, initial
+receipt identity, IDR, and `Asia/Jakarta`. Management names and receipt identity
+are edited independently; tenant IDs/slugs stay immutable. Preserved
+`pending_setup` tenants require explicit activation. No tenant/account deletion,
+billing, branches, custom logos, or combined business reporting is introduced.
 
 ```dotenv
 TENANT_PROVISIONING_ENABLED=false
 SANDBOX_ENABLED=false
-SANDBOX_QRIS_AMOUNT=1000
 SANDBOX_RETENTION_DAYS=30
 SANDBOX_CLEANUP_INTERVAL=24h
 ```
 
-The provisioning flag stops new business creation; it is not an authorization
-bypass, a switch back to single tenancy, or a substitute for suspending a tenant.
-Sandbox is independently enabled for the deployment, with an independent active
-generation and reset/retention lifecycle in each tenant. Reset does not touch
-other tenants. Sandbox QRIS charges are real Rp1.000 transfers requiring manual
-merchant reconciliation.
+Provisioning controls creation only, not access to existing tenants. Suspension
+preserves data and requires fresh authorization after reactivation. Sandbox has
+an independent lifecycle per tenant. The deprecated
+`SANDBOX_QRIS_AMOUNT=1000` setting may remain during transition with a warning;
+it does not override the full-value policy. Do not set another fixed amount.
 
-## Safe rollout
+## Safe rollout and rollback boundaries
 
-1. Capture and verify an operator-controlled full database recovery point.
-   Exercise migration `000005_tenants` against a populated disposable restore;
-   compare existing IDs, totals, historical revisions, and origin-session proof.
-2. Keep provisioning disabled. Stop **all old backend replicas** before the
-   final membership backfill and tenant-aware deployment. Old global queries
-   cannot safely coexist with additional tenants. This migration is not a
-   rolling-deployment coexistence guarantee.
-3. Run the forward-only GORM migration once, using the `migrate` container target.
-   Start only tenant-aware replicas, preferably with `AUTO_MIGRATE=false` after
-   the one-shot migration. Verify production readiness and existing Telomoyo
-   sessions, numeric cursors, signed outboxes, reports, and payment bindings.
-4. Release the compatible mobile build. Verify the explicit legacy storage/key
-   mapping for Telomoyo on an installed device with pending offline work. Never
-   reinstall or delete app data as a migration step. Account/platform contexts
-   must not open a business database.
-5. Explicitly assign the first platform administrator using the audited operator
-   command below. This does not grant a membership or promote existing tenant
-   superadmins. Confirm platform management cannot query business APIs.
-6. Confirm no old replicas remain and complete the two-tenant acceptance checks
-   below. Enable `TENANT_PROVISIONING_ENABLED=true`, restart the compatible API,
-   and provision the first additional business from platform management.
+1. Capture a verified operator-controlled full recovery point. Rehearse GORM
+   migrations through `000006_internal_organization` on a populated disposable
+   restore; compare IDs, balances, revisions, stored amounts, origin sessions,
+   encrypted files, and exact signed queue bytes before/after.
+2. Review global-role mapping: active accounts with an active Superadmin
+   membership or legacy Platform Admin flag become global Superadmin; other
+   active staff become Admin. Disabled/deleted accounts remain disabled.
+   Historical memberships remain, outstanding invitations are invalidated, and
+   `account.global_role_migrated` audit records explain the mapping.
+3. Keep provisioning disabled and stop **all incompatible backend replicas**
+   before changing authorization models. Run the one-shot `migrate` image, then
+   compatible replicas with `AUTO_MIGRATE=false`. Membership-authority and
+   fixed-only Sandbox binaries cannot safely coexist with this release.
+4. Verify legacy Telomoyo sessions, cursors, signed outboxes, reports, and
+   historical QRIS bindings. Release protocol-v3 mobile without reinstalling or
+   clearing app data. Verify account-context management and scope remounting.
+5. Drain legacy Sandbox outboxes online before session upgrade; compare old
+   Rp1.000 payments/reprints with new full-total creates/corrections. Failed
+   upgrades must not silently create full-value work under a legacy session.
+6. Complete acceptance gates below. Superadmins use **Pengguna** for global staff
+   and **Bisnis & tenant → Kelola tenant** for business management. No platform
+   assignment or invitation is needed. Enable provisioning only after confirming
+   all replicas and installed clients are compatible.
 
-After additional tenants exist, rollback must **retain tenant-aware authorization**
-and database scope checks. Disabling provisioning only stops new tenant creation;
-do not restore an older single-tenant binary against the shared database.
-`SANDBOX_ENABLED=false` remains the independent Sandbox entry rollback switch.
+Rollback must retain tenant-aware isolation, global-role authorization, and
+immutable payment-policy interpretation. Never restore binaries that revive
+membership approval or interpret full-value sessions as Rp1.000.
+`TENANT_PROVISIONING_ENABLED=false` stops creation only;
+`SANDBOX_ENABLED=false` independently stops new Sandbox entry without affecting
+Production sessions/readiness. Neither switch reverses migration or data.
 
-## Audited global account operations
+## Global staff and audited operator operations
 
-These are operator-only maintenance commands, not tenant-user management APIs.
-They require an existing active account and an explicit target, operator identity,
-action, and reason. Obtain account-owner authorization out of band for recovery.
-Protect the host/container database credentials and retain infrastructure access
-audit alongside the command's durable `platform_audit_events` record. The
-`--operator` value is supplied by the responsible operator, not an authentication
-mechanism. Never put a password, invitation code, or QRIS payload in `--reason`.
+Superadmins use account-context `/management/users` to create global staff with
+temporary passwords, change roles/status, and recover passwords. Creation and
+recovery force a password change before POS use. Role changes, deactivation,
+and recovery revoke every account session across all tenants. Self-demotion/
+deactivation and removal of the last active Superadmin are forbidden.
+Reactivation never revives old sessions. Personal profile/password changes remain
+account-owner actions.
 
-From the repository root:
+The operator tool is a maintenance/recovery path, not mobile authorization. It
+requires an existing active account, explicit target, responsible operator,
+action, and reason. Obtain recovery authorization out of band. `--operator`
+is audit attribution, not authentication: protect database credentials and retain
+host/container access logs. Never put credentials or raw QRIS in `--reason`.
 
 ```sh
 pnpm --filter @sewa-motor/backend account:admin \
-  --action grant-platform --username approved.operator \
-  --operator on-call@example.test --reason 'Approved initial platform assignment'
+  --action grant-superadmin --username approved.operator \
+  --operator on-call@example.test --reason 'Approved organization Superadmin recovery'
 ```
 
-Use `--action revoke-platform` with the same explicit fields to remove platform
-authority. It revokes platform sessions while retaining tenant memberships and
-account/tenant sessions. Granting platform authority never creates business
-membership. Account-owner password recovery uses `--action reset-password`;
-the temporary password is accepted **only on standard input**, never an argument
-or environment variable. For example, on zsh, enter it without terminal echo:
+`revoke-superadmin` demotes to global Admin and refuses to remove the last active
+Superadmin. Both role changes revoke all sessions; an already-applied role is
+audited without unnecessary revocation. Retired `grant-platform` and
+`revoke-platform` fail explicitly, never alias the broader global actions.
+Historical memberships and the legacy platform flag are not modified.
+
+`reset-password` accepts the temporary password **only through stdin**, never
+an argument or environment variable. For example, in zsh:
 
 ```sh
 read -rs 'temporary_password?Temporary password: '
@@ -87,166 +113,183 @@ printf '%s' "$temporary_password" | pnpm --filter @sewa-motor/backend account:ad
 unset temporary_password
 ```
 
-Use a unique temporary password of 8–256 bytes. Recovery changes only the global
-credential, sets `must_change_password=true`, and revokes **all** existing account,
-platform, and tenant sessions. It does not rename the person, alter membership
-roles, rewrite signed queues, or grant authority over another business. The user
-must sign in online and change the temporary password. Quarantined offline
-evidence is retained and must pass exact origin authorization revalidation before
-replay; password recovery does not authorize replay under another account.
+Use a unique temporary password of 8–256 bytes. Recovery sets
+`must_change_password=true` and revokes account, tenant, and historical platform
+sessions with `password_recovered`; role changes use `account_access_changed`.
+Sign in online and change the temporary password where required. Neither
+operation rewrites/re-signs/transfers queued evidence. Matching origin authority
+must be explicitly revalidated before replay.
 
-The separate non-root container target is built without putting operator tooling
-inside the serving image:
+Operator operations share the mobile account-administration advisory lock and
+append immutable `operator.*` records to `platform_audit_events` (the retained
+physical name for organization control-plane history). Credentials never enter
+audit or synchronized account projections.
 
 ```sh
 docker build --target account-admin -t telomoyo-pos:account-admin apps/backend
 docker run --rm --env DATABASE_URL \
-  telomoyo-pos:account-admin --action grant-platform --username approved.operator \
-  --operator on-call@example.test --reason 'Approved initial platform assignment'
+  telomoyo-pos:account-admin --action grant-superadmin --username approved.operator \
+  --operator on-call@example.test --reason 'Approved organization Superadmin recovery'
 ```
 
-For a reset, pipe the password from a protected input source and add `docker run
---interactive`; do not mount application data or expose the command as an HTTP
-service. The command never runs migrations automatically.
+For recovery add `docker run --interactive` and pipe protected input. The separate
+non-root image never runs migrations automatically. Do not expose it as HTTP or
+include operator tooling in the serving image.
 
-## Invitations, sessions, and device recovery
+## Sessions, compatibility, and offline recovery
 
-New tenants remain `pending_setup` until the initial-owner invitation is consumed
-atomically with membership creation. Codes expire after seven days, are stored
-hashed, and are exposed only when issued. Reissuing an owner code invalidates the
-previous one. Existing users sign in before accepting; new accounts register
-through a valid invitation. After activation, only the business's superadmins
-manage invitations/memberships. A platform admin cannot self-enroll in an existing
-tenant through platform management.
+New clients negotiate protocol **3**. Only account and tenant contexts are
+issued. `GET /auth/contexts` lists all active tenants and management/provisioning
+capabilities. Login enters the sole tenant's Production space or shows a chooser.
+Every tenant switch enters Production; current tenant/mode persists across
+restart while its session remains valid.
 
-Protocol-v2 login first establishes an account context. The app then selects the
-sole available business's Production space or shows a chooser for multiple
-businesses/platform management. Each context/mode exchange creates a new session
-and revokes the previous session without changing its historical tenant, actor,
-membership, or data-space identity. Ordinary business APIs never select a tenant
-from a request header, query parameter, or mutation body.
+Exchanges issue a new session and revoke the old one without changing historical
+actor, tenant, membership, enrollment, space, or policy. Ordinary business APIs
+derive scope only from the session. Obsolete platform/member administration
+returns an upgrade error; invitation endpoints return an explicit removal error.
+They never reinterpret legacy membership edits as global account changes.
 
-New sync cursors bind `tenant:<tenantUUID>:<spaceUUID>:<generation>:<position>`.
-Only the migrated Telomoyo tenant accepts old numeric Production cursors and
-`sandbox:<generation>:<position>` cursors. Already-signed pre-migration operations
-are assessed against their persisted origin session; do not reserialize, re-sign,
-or reattribute them because the uploading app was upgraded.
+Cursors bind `tenant:<tenantUUID>:<spaceUUID>:<generation>:<position>`. Only
+migrated Telomoyo accepts numeric Production and
+`sandbox:<generation>:<position>` legacy cursors. Signed mutations are assessed
+against the persisted origin session, not the uploading app version.
 
-Tenant switching is online-only and waits for active sync and the complete
-physical print attempt. Normal switching drains the current outbox first. Once
-suspension, inactive membership, or terminal revocation is discovered, affected
-business screens and printing are locked. Pending entries remain quarantined by
-tenant, space, origin membership/session, and enrollment; selecting another
-authorized tenant must not release them. Restoration requires matching authority
-and online origin revalidation (`POST /sync/revalidate`). Never clear app data or
-rotate another tenant's signing key to recover one revoked enrollment.
+Online switching blocks new writes, waits for active sync and the entire physical
+print attempt, and drains the outbox. Discovered suspension, enrollment revocation,
+or global account access changes lock the affected local scope. Evidence remains
+quarantined by tenant/space/origin account/session/enrollment. Another login or
+tenant switch must not release it. Restore matching authority and explicitly
+revalidate online using `/sync/revalidate`. Never clear app data, rotate another
+tenant's key, or replace signed actor/session/payload/signature fields in recovery.
 
-While a transaction has quarantined entries, incoming sync snapshots do not
-overwrite its local transaction/revision evidence. Corrections, payment changes,
-printing, and recovery cannot bypass that protection. A write already signing
-when access is revoked inherits quarantine when it enters the outbox. Explicit
-successful origin revalidation resets the scoped pull cursor so authoritative
-history skipped during quarantine is fetched again; signed bytes are unchanged.
+### Shared physical devices and enrollment
 
-## Merchant configuration and history
+In Settings, **Bisnis & tenant** contains **Ganti bisnis**, **Kelola tenant**,
+and **Identitas struk** according to permission. The persistent business label
+also opens the chooser. Entering **Pengguna** or **Kelola tenant** exchanges
+into account context through the same synchronization/printing barrier; it
+does not reuse or open a tenant database for global management.
 
-Each tenant's business profile and QRIS payloads are versioned centrally. Only a
-Production-mode tenant superadmin can update them. QRIS caches are encrypted and
-scoped; historical payments remain bound to their exact payload hash. Explicit
-Telomoyo-superadmin confirmation is required to import an old device payload.
-Several old payloads may be imported as historical versions; only one is active.
-An unavailable historical payload must not silently display a newer merchant QR.
+A Superadmin enrolls a phone/MPOS separately in each selected tenant, in
+Production mode. An Admin may operate an existing valid enrollment on that
+shared installation, but cannot create or revoke one. A fresh or revoked
+enrollment therefore requires Superadmin setup before cashier use. Existing
+Telomoyo keys/enrollment remain unchanged. Enrollment evidence and signing keys
+are tenant-specific; printer preferences remain physical-device settings.
+Revocation in one tenant must neither rotate another tenant's key nor discard
+pending evidence. Test a Superadmin-to-Admin handoff on the same installation
+without clearing app data, including a second business and a revoked enrollment.
 
-New transaction receipts snapshot business name/address/phone and profile revision.
-Corrections and reprints preserve that identity, with a small Telomoyo POS credit.
-Printing requires successful payment and freezes the document throughout the
-physical attempt. Sandbox output retains top/bottom test watermarks, TEST IDs,
-simulated totals, and actual QRIS charge. Export filenames and contents identify
-both the business and test mode where applicable.
+## Real-value Sandbox and receipt history
 
-## Monitoring and backup boundary
+Protocol-v3 sessions bind `sandboxQrisPolicy=transaction_total`. New Sandbox
+cash and QRIS use the actual Sandbox catalog total, independently of Production
+prices. The tenant's real merchant QRIS is used. Display
+`QRIS UJI NYATA — Rp{nominal} akan masuk ke rekening merchant` above it.
+Paying transfers real money; success/failure remains manually confirmed and
+requires merchant reconciliation.
 
-New Relic transactions, correlated logs, and noticed errors carry `auth.context`.
-Authenticated tenant requests additionally carry `tenant.id`, `data.mode`,
-`data.space_id`, and Sandbox generation. Public/account/platform requests do not
-pretend to have a Production data space. Scope business error/revenue views by
-tenant and mode; do not filter infrastructure availability/migration alerts by
-business scope. Platform operations have a separate durable control-plane audit.
+Legacy sessions bind `fixed_1000`; legacy-origin signed QRIS mutations still
+calculate Rp1.000 even when uploaded by a protocol-v3 client/session. Preserve
+stored payment amounts, historical QR codes, and reprints. Explicit corrections
+create a new revision under its origin policy and require payment confirmation
+again. `/auth/upgrade-session` preserves tenant, mode, generation, and enrollment
+while negotiating protocol 3 after the legacy outbox drains. Full-value Sandbox
+status has policy information and a nullable fixed amount.
 
-```sql
-SELECT count(*) FROM TransactionError
-WHERE `auth.context` = 'tenant' AND `data.mode` = 'production'
-FACET `tenant.id`
-```
+QRIS and receipt identity are versioned per tenant. Only Production-mode
+Superadmins update them. Importing old device QRIS requires explicit Telomoyo
+Superadmin confirmation; historical payloads retain their exact hashes. An
+unavailable historical payload must never silently display another QRIS.
+Transactions snapshot receipt business name/address/phone and profile revision.
 
-Never include tokens, passwords/hashes, invitation codes, signing keys, raw QRIS,
-or database connection strings in logs. Observe cleanup failure separately from
-Production service readiness. Reset/purge audit must outlive deleted Sandbox
-business evidence and identify the affected tenant/generation.
+One formatter supplies scrollable monospaced 32/48-column preview, simulator,
+Bluetooth, and integrated MPOS. Preview creates no print attempt; simulator
+results explicitly identify simulation. Printing requires successful payment on
+the current revision, a frozen document, and the switch barrier throughout the
+attempt. Sandbox retains compact permanent `TEST — MODE UJI` /
+`BUKAN STRUK RESMI` labels and `TEST-` IDs. Historical Rp1.000 receipts show
+distinct order/payment amounts; Production output remains unchanged. Sandbox
+reports and exports stay isolated and visibly identify test output.
 
-Infrastructure backups remain **operator-only and contain the shared database**,
-including all tenants and both modes. Do not deliver a raw snapshot/`pg_dump` to a
-tenant or treat a report export as a full recovery backup. Apply encryption,
-access control, and retention to snapshots and restore environments. Tenant
-deletion and per-tenant full-backup delivery are not part of this release.
+## Monitoring and backups
 
-## Release acceptance checklist
+New Relic transactions, correlated logs, and noticed errors retain context,
+tenant/mode/space/generation, and payment-policy attributes. Public/account
+requests do not pretend to have a business scope. Production business alerts
+must exclude Sandbox; infrastructure availability and migrations must not be
+filtered to business traffic. Monitor cleanup failures separately and retain
+reset/purge control-plane audit after retired evidence is removed. Never log
+credentials, signing keys, raw QRIS, codes, or connection strings.
 
-These are release gates, not a statement that hardware acceptance has completed.
+Infrastructure backups are **operator-only full shared-database recovery copies**
+containing all tenants and both modes. Encrypt/restrict backups and restore
+environments. Report exports are not database backups. Do not distribute raw
+snapshots to staff or sanitize the live database. Tenant-specific backup delivery
+and deletion are outside this release.
 
-- Migrate populated data and compare IDs, totals, revisions, legacy sessions,
-  encrypted files/keys, and exact signed outbox bytes before/after the upgrade.
-- With two tenants and a shared account with different roles, prove isolation of
-  packages, QRIS, profile, history, dashboards, export, audit, idempotency, cursors,
-  terminals, user projections, clone sources, payments, and print attempts.
-- Check cross-tenant identifiers return 404 and missing/unauthorized context fails
-  closed. Account/platform contexts cannot use business APIs; platform authority
-  alone cannot select a business. Legacy global-user mutations require upgrade.
-- Test invitation expiry/revocation/reissue and concurrent acceptance/registration,
-  atomic owner activation, per-tenant last-superadmin/self-demotion protection,
-  global password recovery, and inactive historical members.
-- Race suspension, membership changes, terminal revocation, and Sandbox reset
-  against mutations. Verify lock order account → tenant → membership → data space
-  → resource; restored access does not revive revoked sessions.
-- Test switch with pending work, offline/interrupted setup, app restart/logout,
-  background/network-recovery sync, and active physical printing. Verify exact
-  origin quarantine and another account/tenant cannot release or replay it.
-- Decode QRIS for two real merchant payloads in both modes, verify CRC, exact
-  Rp1.000 Sandbox amount, full Production amount, and historical hash binding.
-- Verify profile snapshot reprints, tenant export identity, Sandbox watermarks,
-  independent reset/30-day purge, durable cleanup audit, and scoped New Relic data.
-- Run backend unit/integration tests against disposable PostgreSQL schemas,
-  mobile tests, generated-contract checks, and an Android build. On target MPOS
-  hardware exercise shared-device tenant switching during integrated/Bluetooth
-  printing and recovery from disconnect/uncertain print results.
+## Local verification record — 2026-09-13
 
-## Local verification record — 11 September 2026
+The implemented two-role/shared-access and real-value Sandbox changes passed:
 
-Verified against the current working tree, without deploying or enabling
-provisioning:
+- Complete backend `go test ./... -count=1` with PostgreSQL enabled. Integration
+  tests create disposable schemas, including the populated pre-migration fixture,
+  legacy signed queue/policy compatibility, account/session lifecycle races,
+  global management, tenant isolation, and Sandbox lifecycle tests.
+- `go vet ./...`.
+- Complete backend `go test -race ./... -count=1`, with PostgreSQL enabled and
+  no skipped tests.
+- Mobile Jest: **43 suites, 290 tests**, plus TypeScript and Expo ESLint.
+- OpenAPI validation, generated TypeScript client drift/type/lint checks, and Go
+  regeneration with unchanged hashes for all seven generated files. The 22
+  non-blocking OpenAPI warnings concern intentionally retired endpoints without
+  success responses (16) and retained unused compatibility envelopes (6).
+- Fresh Expo Android bundle export and offline ARM64 `assembleDebug` with
+  Temurin JDK 21. The debug APK is not a signed release or a device acceptance test.
+- `git diff --check`.
 
-- Backend `go test ./... -count=1` with PostgreSQL enabled passed, including
-  disposable-schema tenant isolation, invitation/registration rollback,
-  concurrent owner protection, Sandbox lifecycle, migration, and operator tests.
-- Mobile Jest: **40 suites, 246 tests passed**. Coverage includes tenant/mode
-  encrypted-storage naming, legacy key/session preservation, context exchanges,
-  pending-outbox/print barriers, failed session/database setup, exact-origin
-  quarantine, and historical merchant/receipt binding.
-- Real in-memory SQLite tests ran the actual mobile migrations and repository
-  SQL, proving empty new-tenant catalogs and preservation of quarantined
-  transaction/revision/signature bytes during another actor's pull/recovery.
-  These tests use the built-in `node:sqlite` module; the verified runtime was
-  Node 24.19.0 (no mobile runtime dependency was added).
-- Mobile TypeScript and ESLint checks passed. OpenAPI validation, generated
-  TypeScript/Go client checks, sqlc consistency, and Compose validation passed.
-- ARM64 Android `assembleDebug` succeeded for
-  `com.fahmialfareza.sewamotorpos` version 0.2.0/code 2. Expo Android production
-  JavaScript export also succeeded. A debug APK still uses the development
-  client; this is not a signed production-release build.
+The final login regression checks cover password recovery between password
+verification and session creation: issuance rechecks the verified credential
+snapshot under the account lock before committing a session. Mobile regression
+checks also cover stale session persistence, immediate access-change quarantine,
+and policy-aware conflict replacements without modifying original signed evidence.
 
-Not yet performed: installed-device upgrade with real pending queues, physical
-MPOS/Bluetooth switching and printing, real merchant scan/payment reconciliation,
-production-restore rehearsal, live New Relic dashboard/alert validation, or the
-production rollout. Complete these release gates before enabling provisioning.
-Tests used synthetic merchant fixtures and did not send payments. Production
-schema/data, platform-admin assignment, and feature flags were not changed.
+The race-detector run also exposed shared mutable connection metadata in the
+[New Relic pgx tracer](https://github.com/newrelic/go-agent/blob/master/v3/integrations/nrpgx5/nrpgx5.go).
+The pool now creates a tracer for each connection through `BeforeConnect`.
+Query/batch instrumentation stays enabled, and query parameters remain excluded.
+
+These results do **not** replace a production-data restore rehearsal, an
+installed-device upgrade retaining encrypted data/queues, real shared-device
+Bluetooth/integrated MPOS printing at both widths, approved merchant payment
+reconciliation, or live New Relic acceptance. No production migration, payment,
+device installation, deployment, or release was performed by these checks.
+
+## Release acceptance gates
+
+These are required gates, not claims of completed physical/production testing.
+
+- Rehearse populated migration and privilege mapping, including disabled users,
+  unchanged IDs/revisions/payments, encrypted storage, and exact signed queues.
+- Verify two global roles across existing/new tenants; Admin ownership limits,
+  Superadmin powers, tenant isolation, scoped stores/keys/QRIS/reports/cursors,
+  idempotency, and independent Sandbox reset/purge.
+- Test staff creation/forced password changes, global role/status/reset revocation,
+  self/last-Superadmin guards, removed invitations, and rejected legacy account
+  administration without unintended global mutations.
+- Race access changes, suspension, enrollment revocation, and Sandbox reset with
+  writes. Administration advisory locking precedes account locks; resource order
+  remains account → tenant → membership → space → operation.
+- Exercise pending work, interrupted switching/upgrades, offline/restart/logout,
+  background sync, in-progress physical printing, quarantine, and exact-origin
+  recovery. Another staff login must not replay someone else's evidence.
+- Decode multi-total/multi-merchant Sandbox QRIS and unchanged Production QRIS;
+  verify CRC, legacy Rp1.000 queues/reprints, real-payment warnings, and history.
+  Automated tests use synthetic fixtures and must not send merchant payments.
+- Compare preview/simulator/physical output at both widths, copy labels, profile
+  snapshots, watermarks, failures, and switching during printing.
+- Run disposable-schema PostgreSQL tests, mobile tests, generated-contract checks,
+  and Android build using JDK 21. Finish installed-device upgrades, shared-device Bluetooth/
+  integrated MPOS testing, production-restore rehearsal, live New Relic validation,
+  merchant reconciliation testing, and explicit release approval before rollout.

@@ -26,6 +26,11 @@ const (
 	True ActionResultSuccess = true
 )
 
+// Defines values for AvailableContextsPlatformAdmin.
+const (
+	AvailableContextsPlatformAdminFalse AvailableContextsPlatformAdmin = false
+)
+
 // Defines values for ContextKind.
 const (
 	ContextKindAccount  ContextKind = "account"
@@ -78,7 +83,13 @@ const (
 
 // Defines values for LoginRequestProtocolVersion.
 const (
-	N2 LoginRequestProtocolVersion = 2
+	LoginRequestProtocolVersionN2 LoginRequestProtocolVersion = 2
+	LoginRequestProtocolVersionN3 LoginRequestProtocolVersion = 3
+)
+
+// Defines values for LoginResultIsPlatformAdmin.
+const (
+	LoginResultIsPlatformAdminFalse LoginResultIsPlatformAdmin = false
 )
 
 // Defines values for PaymentMethod.
@@ -144,6 +155,11 @@ const (
 	Simulator  PrinterKind = "simulator"
 )
 
+// Defines values for ProfileResultIsPlatformAdmin.
+const (
+	False ProfileResultIsPlatformAdmin = false
+)
+
 // Defines values for RecordPrintAttemptRequestStatus.
 const (
 	RecordPrintAttemptRequestStatusFailed  RecordPrintAttemptRequestStatus = "failed"
@@ -157,14 +173,15 @@ const (
 	RESETSANDBOX ResetSandboxRequestConfirmation = "RESET SANDBOX"
 )
 
+// Defines values for SandboxQrisPolicy.
+const (
+	Fixed1000        SandboxQrisPolicy = "fixed_1000"
+	TransactionTotal SandboxQrisPolicy = "transaction_total"
+)
+
 // Defines values for SandboxStatusDataMode.
 const (
 	SandboxStatusDataModeSandbox SandboxStatusDataMode = "sandbox"
-)
-
-// Defines values for SandboxStatusQrisAmount.
-const (
-	N1000 SandboxStatusQrisAmount = 1000
 )
 
 // Defines values for SelectablePaymentMethod.
@@ -184,6 +201,12 @@ const (
 	Day   StatisticsPeriod = "day"
 	Month StatisticsPeriod = "month"
 	Week  StatisticsPeriod = "week"
+)
+
+// Defines values for SwitchContextRequestKind.
+const (
+	SwitchContextRequestKindAccount SwitchContextRequestKind = "account"
+	SwitchContextRequestKindTenant  SwitchContextRequestKind = "tenant"
 )
 
 // Defines values for SyncAction.
@@ -207,13 +230,14 @@ const (
 
 // Defines values for SyncChangeAggregate.
 const (
-	SyncChangeAggregatePackage       SyncChangeAggregate = "package"
-	SyncChangeAggregatePrintAttempt  SyncChangeAggregate = "print_attempt"
-	SyncChangeAggregateTenantProfile SyncChangeAggregate = "tenant_profile"
-	SyncChangeAggregateTenantQris    SyncChangeAggregate = "tenant_qris"
-	SyncChangeAggregateTerminal      SyncChangeAggregate = "terminal"
-	SyncChangeAggregateTransaction   SyncChangeAggregate = "transaction"
-	SyncChangeAggregateUser          SyncChangeAggregate = "user"
+	SyncChangeAggregatePackage        SyncChangeAggregate = "package"
+	SyncChangeAggregatePrintAttempt   SyncChangeAggregate = "print_attempt"
+	SyncChangeAggregateTenantMetadata SyncChangeAggregate = "tenant_metadata"
+	SyncChangeAggregateTenantProfile  SyncChangeAggregate = "tenant_profile"
+	SyncChangeAggregateTenantQris     SyncChangeAggregate = "tenant_qris"
+	SyncChangeAggregateTerminal       SyncChangeAggregate = "terminal"
+	SyncChangeAggregateTransaction    SyncChangeAggregate = "transaction"
+	SyncChangeAggregateUser           SyncChangeAggregate = "user"
 )
 
 // Defines values for SyncMutationStatus.
@@ -239,6 +263,11 @@ const (
 // Defines values for TerminalPlatform.
 const (
 	Android TerminalPlatform = "android"
+)
+
+// Defines values for UpgradeSessionRequestProtocolVersion.
+const (
+	UpgradeSessionRequestProtocolVersionN3 UpgradeSessionRequestProtocolVersion = 3
 )
 
 // Defines values for UserRole.
@@ -268,6 +297,7 @@ type ActionResultSuccess bool
 
 // ApiError defines model for ApiError.
 type ApiError struct {
+	// Code ACCOUNT_ACCESS_CHANGED signals account deactivation, role change, or password recovery. Preserve and quarantine this scope's pending entries, then require fresh authentication; never replay another account's entries.
 	Code      string                 `json:"code"`
 	Details   map[string]interface{} `json:"details"`
 	Message   string                 `json:"message"`
@@ -276,9 +306,20 @@ type ApiError struct {
 
 // AvailableContexts defines model for AvailableContexts.
 type AvailableContexts struct {
-	PlatformAdmin bool            `json:"platformAdmin"`
-	Tenants       []TenantContext `json:"tenants"`
+	// CanManageOrganization True only for an active global Superadmin; management requires account context.
+	CanManageOrganization bool `json:"canManageOrganization"`
+
+	// PlatformAdmin Retained for legacy response compatibility. Use canManageOrganization instead.
+	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
+	PlatformAdmin AvailableContextsPlatformAdmin `json:"platformAdmin"`
+
+	// TenantProvisioningEnabled Whether new business-unit creation is enabled. Existing tenant management remains available independently.
+	TenantProvisioningEnabled bool            `json:"tenantProvisioningEnabled"`
+	Tenants                   []TenantContext `json:"tenants"`
 }
+
+// AvailableContextsPlatformAdmin Retained for legacy response compatibility. Use canManageOrganization instead.
+type AvailableContextsPlatformAdmin bool
 
 // AvailableContextsEnvelope defines model for AvailableContextsEnvelope.
 type AvailableContextsEnvelope struct {
@@ -292,7 +333,7 @@ type ChangePasswordRequest struct {
 	NewPassword     string `json:"newPassword"`
 }
 
-// ContextKind defines model for ContextKind.
+// ContextKind New sessions use account or tenant. The retired platform value is retained solely for historical session decoding.
 type ContextKind string
 
 // CorrectTransactionMutationPayload defines model for CorrectTransactionMutationPayload.
@@ -327,6 +368,7 @@ type CorrectTransactionRequest struct {
 
 // CreateInvitationRequest defines model for CreateInvitationRequest.
 type CreateInvitationRequest struct {
+	// Role Organization-wide account role, identical across all tenants. Admin operates and corrects/confirms their own transactions; Superadmin additionally administers staff, tenants, and all selected-tenant operations.
 	Role UserRole `json:"role"`
 }
 
@@ -394,7 +436,9 @@ type CreateTransactionRequest struct {
 
 // CreateUserRequest defines model for CreateUserRequest.
 type CreateUserRequest struct {
-	FullName          string   `json:"fullName"`
+	FullName string `json:"fullName"`
+
+	// Role Organization-wide account role, identical across all tenants. Admin operates and corrects/confirms their own transactions; Superadmin additionally administers staff, tenants, and all selected-tenant operations.
 	Role              UserRole `json:"role"`
 	TemporaryPassword string   `json:"temporaryPassword"`
 	Username          string   `json:"username"`
@@ -517,8 +561,10 @@ type Invitation struct {
 	Id           UUID       `json:"id"`
 	InitialOwner bool       `json:"initialOwner"`
 	RevokedAt    *time.Time `json:"revokedAt"`
-	Role         UserRole   `json:"role"`
-	TenantId     UUID       `json:"tenantId"`
+
+	// Role Organization-wide account role, identical across all tenants. Admin operates and corrects/confirms their own transactions; Superadmin additionally administers staff, tenants, and all selected-tenant operations.
+	Role     UserRole `json:"role"`
+	TenantId UUID     `json:"tenantId"`
 }
 
 // InvitationEnvelope defines model for InvitationEnvelope.
@@ -545,30 +591,47 @@ type LoginRequest struct {
 	InstallationId *openapi_types.UUID `json:"installationId"`
 	Password       string              `json:"password"`
 
-	// ProtocolVersion New clients send 2 to enter account context and select an authorized tenant. Omission supports only the migrated Telomoyo tenant.
+	// ProtocolVersion Compatible clients send 3 for organization-wide roles and transaction-total Sandbox QRIS. Version 2 retains fixed_1000 origin semantics. Omission supports only the migrated Telomoyo tenant.
 	ProtocolVersion *LoginRequestProtocolVersion `json:"protocolVersion,omitempty"`
 	Username        string                       `json:"username"`
 }
 
-// LoginRequestProtocolVersion New clients send 2 to enter account context and select an authorized tenant. Omission supports only the migrated Telomoyo tenant.
+// LoginRequestProtocolVersion Compatible clients send 3 for organization-wide roles and transaction-total Sandbox QRIS. Version 2 retains fixed_1000 origin semantics. Omission supports only the migrated Telomoyo tenant.
 type LoginRequestProtocolVersion int
 
 // LoginResult defines model for LoginResult.
 type LoginResult struct {
-	ContextKind     ContextKind         `json:"contextKind"`
-	DataMode        *DataMode           `json:"dataMode"`
-	DataSpaceId     *openapi_types.UUID `json:"dataSpaceId"`
-	IsPlatformAdmin bool                `json:"isPlatformAdmin"`
-	MembershipId    *openapi_types.UUID `json:"membershipId"`
+	// ContextKind New sessions use account or tenant. The retired platform value is retained solely for historical session decoding.
+	ContextKind ContextKind         `json:"contextKind"`
+	DataMode    *DataMode           `json:"dataMode"`
+	DataSpaceId *openapi_types.UUID `json:"dataSpaceId"`
 
-	// SandboxGeneration Zero outside Sandbox; account and platform contexts have null tenant, membership, mode, and data-space fields.
-	SandboxGeneration int64               `json:"sandboxGeneration"`
+	// IsPlatformAdmin Retained for legacy compatibility; Superadmin is the only organization-management role.
+	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
+	IsPlatformAdmin LoginResultIsPlatformAdmin `json:"isPlatformAdmin"`
+	MembershipId    *openapi_types.UUID        `json:"membershipId"`
+	ProtocolVersion int                        `json:"protocolVersion"`
+
+	// SandboxGeneration Zero outside Sandbox; account context has null tenant, membership, mode, and data-space fields.
+	SandboxGeneration int64 `json:"sandboxGeneration"`
+
+	// SandboxQrisPolicy Immutable origin-session rule. Legacy Sandbox QRIS charges Rp1.000; protocol 3 uses the Sandbox transaction total. Historical stored payment amounts are never recalculated.
+	SandboxQrisPolicy SandboxQrisPolicy   `json:"sandboxQrisPolicy"`
 	SessionId         UUID                `json:"sessionId"`
 	SessionToken      *string             `json:"sessionToken,omitempty"`
 	Tenant            *Tenant             `json:"tenant"`
 	TenantId          *openapi_types.UUID `json:"tenantId"`
 	Terminal          *Terminal           `json:"terminal"`
 	User              User                `json:"user"`
+}
+
+// LoginResultIsPlatformAdmin Retained for legacy compatibility; Superadmin is the only organization-management role.
+type LoginResultIsPlatformAdmin bool
+
+// ManagedUserListEnvelope defines model for ManagedUserListEnvelope.
+type ManagedUserListEnvelope struct {
+	Data []User `json:"data"`
+	Meta Meta   `json:"meta"`
 }
 
 // Meta defines model for Meta.
@@ -760,20 +823,31 @@ type ProfileEnvelope struct {
 
 // ProfileResult defines model for ProfileResult.
 type ProfileResult struct {
-	ContextKind     ContextKind         `json:"contextKind"`
-	DataMode        *DataMode           `json:"dataMode"`
-	DataSpaceId     *openapi_types.UUID `json:"dataSpaceId"`
-	IsPlatformAdmin bool                `json:"isPlatformAdmin"`
-	MembershipId    *openapi_types.UUID `json:"membershipId"`
+	// ContextKind New sessions use account or tenant. The retired platform value is retained solely for historical session decoding.
+	ContextKind ContextKind         `json:"contextKind"`
+	DataMode    *DataMode           `json:"dataMode"`
+	DataSpaceId *openapi_types.UUID `json:"dataSpaceId"`
 
-	// SandboxGeneration Zero outside Sandbox; account and platform contexts have null tenant, membership, mode, and data-space fields.
-	SandboxGeneration int64               `json:"sandboxGeneration"`
+	// IsPlatformAdmin Retained for legacy compatibility; Superadmin is the only organization-management role.
+	// Deprecated: this property has been marked as deprecated upstream, but no `x-deprecated-reason` was set
+	IsPlatformAdmin ProfileResultIsPlatformAdmin `json:"isPlatformAdmin"`
+	MembershipId    *openapi_types.UUID          `json:"membershipId"`
+	ProtocolVersion int                          `json:"protocolVersion"`
+
+	// SandboxGeneration Zero outside Sandbox; account context has null tenant, membership, mode, and data-space fields.
+	SandboxGeneration int64 `json:"sandboxGeneration"`
+
+	// SandboxQrisPolicy Immutable origin-session rule. Legacy Sandbox QRIS charges Rp1.000; protocol 3 uses the Sandbox transaction total. Historical stored payment amounts are never recalculated.
+	SandboxQrisPolicy SandboxQrisPolicy   `json:"sandboxQrisPolicy"`
 	SessionId         UUID                `json:"sessionId"`
 	Tenant            *Tenant             `json:"tenant"`
 	TenantId          *openapi_types.UUID `json:"tenantId"`
 	Terminal          *Terminal           `json:"terminal"`
 	User              User                `json:"user"`
 }
+
+// ProfileResultIsPlatformAdmin Retained for legacy compatibility; Superadmin is the only organization-management role.
+type ProfileResultIsPlatformAdmin bool
 
 // QrisPayloadHash Lowercase SHA-256 digest of the exact configured static merchant QRIS
 // payload. It binds a QRIS transaction revision to the exact payload used
@@ -873,6 +947,9 @@ type RevisionConflictEnvelope struct {
 // Rupiah Whole Indonesian rupiah; decimals are never accepted.
 type Rupiah = int64
 
+// SandboxQrisPolicy Immutable origin-session rule. Legacy Sandbox QRIS charges Rp1.000; protocol 3 uses the Sandbox transaction total. Historical stored payment amounts are never recalculated.
+type SandboxQrisPolicy string
+
 // SandboxResetEnvelope defines model for SandboxResetEnvelope.
 type SandboxResetEnvelope struct {
 	Data SandboxResetResult `json:"data"`
@@ -898,16 +975,16 @@ type SandboxStatus struct {
 	// Generation Null while Sandbox is disabled and has not been activated.
 	Generation *int64 `json:"generation"`
 
-	// QrisAmount Real merchant QRIS charge used by every Sandbox QRIS transaction.
-	QrisAmount    SandboxStatusQrisAmount `json:"qrisAmount"`
-	RetentionDays int                     `json:"retentionDays"`
+	// QrisAmount Legacy fixed_1000 sessions return 1000. Full-value transaction_total sessions return null; read the transaction's stored paymentAmount instead.
+	QrisAmount    *int64 `json:"qrisAmount"`
+	RetentionDays int    `json:"retentionDays"`
+
+	// SandboxQrisPolicy Immutable origin-session rule. Legacy Sandbox QRIS charges Rp1.000; protocol 3 uses the Sandbox transaction total. Historical stored payment amounts are never recalculated.
+	SandboxQrisPolicy SandboxQrisPolicy `json:"sandboxQrisPolicy"`
 }
 
 // SandboxStatusDataMode defines model for SandboxStatus.DataMode.
 type SandboxStatusDataMode string
-
-// SandboxStatusQrisAmount Real merchant QRIS charge used by every Sandbox QRIS transaction.
-type SandboxStatusQrisAmount int64
 
 // SandboxStatusEnvelope defines model for SandboxStatusEnvelope.
 type SandboxStatusEnvelope struct {
@@ -946,10 +1023,13 @@ type StatisticsPeriod string
 // SwitchContextRequest defines model for SwitchContextRequest.
 type SwitchContextRequest struct {
 	// InstallationId Existing physical-installation binding to look up within the selected tenant.
-	InstallationId *openapi_types.UUID `json:"installationId"`
-	Kind           ContextKind         `json:"kind"`
-	TenantId       *UUID               `json:"tenantId,omitempty"`
+	InstallationId *openapi_types.UUID      `json:"installationId"`
+	Kind           SwitchContextRequestKind `json:"kind"`
+	TenantId       *UUID                    `json:"tenantId,omitempty"`
 }
+
+// SwitchContextRequestKind defines model for SwitchContextRequest.Kind.
+type SwitchContextRequestKind string
 
 // SwitchModeRequest defines model for SwitchModeRequest.
 type SwitchModeRequest struct {
@@ -1128,12 +1208,15 @@ type SyncPushResult struct {
 
 // Tenant defines model for Tenant.
 type Tenant struct {
-	Id              UUID         `json:"id"`
-	Name            string       `json:"name"`
-	ProfileRevision int          `json:"profileRevision"`
-	QrisRevision    *int         `json:"qrisRevision"`
-	Slug            string       `json:"slug"`
-	Status          TenantStatus `json:"status"`
+	Id              UUID   `json:"id"`
+	Name            string `json:"name"`
+	ProfileRevision int    `json:"profileRevision"`
+	QrisRevision    *int   `json:"qrisRevision"`
+
+	// Revision Management metadata revision, independent of receipt profile and QRIS revisions.
+	Revision int          `json:"revision"`
+	Slug     string       `json:"slug"`
+	Status   TenantStatus `json:"status"`
 }
 
 // TenantStatus defines model for Tenant.Status.
@@ -1141,9 +1224,11 @@ type TenantStatus string
 
 // TenantContext defines model for TenantContext.
 type TenantContext struct {
-	MembershipId UUID     `json:"membershipId"`
-	Role         UserRole `json:"role"`
-	Tenant       Tenant   `json:"tenant"`
+	MembershipId UUID `json:"membershipId"`
+
+	// Role Organization-wide account role, identical across all tenants. Admin operates and corrects/confirms their own transactions; Superadmin additionally administers staff, tenants, and all selected-tenant operations.
+	Role   UserRole `json:"role"`
+	Tenant Tenant   `json:"tenant"`
 }
 
 // TenantContextEnvelope defines model for TenantContextEnvelope.
@@ -1166,12 +1251,14 @@ type TenantListEnvelope struct {
 
 // TenantMember defines model for TenantMember.
 type TenantMember struct {
-	Active       bool     `json:"active"`
-	FullName     string   `json:"fullName"`
-	Id           UUID     `json:"id"`
-	MembershipId UUID     `json:"membershipId"`
-	Role         UserRole `json:"role"`
-	Username     string   `json:"username"`
+	Active       bool   `json:"active"`
+	FullName     string `json:"fullName"`
+	Id           UUID   `json:"id"`
+	MembershipId UUID   `json:"membershipId"`
+
+	// Role Organization-wide account role, identical across all tenants. Admin operates and corrects/confirms their own transactions; Superadmin additionally administers staff, tenants, and all selected-tenant operations.
+	Role     UserRole `json:"role"`
+	Username string   `json:"username"`
 }
 
 // TenantMemberEnvelope defines model for TenantMemberEnvelope.
@@ -1456,6 +1543,20 @@ type ULID = string
 // UUID defines model for UUID.
 type UUID = openapi_types.UUID
 
+// UpdateManagedTenantRequest defines model for UpdateManagedTenantRequest.
+type UpdateManagedTenantRequest struct {
+	ExpectedRevision int    `json:"expectedRevision"`
+	Name             string `json:"name"`
+}
+
+// UpdateManagedUserRequest defines model for UpdateManagedUserRequest.
+type UpdateManagedUserRequest struct {
+	Active *bool `json:"active,omitempty"`
+
+	// Role Organization-wide account role, identical across all tenants. Admin operates and corrects/confirms their own transactions; Superadmin additionally administers staff, tenants, and all selected-tenant operations.
+	Role *UserRole `json:"role,omitempty"`
+}
+
 // UpdateOwnProfileRequest defines model for UpdateOwnProfileRequest.
 type UpdateOwnProfileRequest struct {
 	FullName string `json:"fullName"`
@@ -1474,8 +1575,10 @@ type UpdatePackageRequest struct {
 
 // UpdateTenantMemberRequest defines model for UpdateTenantMemberRequest.
 type UpdateTenantMemberRequest struct {
-	Active *bool     `json:"active,omitempty"`
-	Role   *UserRole `json:"role,omitempty"`
+	Active *bool `json:"active,omitempty"`
+
+	// Role Organization-wide account role, identical across all tenants. Admin operates and corrects/confirms their own transactions; Superadmin additionally administers staff, tenants, and all selected-tenant operations.
+	Role *UserRole `json:"role,omitempty"`
 }
 
 // UpdateTenantProfileRequest defines model for UpdateTenantProfileRequest.
@@ -1495,11 +1598,21 @@ type UpdateTenantQRISRequest struct {
 
 // UpdateUserRequest defines model for UpdateUserRequest.
 type UpdateUserRequest struct {
-	Active   *bool     `json:"active,omitempty"`
-	FullName *string   `json:"fullName,omitempty"`
+	Active   *bool   `json:"active,omitempty"`
+	FullName *string `json:"fullName,omitempty"`
+
+	// Role Organization-wide account role, identical across all tenants. Admin operates and corrects/confirms their own transactions; Superadmin additionally administers staff, tenants, and all selected-tenant operations.
 	Role     *UserRole `json:"role,omitempty"`
 	Username *string   `json:"username,omitempty"`
 }
+
+// UpgradeSessionRequest defines model for UpgradeSessionRequest.
+type UpgradeSessionRequest struct {
+	ProtocolVersion UpgradeSessionRequestProtocolVersion `json:"protocolVersion"`
+}
+
+// UpgradeSessionRequestProtocolVersion defines model for UpgradeSessionRequest.ProtocolVersion.
+type UpgradeSessionRequestProtocolVersion int
 
 // User defines model for User.
 type User struct {
@@ -1510,9 +1623,11 @@ type User struct {
 	Id                 UUID                `json:"id"`
 	MembershipId       *openapi_types.UUID `json:"membershipId"`
 	MustChangePassword bool                `json:"mustChangePassword"`
-	Role               UserRole            `json:"role"`
-	UpdatedAt          time.Time           `json:"updatedAt"`
-	Username           string              `json:"username"`
+
+	// Role Organization-wide account role, identical across all tenants. Admin operates and corrects/confirms their own transactions; Superadmin additionally administers staff, tenants, and all selected-tenant operations.
+	Role      UserRole  `json:"role"`
+	UpdatedAt time.Time `json:"updatedAt"`
+	Username  string    `json:"username"`
 }
 
 // UserEnvelope defines model for UserEnvelope.
@@ -1527,13 +1642,15 @@ type UserListEnvelope struct {
 	Meta PageMeta `json:"meta"`
 }
 
-// UserRole defines model for UserRole.
+// UserRole Organization-wide account role, identical across all tenants. Admin operates and corrects/confirms their own transactions; Superadmin additionally administers staff, tenants, and all selected-tenant operations.
 type UserRole string
 
 // UserSummary defines model for UserSummary.
 type UserSummary struct {
-	FullName string   `json:"fullName"`
-	Id       UUID     `json:"id"`
+	FullName string `json:"fullName"`
+	Id       UUID   `json:"id"`
+
+	// Role Organization-wide account role, identical across all tenants. Admin operates and corrects/confirms their own transactions; Superadmin additionally administers staff, tenants, and all selected-tenant operations.
 	Role     UserRole `json:"role"`
 	Username string   `json:"username"`
 }
@@ -1573,6 +1690,9 @@ type ErrorResponse = ErrorEnvelope
 
 // DashboardStatisticsResponse defines model for DashboardStatisticsResponse.
 type DashboardStatisticsResponse = DashboardStatisticsEnvelope
+
+// Gone defines model for Gone.
+type Gone = ErrorEnvelope
 
 // Health defines model for Health.
 type Health = HealthEnvelope
@@ -1628,11 +1748,19 @@ type TransactionResponse = TransactionEnvelope
 // TransactionRevisionList defines model for TransactionRevisionList.
 type TransactionRevisionList = TransactionRevisionListEnvelope
 
+// UpgradeRequired defines model for UpgradeRequired.
+type UpgradeRequired = ErrorEnvelope
+
 // UserList defines model for UserList.
 type UserList = UserListEnvelope
 
 // UserResponse defines model for UserResponse.
 type UserResponse = UserEnvelope
+
+// ListManagementAuditParams defines parameters for ListManagementAudit.
+type ListManagementAuditParams struct {
+	Limit *AuditLimit `form:"limit,omitempty" json:"limit,omitempty"`
+}
 
 // ListPackagesParams defines parameters for ListPackages.
 type ListPackagesParams struct {
@@ -1704,8 +1832,29 @@ type SwitchAuthContextJSONRequestBody = SwitchContextRequest
 // SwitchDataModeJSONRequestBody defines body for SwitchDataMode for application/json ContentType.
 type SwitchDataModeJSONRequestBody = SwitchModeRequest
 
+// UpgradeAuthSessionJSONRequestBody defines body for UpgradeAuthSession for application/json ContentType.
+type UpgradeAuthSessionJSONRequestBody = UpgradeSessionRequest
+
 // ExportTransactionsJSONRequestBody defines body for ExportTransactions for application/json ContentType.
 type ExportTransactionsJSONRequestBody = ExportTransactionsRequest
+
+// CreateManagedTenantJSONRequestBody defines body for CreateManagedTenant for application/json ContentType.
+type CreateManagedTenantJSONRequestBody = CreateTenantRequest
+
+// UpdateManagedTenantJSONRequestBody defines body for UpdateManagedTenant for application/json ContentType.
+type UpdateManagedTenantJSONRequestBody = UpdateManagedTenantRequest
+
+// SetManagedTenantStatusJSONRequestBody defines body for SetManagedTenantStatus for application/json ContentType.
+type SetManagedTenantStatusJSONRequestBody = SetTenantStatusRequest
+
+// CreateManagedUserJSONRequestBody defines body for CreateManagedUser for application/json ContentType.
+type CreateManagedUserJSONRequestBody = CreateUserRequest
+
+// UpdateManagedUserJSONRequestBody defines body for UpdateManagedUser for application/json ContentType.
+type UpdateManagedUserJSONRequestBody = UpdateManagedUserRequest
+
+// ResetManagedUserPasswordJSONRequestBody defines body for ResetManagedUserPassword for application/json ContentType.
+type ResetManagedUserPasswordJSONRequestBody = ResetPasswordRequest
 
 // CreatePackageJSONRequestBody defines body for CreatePackage for application/json ContentType.
 type CreatePackageJSONRequestBody = CreatePackageRequest
@@ -1945,6 +2094,32 @@ func (t *SyncChange_Payload) FromTenantQRISConfig(v TenantQRISConfig) error {
 
 // MergeTenantQRISConfig performs a merge with any union data inside the SyncChange_Payload, using the provided TenantQRISConfig
 func (t *SyncChange_Payload) MergeTenantQRISConfig(v TenantQRISConfig) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+
+	merged, err := runtime.JSONMerge(t.union, b)
+	t.union = merged
+	return err
+}
+
+// AsTenant returns the union data inside the SyncChange_Payload as a Tenant
+func (t SyncChange_Payload) AsTenant() (Tenant, error) {
+	var body Tenant
+	err := json.Unmarshal(t.union, &body)
+	return body, err
+}
+
+// FromTenant overwrites any union data inside the SyncChange_Payload as the provided Tenant
+func (t *SyncChange_Payload) FromTenant(v Tenant) error {
+	b, err := json.Marshal(v)
+	t.union = b
+	return err
+}
+
+// MergeTenant performs a merge with any union data inside the SyncChange_Payload, using the provided Tenant
+func (t *SyncChange_Payload) MergeTenant(v Tenant) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -2319,10 +2494,10 @@ func (t *SyncMutationSignedBody_Payload) UnmarshalJSON(b []byte) error {
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
-	// List the account's available tenant and platform contexts
+	// List active business units and organization-management capabilities
 	// (GET /auth/contexts)
 	GetAuthContexts(c *gin.Context)
-	// Accept an invitation using the authenticated account
+	// Retired invitation endpoint; all active accounts can enter every active tenant
 	// (POST /auth/invitations/accept)
 	AcceptInvitation(c *gin.Context)
 	// Start an online session
@@ -2331,15 +2506,18 @@ type ServerInterface interface {
 	// Revoke the current session
 	// (POST /auth/logout)
 	Logout(c *gin.Context)
-	// Register an account and atomically accept a valid invitation
+	// Retired invitation endpoint; all active accounts can enter every active tenant
 	// (POST /auth/register-invitation)
 	RegisterInvitation(c *gin.Context)
-	// Exchange the session into an authorized account, tenant, or platform context
+	// Exchange the session into account or selected tenant context
 	// (POST /auth/switch-context)
 	SwitchAuthContext(c *gin.Context)
 	// Rotate the current session into production or Sandbox Mode
 	// (POST /auth/switch-mode)
 	SwitchDataMode(c *gin.Context)
+	// Upgrade the session protocol while preserving its selected context
+	// (POST /auth/upgrade-session)
+	UpgradeAuthSession(c *gin.Context)
 	// Download a filtered XLSX or PDF
 	// (POST /exports/transactions)
 	ExportTransactions(c *gin.Context)
@@ -2349,6 +2527,36 @@ type ServerInterface interface {
 	// Check PostgreSQL readiness
 	// (GET /health/ready)
 	GetReadiness(c *gin.Context)
+	// List durable organization-wide administrative audit history
+	// (GET /management/audit)
+	ListManagementAudit(c *gin.Context, params ListManagementAuditParams)
+	// List all business units including suspended and pending tenants
+	// (GET /management/tenants)
+	ListManagedTenants(c *gin.Context)
+	// Create an active business unit with an empty catalog
+	// (POST /management/tenants)
+	CreateManagedTenant(c *gin.Context)
+	// Change a tenant's management name without changing receipt identity
+	// (PATCH /management/tenants/{tenantId})
+	UpdateManagedTenant(c *gin.Context, tenantId TenantId)
+	// Activate, suspend, or reactivate a business unit
+	// (POST /management/tenants/{tenantId}/status)
+	SetManagedTenantStatus(c *gin.Context, tenantId TenantId)
+	// List organization-wide staff accounts
+	// (GET /management/users)
+	ListManagedUsers(c *gin.Context)
+	// Create a staff account using a temporary password
+	// (POST /management/users)
+	CreateManagedUser(c *gin.Context)
+	// Get a global staff account
+	// (GET /management/users/{userId})
+	GetManagedUser(c *gin.Context, userId UserId)
+	// Change an account's global role or active status
+	// (PATCH /management/users/{userId})
+	UpdateManagedUser(c *gin.Context, userId UserId)
+	// Set a temporary password and revoke all of the account's sessions
+	// (POST /management/users/{userId}/reset-password)
+	ResetManagedUserPassword(c *gin.Context, userId UserId)
 	// List packages
 	// (GET /packages)
 	ListPackages(c *gin.Context, params ListPackagesParams)
@@ -2364,19 +2572,19 @@ type ServerInterface interface {
 	// Create a new package revision
 	// (PATCH /packages/{packageId})
 	UpdatePackage(c *gin.Context, packageId PackageId)
-	// List recent durable control-plane audit events
+	// Retired administration endpoint; upgrade to organization management
 	// (GET /platform/audit)
 	ListPlatformAudit(c *gin.Context, params ListPlatformAuditParams)
-	// List tenants in platform context
+	// Retired administration endpoint; upgrade to organization management
 	// (GET /platform/tenants)
 	ListPlatformTenants(c *gin.Context)
-	// Create a pending tenant and a seven-day initial-owner invitation
+	// Retired administration endpoint; upgrade to organization management
 	// (POST /platform/tenants)
 	CreateTenant(c *gin.Context)
-	// Reissue the initial-owner invitation for a pending tenant
+	// Retired invitation endpoint; all active accounts can enter every active tenant
 	// (POST /platform/tenants/{tenantId}/invitation)
 	ReissueOwnerInvitation(c *gin.Context, tenantId TenantId)
-	// Suspend or reactivate a tenant without reviving revoked sessions
+	// Retired administration endpoint; upgrade to organization management
 	// (POST /platform/tenants/{tenantId}/status)
 	SetTenantStatus(c *gin.Context, tenantId TenantId)
 	// Get the current user and session
@@ -2406,19 +2614,19 @@ type ServerInterface interface {
 	// Revalidate quarantined signed origins in the current tenant context
 	// (POST /sync/revalidate)
 	RevalidateSyncOrigins(c *gin.Context)
-	// List tenant invitations without exposing their codes
+	// Retired invitation endpoint; all active accounts can enter every active tenant
 	// (GET /tenant/invitations)
 	ListTenantInvitations(c *gin.Context)
-	// Create a single-use seven-day membership invitation
+	// Retired invitation endpoint; all active accounts can enter every active tenant
 	// (POST /tenant/invitations)
 	CreateTenantInvitation(c *gin.Context)
-	// Revoke an unused tenant invitation
+	// Retired invitation endpoint; all active accounts can enter every active tenant
 	// (DELETE /tenant/invitations/{invitationId})
 	RevokeTenantInvitation(c *gin.Context, invitationId InvitationId)
-	// List memberships in the active tenant
+	// Retired administration endpoint; upgrade to organization management
 	// (GET /tenant/members)
 	ListTenantMembers(c *gin.Context)
-	// Update the role or active status of one tenant membership
+	// Retired administration endpoint; upgrade to organization management
 	// (PATCH /tenant/members/{userId})
 	UpdateTenantMember(c *gin.Context, userId UserId)
 	// Get the current business receipt and report identity
@@ -2472,19 +2680,19 @@ type ServerInterface interface {
 	// List users
 	// (GET /users)
 	ListUsers(c *gin.Context, params ListUsersParams)
-	// Create a user with a temporary password
+	// Retired administration endpoint; upgrade to organization management
 	// (POST /users)
 	CreateUser(c *gin.Context)
-	// Soft-delete a user
+	// Retired administration endpoint; upgrade to organization management
 	// (DELETE /users/{userId})
 	DeleteUser(c *gin.Context, userId UserId)
 	// Get a user
 	// (GET /users/{userId})
 	GetUser(c *gin.Context, userId UserId)
-	// Update role, name, username, or active state
+	// Retired administration endpoint; upgrade to organization management
 	// (PATCH /users/{userId})
 	UpdateUser(c *gin.Context, userId UserId)
-	// Set a temporary password and revoke existing sessions
+	// Retired administration endpoint; upgrade to organization management
 	// (POST /users/{userId}/reset-password)
 	ResetUserPassword(c *gin.Context, userId UserId)
 }
@@ -2599,6 +2807,21 @@ func (siw *ServerInterfaceWrapper) SwitchDataMode(c *gin.Context) {
 	siw.Handler.SwitchDataMode(c)
 }
 
+// UpgradeAuthSession operation middleware
+func (siw *ServerInterfaceWrapper) UpgradeAuthSession(c *gin.Context) {
+
+	c.Set(BearerAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpgradeAuthSession(c)
+}
+
 // ExportTransactions operation middleware
 func (siw *ServerInterfaceWrapper) ExportTransactions(c *gin.Context) {
 
@@ -2638,6 +2861,224 @@ func (siw *ServerInterfaceWrapper) GetReadiness(c *gin.Context) {
 	}
 
 	siw.Handler.GetReadiness(c)
+}
+
+// ListManagementAudit operation middleware
+func (siw *ServerInterfaceWrapper) ListManagementAudit(c *gin.Context) {
+
+	var err error
+
+	c.Set(BearerAuthScopes, []string{})
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListManagementAuditParams
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameter("form", true, false, "limit", c.Request.URL.Query(), &params.Limit)
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter limit: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListManagementAudit(c, params)
+}
+
+// ListManagedTenants operation middleware
+func (siw *ServerInterfaceWrapper) ListManagedTenants(c *gin.Context) {
+
+	c.Set(BearerAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListManagedTenants(c)
+}
+
+// CreateManagedTenant operation middleware
+func (siw *ServerInterfaceWrapper) CreateManagedTenant(c *gin.Context) {
+
+	c.Set(BearerAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateManagedTenant(c)
+}
+
+// UpdateManagedTenant operation middleware
+func (siw *ServerInterfaceWrapper) UpdateManagedTenant(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "tenantId" -------------
+	var tenantId TenantId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tenantId", c.Param("tenantId"), &tenantId, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter tenantId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(BearerAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateManagedTenant(c, tenantId)
+}
+
+// SetManagedTenantStatus operation middleware
+func (siw *ServerInterfaceWrapper) SetManagedTenantStatus(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "tenantId" -------------
+	var tenantId TenantId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "tenantId", c.Param("tenantId"), &tenantId, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter tenantId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(BearerAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.SetManagedTenantStatus(c, tenantId)
+}
+
+// ListManagedUsers operation middleware
+func (siw *ServerInterfaceWrapper) ListManagedUsers(c *gin.Context) {
+
+	c.Set(BearerAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ListManagedUsers(c)
+}
+
+// CreateManagedUser operation middleware
+func (siw *ServerInterfaceWrapper) CreateManagedUser(c *gin.Context) {
+
+	c.Set(BearerAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.CreateManagedUser(c)
+}
+
+// GetManagedUser operation middleware
+func (siw *ServerInterfaceWrapper) GetManagedUser(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "userId" -------------
+	var userId UserId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(BearerAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.GetManagedUser(c, userId)
+}
+
+// UpdateManagedUser operation middleware
+func (siw *ServerInterfaceWrapper) UpdateManagedUser(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "userId" -------------
+	var userId UserId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(BearerAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.UpdateManagedUser(c, userId)
+}
+
+// ResetManagedUserPassword operation middleware
+func (siw *ServerInterfaceWrapper) ResetManagedUserPassword(c *gin.Context) {
+
+	var err error
+
+	// ------------- Path parameter "userId" -------------
+	var userId UserId
+
+	err = runtime.BindStyledParameterWithOptions("simple", "userId", c.Param("userId"), &userId, runtime.BindStyledParameterOptions{Explode: false, Required: true})
+	if err != nil {
+		siw.ErrorHandler(c, fmt.Errorf("Invalid format for parameter userId: %w", err), http.StatusBadRequest)
+		return
+	}
+
+	c.Set(BearerAuthScopes, []string{})
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		middleware(c)
+		if c.IsAborted() {
+			return
+		}
+	}
+
+	siw.Handler.ResetManagedUserPassword(c, userId)
 }
 
 // ListPackages operation middleware
@@ -3818,9 +4259,20 @@ func RegisterHandlersWithOptions(router gin.IRouter, si ServerInterface, options
 	router.POST(options.BaseURL+"/auth/register-invitation", wrapper.RegisterInvitation)
 	router.POST(options.BaseURL+"/auth/switch-context", wrapper.SwitchAuthContext)
 	router.POST(options.BaseURL+"/auth/switch-mode", wrapper.SwitchDataMode)
+	router.POST(options.BaseURL+"/auth/upgrade-session", wrapper.UpgradeAuthSession)
 	router.POST(options.BaseURL+"/exports/transactions", wrapper.ExportTransactions)
 	router.GET(options.BaseURL+"/health/live", wrapper.GetLiveness)
 	router.GET(options.BaseURL+"/health/ready", wrapper.GetReadiness)
+	router.GET(options.BaseURL+"/management/audit", wrapper.ListManagementAudit)
+	router.GET(options.BaseURL+"/management/tenants", wrapper.ListManagedTenants)
+	router.POST(options.BaseURL+"/management/tenants", wrapper.CreateManagedTenant)
+	router.PATCH(options.BaseURL+"/management/tenants/:tenantId", wrapper.UpdateManagedTenant)
+	router.POST(options.BaseURL+"/management/tenants/:tenantId/status", wrapper.SetManagedTenantStatus)
+	router.GET(options.BaseURL+"/management/users", wrapper.ListManagedUsers)
+	router.POST(options.BaseURL+"/management/users", wrapper.CreateManagedUser)
+	router.GET(options.BaseURL+"/management/users/:userId", wrapper.GetManagedUser)
+	router.PATCH(options.BaseURL+"/management/users/:userId", wrapper.UpdateManagedUser)
+	router.POST(options.BaseURL+"/management/users/:userId/reset-password", wrapper.ResetManagedUserPassword)
 	router.GET(options.BaseURL+"/packages", wrapper.ListPackages)
 	router.POST(options.BaseURL+"/packages", wrapper.CreatePackage)
 	router.DELETE(options.BaseURL+"/packages/:packageId", wrapper.DeletePackage)
@@ -3931,6 +4383,8 @@ type ForbiddenJSONResponse struct {
 
 	Headers ForbiddenResponseHeaders
 }
+
+type GoneJSONResponse ErrorEnvelope
 
 type HealthResponseHeaders struct {
 	XRequestId openapi_types.UUID
@@ -4140,6 +4594,8 @@ type UnprocessableEntityJSONResponse struct {
 	Headers UnprocessableEntityResponseHeaders
 }
 
+type UpgradeRequiredJSONResponse ErrorEnvelope
+
 type UserListResponseHeaders struct {
 	XRequestId openapi_types.UUID
 }
@@ -4244,75 +4700,13 @@ type AcceptInvitationResponseObject interface {
 	VisitAcceptInvitationResponse(w http.ResponseWriter) error
 }
 
-type AcceptInvitation200JSONResponse TenantContextEnvelope
+type AcceptInvitation410JSONResponse struct{ GoneJSONResponse }
 
-func (response AcceptInvitation200JSONResponse) VisitAcceptInvitationResponse(w http.ResponseWriter) error {
+func (response AcceptInvitation410JSONResponse) VisitAcceptInvitationResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
+	w.WriteHeader(410)
 
 	return json.NewEncoder(w).Encode(response)
-}
-
-type AcceptInvitation400JSONResponse struct{ BadRequestJSONResponse }
-
-func (response AcceptInvitation400JSONResponse) VisitAcceptInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type AcceptInvitation401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response AcceptInvitation401JSONResponse) VisitAcceptInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type AcceptInvitation403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response AcceptInvitation403JSONResponse) VisitAcceptInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type AcceptInvitation404JSONResponse struct{ NotFoundJSONResponse }
-
-func (response AcceptInvitation404JSONResponse) VisitAcceptInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(404)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type AcceptInvitation409JSONResponse struct{ ConflictJSONResponse }
-
-func (response AcceptInvitation409JSONResponse) VisitAcceptInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(409)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type AcceptInvitation422JSONResponse struct {
-	UnprocessableEntityJSONResponse
-}
-
-func (response AcceptInvitation422JSONResponse) VisitAcceptInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(422)
-
-	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type LoginRequestObject struct {
@@ -4409,75 +4803,13 @@ type RegisterInvitationResponseObject interface {
 	VisitRegisterInvitationResponse(w http.ResponseWriter) error
 }
 
-type RegisterInvitation201JSONResponse LoginEnvelope
+type RegisterInvitation410JSONResponse struct{ GoneJSONResponse }
 
-func (response RegisterInvitation201JSONResponse) VisitRegisterInvitationResponse(w http.ResponseWriter) error {
+func (response RegisterInvitation410JSONResponse) VisitRegisterInvitationResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(201)
+	w.WriteHeader(410)
 
 	return json.NewEncoder(w).Encode(response)
-}
-
-type RegisterInvitation400JSONResponse struct{ BadRequestJSONResponse }
-
-func (response RegisterInvitation400JSONResponse) VisitRegisterInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type RegisterInvitation401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response RegisterInvitation401JSONResponse) VisitRegisterInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type RegisterInvitation403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response RegisterInvitation403JSONResponse) VisitRegisterInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type RegisterInvitation404JSONResponse struct{ NotFoundJSONResponse }
-
-func (response RegisterInvitation404JSONResponse) VisitRegisterInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(404)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type RegisterInvitation409JSONResponse struct{ ConflictJSONResponse }
-
-func (response RegisterInvitation409JSONResponse) VisitRegisterInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(409)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type RegisterInvitation422JSONResponse struct {
-	UnprocessableEntityJSONResponse
-}
-
-func (response RegisterInvitation422JSONResponse) VisitRegisterInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(422)
-
-	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type SwitchAuthContextRequestObject struct {
@@ -4615,6 +4947,72 @@ func (response SwitchDataMode409JSONResponse) VisitSwitchDataModeResponse(w http
 	w.WriteHeader(409)
 
 	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpgradeAuthSessionRequestObject struct {
+	Body *UpgradeAuthSessionJSONRequestBody
+}
+
+type UpgradeAuthSessionResponseObject interface {
+	VisitUpgradeAuthSessionResponse(w http.ResponseWriter) error
+}
+
+type UpgradeAuthSession200JSONResponse LoginEnvelope
+
+func (response UpgradeAuthSession200JSONResponse) VisitUpgradeAuthSessionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type UpgradeAuthSession400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response UpgradeAuthSession400JSONResponse) VisitUpgradeAuthSessionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpgradeAuthSession401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response UpgradeAuthSession401JSONResponse) VisitUpgradeAuthSessionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpgradeAuthSession403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response UpgradeAuthSession403JSONResponse) VisitUpgradeAuthSessionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpgradeAuthSession409JSONResponse struct{ ConflictJSONResponse }
+
+func (response UpgradeAuthSession409JSONResponse) VisitUpgradeAuthSessionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpgradeAuthSession426JSONResponse struct{ UpgradeRequiredJSONResponse }
+
+func (response UpgradeAuthSession426JSONResponse) VisitUpgradeAuthSessionResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(426)
+
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ExportTransactionsRequestObject struct {
@@ -4786,6 +5184,614 @@ func (response GetReadiness503JSONResponse) VisitGetReadinessResponse(w http.Res
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
 	w.WriteHeader(503)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ListManagementAuditRequestObject struct {
+	Params ListManagementAuditParams
+}
+
+type ListManagementAuditResponseObject interface {
+	VisitListManagementAuditResponse(w http.ResponseWriter) error
+}
+
+type ListManagementAudit200JSONResponse PlatformAuditListEnvelope
+
+func (response ListManagementAudit200JSONResponse) VisitListManagementAuditResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListManagementAudit401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListManagementAudit401JSONResponse) VisitListManagementAuditResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ListManagementAudit403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response ListManagementAudit403JSONResponse) VisitListManagementAuditResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ListManagedTenantsRequestObject struct {
+}
+
+type ListManagedTenantsResponseObject interface {
+	VisitListManagedTenantsResponse(w http.ResponseWriter) error
+}
+
+type ListManagedTenants200JSONResponse TenantListEnvelope
+
+func (response ListManagedTenants200JSONResponse) VisitListManagedTenantsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListManagedTenants401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListManagedTenants401JSONResponse) VisitListManagedTenantsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ListManagedTenants403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response ListManagedTenants403JSONResponse) VisitListManagedTenantsResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CreateManagedTenantRequestObject struct {
+	Body *CreateManagedTenantJSONRequestBody
+}
+
+type CreateManagedTenantResponseObject interface {
+	VisitCreateManagedTenantResponse(w http.ResponseWriter) error
+}
+
+type CreateManagedTenant201JSONResponse TenantEnvelope
+
+func (response CreateManagedTenant201JSONResponse) VisitCreateManagedTenantResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type CreateManagedTenant400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response CreateManagedTenant400JSONResponse) VisitCreateManagedTenantResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CreateManagedTenant401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response CreateManagedTenant401JSONResponse) VisitCreateManagedTenantResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CreateManagedTenant403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response CreateManagedTenant403JSONResponse) VisitCreateManagedTenantResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CreateManagedTenant409JSONResponse struct{ ConflictJSONResponse }
+
+func (response CreateManagedTenant409JSONResponse) VisitCreateManagedTenantResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CreateManagedTenant422JSONResponse struct {
+	UnprocessableEntityJSONResponse
+}
+
+func (response CreateManagedTenant422JSONResponse) VisitCreateManagedTenantResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(422)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateManagedTenantRequestObject struct {
+	TenantId TenantId `json:"tenantId"`
+	Body     *UpdateManagedTenantJSONRequestBody
+}
+
+type UpdateManagedTenantResponseObject interface {
+	VisitUpdateManagedTenantResponse(w http.ResponseWriter) error
+}
+
+type UpdateManagedTenant200JSONResponse TenantEnvelope
+
+func (response UpdateManagedTenant200JSONResponse) VisitUpdateManagedTenantResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type UpdateManagedTenant400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response UpdateManagedTenant400JSONResponse) VisitUpdateManagedTenantResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateManagedTenant401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response UpdateManagedTenant401JSONResponse) VisitUpdateManagedTenantResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateManagedTenant403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response UpdateManagedTenant403JSONResponse) VisitUpdateManagedTenantResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateManagedTenant404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response UpdateManagedTenant404JSONResponse) VisitUpdateManagedTenantResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateManagedTenant409JSONResponse struct{ ConflictJSONResponse }
+
+func (response UpdateManagedTenant409JSONResponse) VisitUpdateManagedTenantResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateManagedTenant422JSONResponse struct {
+	UnprocessableEntityJSONResponse
+}
+
+func (response UpdateManagedTenant422JSONResponse) VisitUpdateManagedTenantResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(422)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SetManagedTenantStatusRequestObject struct {
+	TenantId TenantId `json:"tenantId"`
+	Body     *SetManagedTenantStatusJSONRequestBody
+}
+
+type SetManagedTenantStatusResponseObject interface {
+	VisitSetManagedTenantStatusResponse(w http.ResponseWriter) error
+}
+
+type SetManagedTenantStatus200JSONResponse TenantEnvelope
+
+func (response SetManagedTenantStatus200JSONResponse) VisitSetManagedTenantStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type SetManagedTenantStatus400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response SetManagedTenantStatus400JSONResponse) VisitSetManagedTenantStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SetManagedTenantStatus401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response SetManagedTenantStatus401JSONResponse) VisitSetManagedTenantStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SetManagedTenantStatus403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response SetManagedTenantStatus403JSONResponse) VisitSetManagedTenantStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SetManagedTenantStatus404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response SetManagedTenantStatus404JSONResponse) VisitSetManagedTenantStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SetManagedTenantStatus409JSONResponse struct{ ConflictJSONResponse }
+
+func (response SetManagedTenantStatus409JSONResponse) VisitSetManagedTenantStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type SetManagedTenantStatus422JSONResponse struct {
+	UnprocessableEntityJSONResponse
+}
+
+func (response SetManagedTenantStatus422JSONResponse) VisitSetManagedTenantStatusResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(422)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ListManagedUsersRequestObject struct {
+}
+
+type ListManagedUsersResponseObject interface {
+	VisitListManagedUsersResponse(w http.ResponseWriter) error
+}
+
+type ListManagedUsers200JSONResponse ManagedUserListEnvelope
+
+func (response ListManagedUsers200JSONResponse) VisitListManagedUsersResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response)
+}
+
+type ListManagedUsers401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ListManagedUsers401JSONResponse) VisitListManagedUsersResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ListManagedUsers403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response ListManagedUsers403JSONResponse) VisitListManagedUsersResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CreateManagedUserRequestObject struct {
+	Body *CreateManagedUserJSONRequestBody
+}
+
+type CreateManagedUserResponseObject interface {
+	VisitCreateManagedUserResponse(w http.ResponseWriter) error
+}
+
+type CreateManagedUser201JSONResponse struct{ UserResponseJSONResponse }
+
+func (response CreateManagedUser201JSONResponse) VisitCreateManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(201)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CreateManagedUser400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response CreateManagedUser400JSONResponse) VisitCreateManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CreateManagedUser401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response CreateManagedUser401JSONResponse) VisitCreateManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CreateManagedUser403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response CreateManagedUser403JSONResponse) VisitCreateManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CreateManagedUser409JSONResponse struct{ ConflictJSONResponse }
+
+func (response CreateManagedUser409JSONResponse) VisitCreateManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type CreateManagedUser422JSONResponse struct {
+	UnprocessableEntityJSONResponse
+}
+
+func (response CreateManagedUser422JSONResponse) VisitCreateManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(422)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type GetManagedUserRequestObject struct {
+	UserId UserId `json:"userId"`
+}
+
+type GetManagedUserResponseObject interface {
+	VisitGetManagedUserResponse(w http.ResponseWriter) error
+}
+
+type GetManagedUser200JSONResponse struct{ UserResponseJSONResponse }
+
+func (response GetManagedUser200JSONResponse) VisitGetManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type GetManagedUser401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response GetManagedUser401JSONResponse) VisitGetManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type GetManagedUser403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response GetManagedUser403JSONResponse) VisitGetManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type GetManagedUser404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response GetManagedUser404JSONResponse) VisitGetManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateManagedUserRequestObject struct {
+	UserId UserId `json:"userId"`
+	Body   *UpdateManagedUserJSONRequestBody
+}
+
+type UpdateManagedUserResponseObject interface {
+	VisitUpdateManagedUserResponse(w http.ResponseWriter) error
+}
+
+type UpdateManagedUser200JSONResponse struct{ UserResponseJSONResponse }
+
+func (response UpdateManagedUser200JSONResponse) VisitUpdateManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateManagedUser400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response UpdateManagedUser400JSONResponse) VisitUpdateManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateManagedUser401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response UpdateManagedUser401JSONResponse) VisitUpdateManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateManagedUser403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response UpdateManagedUser403JSONResponse) VisitUpdateManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateManagedUser404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response UpdateManagedUser404JSONResponse) VisitUpdateManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateManagedUser409JSONResponse struct{ ConflictJSONResponse }
+
+func (response UpdateManagedUser409JSONResponse) VisitUpdateManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(409)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type UpdateManagedUser422JSONResponse struct {
+	UnprocessableEntityJSONResponse
+}
+
+func (response UpdateManagedUser422JSONResponse) VisitUpdateManagedUserResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(422)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ResetManagedUserPasswordRequestObject struct {
+	UserId UserId `json:"userId"`
+	Body   *ResetManagedUserPasswordJSONRequestBody
+}
+
+type ResetManagedUserPasswordResponseObject interface {
+	VisitResetManagedUserPasswordResponse(w http.ResponseWriter) error
+}
+
+type ResetManagedUserPassword200JSONResponse struct{ UserResponseJSONResponse }
+
+func (response ResetManagedUserPassword200JSONResponse) VisitResetManagedUserPasswordResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(200)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ResetManagedUserPassword400JSONResponse struct{ BadRequestJSONResponse }
+
+func (response ResetManagedUserPassword400JSONResponse) VisitResetManagedUserPasswordResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(400)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ResetManagedUserPassword401JSONResponse struct{ UnauthorizedJSONResponse }
+
+func (response ResetManagedUserPassword401JSONResponse) VisitResetManagedUserPasswordResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ResetManagedUserPassword403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response ResetManagedUserPassword403JSONResponse) VisitResetManagedUserPasswordResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(403)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ResetManagedUserPassword404JSONResponse struct{ NotFoundJSONResponse }
+
+func (response ResetManagedUserPassword404JSONResponse) VisitResetManagedUserPasswordResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(404)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type ResetManagedUserPassword422JSONResponse struct {
+	UnprocessableEntityJSONResponse
+}
+
+func (response ResetManagedUserPassword422JSONResponse) VisitResetManagedUserPasswordResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(422)
 
 	return json.NewEncoder(w).Encode(response.Body)
 }
@@ -5083,75 +6089,13 @@ type ListPlatformAuditResponseObject interface {
 	VisitListPlatformAuditResponse(w http.ResponseWriter) error
 }
 
-type ListPlatformAudit200JSONResponse PlatformAuditListEnvelope
+type ListPlatformAudit426JSONResponse struct{ UpgradeRequiredJSONResponse }
 
-func (response ListPlatformAudit200JSONResponse) VisitListPlatformAuditResponse(w http.ResponseWriter) error {
+func (response ListPlatformAudit426JSONResponse) VisitListPlatformAuditResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
+	w.WriteHeader(426)
 
 	return json.NewEncoder(w).Encode(response)
-}
-
-type ListPlatformAudit400JSONResponse struct{ BadRequestJSONResponse }
-
-func (response ListPlatformAudit400JSONResponse) VisitListPlatformAuditResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListPlatformAudit401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response ListPlatformAudit401JSONResponse) VisitListPlatformAuditResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListPlatformAudit403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response ListPlatformAudit403JSONResponse) VisitListPlatformAuditResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListPlatformAudit404JSONResponse struct{ NotFoundJSONResponse }
-
-func (response ListPlatformAudit404JSONResponse) VisitListPlatformAuditResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(404)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListPlatformAudit409JSONResponse struct{ ConflictJSONResponse }
-
-func (response ListPlatformAudit409JSONResponse) VisitListPlatformAuditResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(409)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListPlatformAudit422JSONResponse struct {
-	UnprocessableEntityJSONResponse
-}
-
-func (response ListPlatformAudit422JSONResponse) VisitListPlatformAuditResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(422)
-
-	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type ListPlatformTenantsRequestObject struct {
@@ -5161,75 +6105,13 @@ type ListPlatformTenantsResponseObject interface {
 	VisitListPlatformTenantsResponse(w http.ResponseWriter) error
 }
 
-type ListPlatformTenants200JSONResponse TenantListEnvelope
+type ListPlatformTenants426JSONResponse struct{ UpgradeRequiredJSONResponse }
 
-func (response ListPlatformTenants200JSONResponse) VisitListPlatformTenantsResponse(w http.ResponseWriter) error {
+func (response ListPlatformTenants426JSONResponse) VisitListPlatformTenantsResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
+	w.WriteHeader(426)
 
 	return json.NewEncoder(w).Encode(response)
-}
-
-type ListPlatformTenants400JSONResponse struct{ BadRequestJSONResponse }
-
-func (response ListPlatformTenants400JSONResponse) VisitListPlatformTenantsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListPlatformTenants401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response ListPlatformTenants401JSONResponse) VisitListPlatformTenantsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListPlatformTenants403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response ListPlatformTenants403JSONResponse) VisitListPlatformTenantsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListPlatformTenants404JSONResponse struct{ NotFoundJSONResponse }
-
-func (response ListPlatformTenants404JSONResponse) VisitListPlatformTenantsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(404)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListPlatformTenants409JSONResponse struct{ ConflictJSONResponse }
-
-func (response ListPlatformTenants409JSONResponse) VisitListPlatformTenantsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(409)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListPlatformTenants422JSONResponse struct {
-	UnprocessableEntityJSONResponse
-}
-
-func (response ListPlatformTenants422JSONResponse) VisitListPlatformTenantsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(422)
-
-	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type CreateTenantRequestObject struct {
@@ -5240,75 +6122,13 @@ type CreateTenantResponseObject interface {
 	VisitCreateTenantResponse(w http.ResponseWriter) error
 }
 
-type CreateTenant201JSONResponse CreateTenantEnvelope
+type CreateTenant426JSONResponse struct{ UpgradeRequiredJSONResponse }
 
-func (response CreateTenant201JSONResponse) VisitCreateTenantResponse(w http.ResponseWriter) error {
+func (response CreateTenant426JSONResponse) VisitCreateTenantResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(201)
+	w.WriteHeader(426)
 
 	return json.NewEncoder(w).Encode(response)
-}
-
-type CreateTenant400JSONResponse struct{ BadRequestJSONResponse }
-
-func (response CreateTenant400JSONResponse) VisitCreateTenantResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type CreateTenant401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response CreateTenant401JSONResponse) VisitCreateTenantResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type CreateTenant403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response CreateTenant403JSONResponse) VisitCreateTenantResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type CreateTenant404JSONResponse struct{ NotFoundJSONResponse }
-
-func (response CreateTenant404JSONResponse) VisitCreateTenantResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(404)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type CreateTenant409JSONResponse struct{ ConflictJSONResponse }
-
-func (response CreateTenant409JSONResponse) VisitCreateTenantResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(409)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type CreateTenant422JSONResponse struct {
-	UnprocessableEntityJSONResponse
-}
-
-func (response CreateTenant422JSONResponse) VisitCreateTenantResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(422)
-
-	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type ReissueOwnerInvitationRequestObject struct {
@@ -5319,75 +6139,13 @@ type ReissueOwnerInvitationResponseObject interface {
 	VisitReissueOwnerInvitationResponse(w http.ResponseWriter) error
 }
 
-type ReissueOwnerInvitation200JSONResponse InvitationEnvelope
+type ReissueOwnerInvitation410JSONResponse struct{ GoneJSONResponse }
 
-func (response ReissueOwnerInvitation200JSONResponse) VisitReissueOwnerInvitationResponse(w http.ResponseWriter) error {
+func (response ReissueOwnerInvitation410JSONResponse) VisitReissueOwnerInvitationResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
+	w.WriteHeader(410)
 
 	return json.NewEncoder(w).Encode(response)
-}
-
-type ReissueOwnerInvitation400JSONResponse struct{ BadRequestJSONResponse }
-
-func (response ReissueOwnerInvitation400JSONResponse) VisitReissueOwnerInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ReissueOwnerInvitation401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response ReissueOwnerInvitation401JSONResponse) VisitReissueOwnerInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ReissueOwnerInvitation403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response ReissueOwnerInvitation403JSONResponse) VisitReissueOwnerInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ReissueOwnerInvitation404JSONResponse struct{ NotFoundJSONResponse }
-
-func (response ReissueOwnerInvitation404JSONResponse) VisitReissueOwnerInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(404)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ReissueOwnerInvitation409JSONResponse struct{ ConflictJSONResponse }
-
-func (response ReissueOwnerInvitation409JSONResponse) VisitReissueOwnerInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(409)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ReissueOwnerInvitation422JSONResponse struct {
-	UnprocessableEntityJSONResponse
-}
-
-func (response ReissueOwnerInvitation422JSONResponse) VisitReissueOwnerInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(422)
-
-	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type SetTenantStatusRequestObject struct {
@@ -5399,75 +6157,13 @@ type SetTenantStatusResponseObject interface {
 	VisitSetTenantStatusResponse(w http.ResponseWriter) error
 }
 
-type SetTenantStatus200JSONResponse TenantEnvelope
+type SetTenantStatus426JSONResponse struct{ UpgradeRequiredJSONResponse }
 
-func (response SetTenantStatus200JSONResponse) VisitSetTenantStatusResponse(w http.ResponseWriter) error {
+func (response SetTenantStatus426JSONResponse) VisitSetTenantStatusResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
+	w.WriteHeader(426)
 
 	return json.NewEncoder(w).Encode(response)
-}
-
-type SetTenantStatus400JSONResponse struct{ BadRequestJSONResponse }
-
-func (response SetTenantStatus400JSONResponse) VisitSetTenantStatusResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type SetTenantStatus401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response SetTenantStatus401JSONResponse) VisitSetTenantStatusResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type SetTenantStatus403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response SetTenantStatus403JSONResponse) VisitSetTenantStatusResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type SetTenantStatus404JSONResponse struct{ NotFoundJSONResponse }
-
-func (response SetTenantStatus404JSONResponse) VisitSetTenantStatusResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(404)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type SetTenantStatus409JSONResponse struct{ ConflictJSONResponse }
-
-func (response SetTenantStatus409JSONResponse) VisitSetTenantStatusResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(409)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type SetTenantStatus422JSONResponse struct {
-	UnprocessableEntityJSONResponse
-}
-
-func (response SetTenantStatus422JSONResponse) VisitSetTenantStatusResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(422)
-
-	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type GetProfileRequestObject struct {
@@ -5930,75 +6626,13 @@ type ListTenantInvitationsResponseObject interface {
 	VisitListTenantInvitationsResponse(w http.ResponseWriter) error
 }
 
-type ListTenantInvitations200JSONResponse InvitationListEnvelope
+type ListTenantInvitations410JSONResponse struct{ GoneJSONResponse }
 
-func (response ListTenantInvitations200JSONResponse) VisitListTenantInvitationsResponse(w http.ResponseWriter) error {
+func (response ListTenantInvitations410JSONResponse) VisitListTenantInvitationsResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
+	w.WriteHeader(410)
 
 	return json.NewEncoder(w).Encode(response)
-}
-
-type ListTenantInvitations400JSONResponse struct{ BadRequestJSONResponse }
-
-func (response ListTenantInvitations400JSONResponse) VisitListTenantInvitationsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListTenantInvitations401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response ListTenantInvitations401JSONResponse) VisitListTenantInvitationsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListTenantInvitations403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response ListTenantInvitations403JSONResponse) VisitListTenantInvitationsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListTenantInvitations404JSONResponse struct{ NotFoundJSONResponse }
-
-func (response ListTenantInvitations404JSONResponse) VisitListTenantInvitationsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(404)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListTenantInvitations409JSONResponse struct{ ConflictJSONResponse }
-
-func (response ListTenantInvitations409JSONResponse) VisitListTenantInvitationsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(409)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListTenantInvitations422JSONResponse struct {
-	UnprocessableEntityJSONResponse
-}
-
-func (response ListTenantInvitations422JSONResponse) VisitListTenantInvitationsResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(422)
-
-	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type CreateTenantInvitationRequestObject struct {
@@ -6009,75 +6643,13 @@ type CreateTenantInvitationResponseObject interface {
 	VisitCreateTenantInvitationResponse(w http.ResponseWriter) error
 }
 
-type CreateTenantInvitation201JSONResponse InvitationEnvelope
+type CreateTenantInvitation410JSONResponse struct{ GoneJSONResponse }
 
-func (response CreateTenantInvitation201JSONResponse) VisitCreateTenantInvitationResponse(w http.ResponseWriter) error {
+func (response CreateTenantInvitation410JSONResponse) VisitCreateTenantInvitationResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(201)
+	w.WriteHeader(410)
 
 	return json.NewEncoder(w).Encode(response)
-}
-
-type CreateTenantInvitation400JSONResponse struct{ BadRequestJSONResponse }
-
-func (response CreateTenantInvitation400JSONResponse) VisitCreateTenantInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type CreateTenantInvitation401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response CreateTenantInvitation401JSONResponse) VisitCreateTenantInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type CreateTenantInvitation403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response CreateTenantInvitation403JSONResponse) VisitCreateTenantInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type CreateTenantInvitation404JSONResponse struct{ NotFoundJSONResponse }
-
-func (response CreateTenantInvitation404JSONResponse) VisitCreateTenantInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(404)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type CreateTenantInvitation409JSONResponse struct{ ConflictJSONResponse }
-
-func (response CreateTenantInvitation409JSONResponse) VisitCreateTenantInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(409)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type CreateTenantInvitation422JSONResponse struct {
-	UnprocessableEntityJSONResponse
-}
-
-func (response CreateTenantInvitation422JSONResponse) VisitCreateTenantInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(422)
-
-	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type RevokeTenantInvitationRequestObject struct {
@@ -6088,75 +6660,13 @@ type RevokeTenantInvitationResponseObject interface {
 	VisitRevokeTenantInvitationResponse(w http.ResponseWriter) error
 }
 
-type RevokeTenantInvitation200JSONResponse ActionEnvelope
+type RevokeTenantInvitation410JSONResponse struct{ GoneJSONResponse }
 
-func (response RevokeTenantInvitation200JSONResponse) VisitRevokeTenantInvitationResponse(w http.ResponseWriter) error {
+func (response RevokeTenantInvitation410JSONResponse) VisitRevokeTenantInvitationResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
+	w.WriteHeader(410)
 
 	return json.NewEncoder(w).Encode(response)
-}
-
-type RevokeTenantInvitation400JSONResponse struct{ BadRequestJSONResponse }
-
-func (response RevokeTenantInvitation400JSONResponse) VisitRevokeTenantInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type RevokeTenantInvitation401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response RevokeTenantInvitation401JSONResponse) VisitRevokeTenantInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type RevokeTenantInvitation403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response RevokeTenantInvitation403JSONResponse) VisitRevokeTenantInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type RevokeTenantInvitation404JSONResponse struct{ NotFoundJSONResponse }
-
-func (response RevokeTenantInvitation404JSONResponse) VisitRevokeTenantInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(404)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type RevokeTenantInvitation409JSONResponse struct{ ConflictJSONResponse }
-
-func (response RevokeTenantInvitation409JSONResponse) VisitRevokeTenantInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(409)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type RevokeTenantInvitation422JSONResponse struct {
-	UnprocessableEntityJSONResponse
-}
-
-func (response RevokeTenantInvitation422JSONResponse) VisitRevokeTenantInvitationResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(422)
-
-	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type ListTenantMembersRequestObject struct {
@@ -6166,75 +6676,13 @@ type ListTenantMembersResponseObject interface {
 	VisitListTenantMembersResponse(w http.ResponseWriter) error
 }
 
-type ListTenantMembers200JSONResponse TenantMemberListEnvelope
+type ListTenantMembers426JSONResponse struct{ UpgradeRequiredJSONResponse }
 
-func (response ListTenantMembers200JSONResponse) VisitListTenantMembersResponse(w http.ResponseWriter) error {
+func (response ListTenantMembers426JSONResponse) VisitListTenantMembersResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
+	w.WriteHeader(426)
 
 	return json.NewEncoder(w).Encode(response)
-}
-
-type ListTenantMembers400JSONResponse struct{ BadRequestJSONResponse }
-
-func (response ListTenantMembers400JSONResponse) VisitListTenantMembersResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListTenantMembers401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response ListTenantMembers401JSONResponse) VisitListTenantMembersResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListTenantMembers403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response ListTenantMembers403JSONResponse) VisitListTenantMembersResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListTenantMembers404JSONResponse struct{ NotFoundJSONResponse }
-
-func (response ListTenantMembers404JSONResponse) VisitListTenantMembersResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(404)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListTenantMembers409JSONResponse struct{ ConflictJSONResponse }
-
-func (response ListTenantMembers409JSONResponse) VisitListTenantMembersResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(409)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ListTenantMembers422JSONResponse struct {
-	UnprocessableEntityJSONResponse
-}
-
-func (response ListTenantMembers422JSONResponse) VisitListTenantMembersResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(422)
-
-	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type UpdateTenantMemberRequestObject struct {
@@ -6246,75 +6694,13 @@ type UpdateTenantMemberResponseObject interface {
 	VisitUpdateTenantMemberResponse(w http.ResponseWriter) error
 }
 
-type UpdateTenantMember200JSONResponse TenantMemberEnvelope
+type UpdateTenantMember426JSONResponse struct{ UpgradeRequiredJSONResponse }
 
-func (response UpdateTenantMember200JSONResponse) VisitUpdateTenantMemberResponse(w http.ResponseWriter) error {
+func (response UpdateTenantMember426JSONResponse) VisitUpdateTenantMemberResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(200)
+	w.WriteHeader(426)
 
 	return json.NewEncoder(w).Encode(response)
-}
-
-type UpdateTenantMember400JSONResponse struct{ BadRequestJSONResponse }
-
-func (response UpdateTenantMember400JSONResponse) VisitUpdateTenantMemberResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type UpdateTenantMember401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response UpdateTenantMember401JSONResponse) VisitUpdateTenantMemberResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type UpdateTenantMember403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response UpdateTenantMember403JSONResponse) VisitUpdateTenantMemberResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type UpdateTenantMember404JSONResponse struct{ NotFoundJSONResponse }
-
-func (response UpdateTenantMember404JSONResponse) VisitUpdateTenantMemberResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(404)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type UpdateTenantMember409JSONResponse struct{ ConflictJSONResponse }
-
-func (response UpdateTenantMember409JSONResponse) VisitUpdateTenantMemberResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(409)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type UpdateTenantMember422JSONResponse struct {
-	UnprocessableEntityJSONResponse
-}
-
-func (response UpdateTenantMember422JSONResponse) VisitUpdateTenantMemberResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(422)
-
-	return json.NewEncoder(w).Encode(response.Body)
 }
 
 type GetTenantProfileRequestObject struct {
@@ -6702,6 +7088,16 @@ func (response EnrollTerminal401JSONResponse) VisitEnrollTerminalResponse(w http
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
 	w.WriteHeader(401)
+
+	return json.NewEncoder(w).Encode(response.Body)
+}
+
+type EnrollTerminal403JSONResponse struct{ ForbiddenJSONResponse }
+
+func (response EnrollTerminal403JSONResponse) VisitEnrollTerminalResponse(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
+	w.WriteHeader(403)
 
 	return json.NewEncoder(w).Encode(response.Body)
 }
@@ -7372,66 +7768,13 @@ type CreateUserResponseObject interface {
 	VisitCreateUserResponse(w http.ResponseWriter) error
 }
 
-type CreateUser201JSONResponse struct{ UserResponseJSONResponse }
+type CreateUser426JSONResponse struct{ UpgradeRequiredJSONResponse }
 
-func (response CreateUser201JSONResponse) VisitCreateUserResponse(w http.ResponseWriter) error {
+func (response CreateUser426JSONResponse) VisitCreateUserResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(201)
+	w.WriteHeader(426)
 
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type CreateUser400JSONResponse struct{ BadRequestJSONResponse }
-
-func (response CreateUser400JSONResponse) VisitCreateUserResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type CreateUser401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response CreateUser401JSONResponse) VisitCreateUserResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type CreateUser403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response CreateUser403JSONResponse) VisitCreateUserResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type CreateUser409JSONResponse struct{ ConflictJSONResponse }
-
-func (response CreateUser409JSONResponse) VisitCreateUserResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(409)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type CreateUser422JSONResponse struct {
-	UnprocessableEntityJSONResponse
-}
-
-func (response CreateUser422JSONResponse) VisitCreateUserResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(422)
-
-	return json.NewEncoder(w).Encode(response.Body)
+	return json.NewEncoder(w).Encode(response)
 }
 
 type DeleteUserRequestObject struct {
@@ -7442,54 +7785,13 @@ type DeleteUserResponseObject interface {
 	VisitDeleteUserResponse(w http.ResponseWriter) error
 }
 
-type DeleteUser200JSONResponse struct{ UserResponseJSONResponse }
+type DeleteUser426JSONResponse struct{ UpgradeRequiredJSONResponse }
 
-func (response DeleteUser200JSONResponse) VisitDeleteUserResponse(w http.ResponseWriter) error {
+func (response DeleteUser426JSONResponse) VisitDeleteUserResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(200)
+	w.WriteHeader(426)
 
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type DeleteUser401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response DeleteUser401JSONResponse) VisitDeleteUserResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type DeleteUser403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response DeleteUser403JSONResponse) VisitDeleteUserResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type DeleteUser404JSONResponse struct{ NotFoundJSONResponse }
-
-func (response DeleteUser404JSONResponse) VisitDeleteUserResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(404)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type DeleteUser409JSONResponse struct{ ConflictJSONResponse }
-
-func (response DeleteUser409JSONResponse) VisitDeleteUserResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(409)
-
-	return json.NewEncoder(w).Encode(response.Body)
+	return json.NewEncoder(w).Encode(response)
 }
 
 type GetUserRequestObject struct {
@@ -7549,76 +7851,13 @@ type UpdateUserResponseObject interface {
 	VisitUpdateUserResponse(w http.ResponseWriter) error
 }
 
-type UpdateUser200JSONResponse struct{ UserResponseJSONResponse }
+type UpdateUser426JSONResponse struct{ UpgradeRequiredJSONResponse }
 
-func (response UpdateUser200JSONResponse) VisitUpdateUserResponse(w http.ResponseWriter) error {
+func (response UpdateUser426JSONResponse) VisitUpdateUserResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(200)
+	w.WriteHeader(426)
 
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type UpdateUser400JSONResponse struct{ BadRequestJSONResponse }
-
-func (response UpdateUser400JSONResponse) VisitUpdateUserResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type UpdateUser401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response UpdateUser401JSONResponse) VisitUpdateUserResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type UpdateUser403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response UpdateUser403JSONResponse) VisitUpdateUserResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type UpdateUser404JSONResponse struct{ NotFoundJSONResponse }
-
-func (response UpdateUser404JSONResponse) VisitUpdateUserResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(404)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type UpdateUser409JSONResponse struct{ ConflictJSONResponse }
-
-func (response UpdateUser409JSONResponse) VisitUpdateUserResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(409)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type UpdateUser422JSONResponse struct {
-	UnprocessableEntityJSONResponse
-}
-
-func (response UpdateUser422JSONResponse) VisitUpdateUserResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(422)
-
-	return json.NewEncoder(w).Encode(response.Body)
+	return json.NewEncoder(w).Encode(response)
 }
 
 type ResetUserPasswordRequestObject struct {
@@ -7630,74 +7869,21 @@ type ResetUserPasswordResponseObject interface {
 	VisitResetUserPasswordResponse(w http.ResponseWriter) error
 }
 
-type ResetUserPassword200JSONResponse struct{ UserResponseJSONResponse }
+type ResetUserPassword426JSONResponse struct{ UpgradeRequiredJSONResponse }
 
-func (response ResetUserPassword200JSONResponse) VisitResetUserPasswordResponse(w http.ResponseWriter) error {
+func (response ResetUserPassword426JSONResponse) VisitResetUserPasswordResponse(w http.ResponseWriter) error {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(200)
+	w.WriteHeader(426)
 
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ResetUserPassword400JSONResponse struct{ BadRequestJSONResponse }
-
-func (response ResetUserPassword400JSONResponse) VisitResetUserPasswordResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(400)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ResetUserPassword401JSONResponse struct{ UnauthorizedJSONResponse }
-
-func (response ResetUserPassword401JSONResponse) VisitResetUserPasswordResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(401)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ResetUserPassword403JSONResponse struct{ ForbiddenJSONResponse }
-
-func (response ResetUserPassword403JSONResponse) VisitResetUserPasswordResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(403)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ResetUserPassword404JSONResponse struct{ NotFoundJSONResponse }
-
-func (response ResetUserPassword404JSONResponse) VisitResetUserPasswordResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(404)
-
-	return json.NewEncoder(w).Encode(response.Body)
-}
-
-type ResetUserPassword422JSONResponse struct {
-	UnprocessableEntityJSONResponse
-}
-
-func (response ResetUserPassword422JSONResponse) VisitResetUserPasswordResponse(w http.ResponseWriter) error {
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Request-Id", fmt.Sprint(response.Headers.XRequestId))
-	w.WriteHeader(422)
-
-	return json.NewEncoder(w).Encode(response.Body)
+	return json.NewEncoder(w).Encode(response)
 }
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
-	// List the account's available tenant and platform contexts
+	// List active business units and organization-management capabilities
 	// (GET /auth/contexts)
 	GetAuthContexts(ctx context.Context, request GetAuthContextsRequestObject) (GetAuthContextsResponseObject, error)
-	// Accept an invitation using the authenticated account
+	// Retired invitation endpoint; all active accounts can enter every active tenant
 	// (POST /auth/invitations/accept)
 	AcceptInvitation(ctx context.Context, request AcceptInvitationRequestObject) (AcceptInvitationResponseObject, error)
 	// Start an online session
@@ -7706,15 +7892,18 @@ type StrictServerInterface interface {
 	// Revoke the current session
 	// (POST /auth/logout)
 	Logout(ctx context.Context, request LogoutRequestObject) (LogoutResponseObject, error)
-	// Register an account and atomically accept a valid invitation
+	// Retired invitation endpoint; all active accounts can enter every active tenant
 	// (POST /auth/register-invitation)
 	RegisterInvitation(ctx context.Context, request RegisterInvitationRequestObject) (RegisterInvitationResponseObject, error)
-	// Exchange the session into an authorized account, tenant, or platform context
+	// Exchange the session into account or selected tenant context
 	// (POST /auth/switch-context)
 	SwitchAuthContext(ctx context.Context, request SwitchAuthContextRequestObject) (SwitchAuthContextResponseObject, error)
 	// Rotate the current session into production or Sandbox Mode
 	// (POST /auth/switch-mode)
 	SwitchDataMode(ctx context.Context, request SwitchDataModeRequestObject) (SwitchDataModeResponseObject, error)
+	// Upgrade the session protocol while preserving its selected context
+	// (POST /auth/upgrade-session)
+	UpgradeAuthSession(ctx context.Context, request UpgradeAuthSessionRequestObject) (UpgradeAuthSessionResponseObject, error)
 	// Download a filtered XLSX or PDF
 	// (POST /exports/transactions)
 	ExportTransactions(ctx context.Context, request ExportTransactionsRequestObject) (ExportTransactionsResponseObject, error)
@@ -7724,6 +7913,36 @@ type StrictServerInterface interface {
 	// Check PostgreSQL readiness
 	// (GET /health/ready)
 	GetReadiness(ctx context.Context, request GetReadinessRequestObject) (GetReadinessResponseObject, error)
+	// List durable organization-wide administrative audit history
+	// (GET /management/audit)
+	ListManagementAudit(ctx context.Context, request ListManagementAuditRequestObject) (ListManagementAuditResponseObject, error)
+	// List all business units including suspended and pending tenants
+	// (GET /management/tenants)
+	ListManagedTenants(ctx context.Context, request ListManagedTenantsRequestObject) (ListManagedTenantsResponseObject, error)
+	// Create an active business unit with an empty catalog
+	// (POST /management/tenants)
+	CreateManagedTenant(ctx context.Context, request CreateManagedTenantRequestObject) (CreateManagedTenantResponseObject, error)
+	// Change a tenant's management name without changing receipt identity
+	// (PATCH /management/tenants/{tenantId})
+	UpdateManagedTenant(ctx context.Context, request UpdateManagedTenantRequestObject) (UpdateManagedTenantResponseObject, error)
+	// Activate, suspend, or reactivate a business unit
+	// (POST /management/tenants/{tenantId}/status)
+	SetManagedTenantStatus(ctx context.Context, request SetManagedTenantStatusRequestObject) (SetManagedTenantStatusResponseObject, error)
+	// List organization-wide staff accounts
+	// (GET /management/users)
+	ListManagedUsers(ctx context.Context, request ListManagedUsersRequestObject) (ListManagedUsersResponseObject, error)
+	// Create a staff account using a temporary password
+	// (POST /management/users)
+	CreateManagedUser(ctx context.Context, request CreateManagedUserRequestObject) (CreateManagedUserResponseObject, error)
+	// Get a global staff account
+	// (GET /management/users/{userId})
+	GetManagedUser(ctx context.Context, request GetManagedUserRequestObject) (GetManagedUserResponseObject, error)
+	// Change an account's global role or active status
+	// (PATCH /management/users/{userId})
+	UpdateManagedUser(ctx context.Context, request UpdateManagedUserRequestObject) (UpdateManagedUserResponseObject, error)
+	// Set a temporary password and revoke all of the account's sessions
+	// (POST /management/users/{userId}/reset-password)
+	ResetManagedUserPassword(ctx context.Context, request ResetManagedUserPasswordRequestObject) (ResetManagedUserPasswordResponseObject, error)
 	// List packages
 	// (GET /packages)
 	ListPackages(ctx context.Context, request ListPackagesRequestObject) (ListPackagesResponseObject, error)
@@ -7739,19 +7958,19 @@ type StrictServerInterface interface {
 	// Create a new package revision
 	// (PATCH /packages/{packageId})
 	UpdatePackage(ctx context.Context, request UpdatePackageRequestObject) (UpdatePackageResponseObject, error)
-	// List recent durable control-plane audit events
+	// Retired administration endpoint; upgrade to organization management
 	// (GET /platform/audit)
 	ListPlatformAudit(ctx context.Context, request ListPlatformAuditRequestObject) (ListPlatformAuditResponseObject, error)
-	// List tenants in platform context
+	// Retired administration endpoint; upgrade to organization management
 	// (GET /platform/tenants)
 	ListPlatformTenants(ctx context.Context, request ListPlatformTenantsRequestObject) (ListPlatformTenantsResponseObject, error)
-	// Create a pending tenant and a seven-day initial-owner invitation
+	// Retired administration endpoint; upgrade to organization management
 	// (POST /platform/tenants)
 	CreateTenant(ctx context.Context, request CreateTenantRequestObject) (CreateTenantResponseObject, error)
-	// Reissue the initial-owner invitation for a pending tenant
+	// Retired invitation endpoint; all active accounts can enter every active tenant
 	// (POST /platform/tenants/{tenantId}/invitation)
 	ReissueOwnerInvitation(ctx context.Context, request ReissueOwnerInvitationRequestObject) (ReissueOwnerInvitationResponseObject, error)
-	// Suspend or reactivate a tenant without reviving revoked sessions
+	// Retired administration endpoint; upgrade to organization management
 	// (POST /platform/tenants/{tenantId}/status)
 	SetTenantStatus(ctx context.Context, request SetTenantStatusRequestObject) (SetTenantStatusResponseObject, error)
 	// Get the current user and session
@@ -7781,19 +8000,19 @@ type StrictServerInterface interface {
 	// Revalidate quarantined signed origins in the current tenant context
 	// (POST /sync/revalidate)
 	RevalidateSyncOrigins(ctx context.Context, request RevalidateSyncOriginsRequestObject) (RevalidateSyncOriginsResponseObject, error)
-	// List tenant invitations without exposing their codes
+	// Retired invitation endpoint; all active accounts can enter every active tenant
 	// (GET /tenant/invitations)
 	ListTenantInvitations(ctx context.Context, request ListTenantInvitationsRequestObject) (ListTenantInvitationsResponseObject, error)
-	// Create a single-use seven-day membership invitation
+	// Retired invitation endpoint; all active accounts can enter every active tenant
 	// (POST /tenant/invitations)
 	CreateTenantInvitation(ctx context.Context, request CreateTenantInvitationRequestObject) (CreateTenantInvitationResponseObject, error)
-	// Revoke an unused tenant invitation
+	// Retired invitation endpoint; all active accounts can enter every active tenant
 	// (DELETE /tenant/invitations/{invitationId})
 	RevokeTenantInvitation(ctx context.Context, request RevokeTenantInvitationRequestObject) (RevokeTenantInvitationResponseObject, error)
-	// List memberships in the active tenant
+	// Retired administration endpoint; upgrade to organization management
 	// (GET /tenant/members)
 	ListTenantMembers(ctx context.Context, request ListTenantMembersRequestObject) (ListTenantMembersResponseObject, error)
-	// Update the role or active status of one tenant membership
+	// Retired administration endpoint; upgrade to organization management
 	// (PATCH /tenant/members/{userId})
 	UpdateTenantMember(ctx context.Context, request UpdateTenantMemberRequestObject) (UpdateTenantMemberResponseObject, error)
 	// Get the current business receipt and report identity
@@ -7847,19 +8066,19 @@ type StrictServerInterface interface {
 	// List users
 	// (GET /users)
 	ListUsers(ctx context.Context, request ListUsersRequestObject) (ListUsersResponseObject, error)
-	// Create a user with a temporary password
+	// Retired administration endpoint; upgrade to organization management
 	// (POST /users)
 	CreateUser(ctx context.Context, request CreateUserRequestObject) (CreateUserResponseObject, error)
-	// Soft-delete a user
+	// Retired administration endpoint; upgrade to organization management
 	// (DELETE /users/{userId})
 	DeleteUser(ctx context.Context, request DeleteUserRequestObject) (DeleteUserResponseObject, error)
 	// Get a user
 	// (GET /users/{userId})
 	GetUser(ctx context.Context, request GetUserRequestObject) (GetUserResponseObject, error)
-	// Update role, name, username, or active state
+	// Retired administration endpoint; upgrade to organization management
 	// (PATCH /users/{userId})
 	UpdateUser(ctx context.Context, request UpdateUserRequestObject) (UpdateUserResponseObject, error)
-	// Set a temporary password and revoke existing sessions
+	// Retired administration endpoint; upgrade to organization management
 	// (POST /users/{userId}/reset-password)
 	ResetUserPassword(ctx context.Context, request ResetUserPasswordRequestObject) (ResetUserPasswordResponseObject, error)
 }
@@ -8091,6 +8310,39 @@ func (sh *strictHandler) SwitchDataMode(ctx *gin.Context) {
 	}
 }
 
+// UpgradeAuthSession operation middleware
+func (sh *strictHandler) UpgradeAuthSession(ctx *gin.Context) {
+	var request UpgradeAuthSessionRequestObject
+
+	var body UpgradeAuthSessionJSONRequestBody
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		ctx.Status(http.StatusBadRequest)
+		ctx.Error(err)
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.UpgradeAuthSession(ctx, request.(UpgradeAuthSessionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpgradeAuthSession")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		ctx.Error(err)
+		ctx.Status(http.StatusInternalServerError)
+	} else if validResponse, ok := response.(UpgradeAuthSessionResponseObject); ok {
+		if err := validResponse.VisitUpgradeAuthSessionResponse(ctx.Writer); err != nil {
+			ctx.Error(err)
+		}
+	} else if response != nil {
+		ctx.Error(fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // ExportTransactions operation middleware
 func (sh *strictHandler) ExportTransactions(ctx *gin.Context) {
 	var request ExportTransactionsRequestObject
@@ -8167,6 +8419,316 @@ func (sh *strictHandler) GetReadiness(ctx *gin.Context) {
 		ctx.Status(http.StatusInternalServerError)
 	} else if validResponse, ok := response.(GetReadinessResponseObject); ok {
 		if err := validResponse.VisitGetReadinessResponse(ctx.Writer); err != nil {
+			ctx.Error(err)
+		}
+	} else if response != nil {
+		ctx.Error(fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListManagementAudit operation middleware
+func (sh *strictHandler) ListManagementAudit(ctx *gin.Context, params ListManagementAuditParams) {
+	var request ListManagementAuditRequestObject
+
+	request.Params = params
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.ListManagementAudit(ctx, request.(ListManagementAuditRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListManagementAudit")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		ctx.Error(err)
+		ctx.Status(http.StatusInternalServerError)
+	} else if validResponse, ok := response.(ListManagementAuditResponseObject); ok {
+		if err := validResponse.VisitListManagementAuditResponse(ctx.Writer); err != nil {
+			ctx.Error(err)
+		}
+	} else if response != nil {
+		ctx.Error(fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListManagedTenants operation middleware
+func (sh *strictHandler) ListManagedTenants(ctx *gin.Context) {
+	var request ListManagedTenantsRequestObject
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.ListManagedTenants(ctx, request.(ListManagedTenantsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListManagedTenants")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		ctx.Error(err)
+		ctx.Status(http.StatusInternalServerError)
+	} else if validResponse, ok := response.(ListManagedTenantsResponseObject); ok {
+		if err := validResponse.VisitListManagedTenantsResponse(ctx.Writer); err != nil {
+			ctx.Error(err)
+		}
+	} else if response != nil {
+		ctx.Error(fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateManagedTenant operation middleware
+func (sh *strictHandler) CreateManagedTenant(ctx *gin.Context) {
+	var request CreateManagedTenantRequestObject
+
+	var body CreateManagedTenantJSONRequestBody
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		ctx.Status(http.StatusBadRequest)
+		ctx.Error(err)
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateManagedTenant(ctx, request.(CreateManagedTenantRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateManagedTenant")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		ctx.Error(err)
+		ctx.Status(http.StatusInternalServerError)
+	} else if validResponse, ok := response.(CreateManagedTenantResponseObject); ok {
+		if err := validResponse.VisitCreateManagedTenantResponse(ctx.Writer); err != nil {
+			ctx.Error(err)
+		}
+	} else if response != nil {
+		ctx.Error(fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateManagedTenant operation middleware
+func (sh *strictHandler) UpdateManagedTenant(ctx *gin.Context, tenantId TenantId) {
+	var request UpdateManagedTenantRequestObject
+
+	request.TenantId = tenantId
+
+	var body UpdateManagedTenantJSONRequestBody
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		ctx.Status(http.StatusBadRequest)
+		ctx.Error(err)
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateManagedTenant(ctx, request.(UpdateManagedTenantRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateManagedTenant")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		ctx.Error(err)
+		ctx.Status(http.StatusInternalServerError)
+	} else if validResponse, ok := response.(UpdateManagedTenantResponseObject); ok {
+		if err := validResponse.VisitUpdateManagedTenantResponse(ctx.Writer); err != nil {
+			ctx.Error(err)
+		}
+	} else if response != nil {
+		ctx.Error(fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SetManagedTenantStatus operation middleware
+func (sh *strictHandler) SetManagedTenantStatus(ctx *gin.Context, tenantId TenantId) {
+	var request SetManagedTenantStatusRequestObject
+
+	request.TenantId = tenantId
+
+	var body SetManagedTenantStatusJSONRequestBody
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		ctx.Status(http.StatusBadRequest)
+		ctx.Error(err)
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.SetManagedTenantStatus(ctx, request.(SetManagedTenantStatusRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SetManagedTenantStatus")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		ctx.Error(err)
+		ctx.Status(http.StatusInternalServerError)
+	} else if validResponse, ok := response.(SetManagedTenantStatusResponseObject); ok {
+		if err := validResponse.VisitSetManagedTenantStatusResponse(ctx.Writer); err != nil {
+			ctx.Error(err)
+		}
+	} else if response != nil {
+		ctx.Error(fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListManagedUsers operation middleware
+func (sh *strictHandler) ListManagedUsers(ctx *gin.Context) {
+	var request ListManagedUsersRequestObject
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.ListManagedUsers(ctx, request.(ListManagedUsersRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListManagedUsers")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		ctx.Error(err)
+		ctx.Status(http.StatusInternalServerError)
+	} else if validResponse, ok := response.(ListManagedUsersResponseObject); ok {
+		if err := validResponse.VisitListManagedUsersResponse(ctx.Writer); err != nil {
+			ctx.Error(err)
+		}
+	} else if response != nil {
+		ctx.Error(fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateManagedUser operation middleware
+func (sh *strictHandler) CreateManagedUser(ctx *gin.Context) {
+	var request CreateManagedUserRequestObject
+
+	var body CreateManagedUserJSONRequestBody
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		ctx.Status(http.StatusBadRequest)
+		ctx.Error(err)
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateManagedUser(ctx, request.(CreateManagedUserRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateManagedUser")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		ctx.Error(err)
+		ctx.Status(http.StatusInternalServerError)
+	} else if validResponse, ok := response.(CreateManagedUserResponseObject); ok {
+		if err := validResponse.VisitCreateManagedUserResponse(ctx.Writer); err != nil {
+			ctx.Error(err)
+		}
+	} else if response != nil {
+		ctx.Error(fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetManagedUser operation middleware
+func (sh *strictHandler) GetManagedUser(ctx *gin.Context, userId UserId) {
+	var request GetManagedUserRequestObject
+
+	request.UserId = userId
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.GetManagedUser(ctx, request.(GetManagedUserRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetManagedUser")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		ctx.Error(err)
+		ctx.Status(http.StatusInternalServerError)
+	} else if validResponse, ok := response.(GetManagedUserResponseObject); ok {
+		if err := validResponse.VisitGetManagedUserResponse(ctx.Writer); err != nil {
+			ctx.Error(err)
+		}
+	} else if response != nil {
+		ctx.Error(fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UpdateManagedUser operation middleware
+func (sh *strictHandler) UpdateManagedUser(ctx *gin.Context, userId UserId) {
+	var request UpdateManagedUserRequestObject
+
+	request.UserId = userId
+
+	var body UpdateManagedUserJSONRequestBody
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		ctx.Status(http.StatusBadRequest)
+		ctx.Error(err)
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.UpdateManagedUser(ctx, request.(UpdateManagedUserRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UpdateManagedUser")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		ctx.Error(err)
+		ctx.Status(http.StatusInternalServerError)
+	} else if validResponse, ok := response.(UpdateManagedUserResponseObject); ok {
+		if err := validResponse.VisitUpdateManagedUserResponse(ctx.Writer); err != nil {
+			ctx.Error(err)
+		}
+	} else if response != nil {
+		ctx.Error(fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ResetManagedUserPassword operation middleware
+func (sh *strictHandler) ResetManagedUserPassword(ctx *gin.Context, userId UserId) {
+	var request ResetManagedUserPasswordRequestObject
+
+	request.UserId = userId
+
+	var body ResetManagedUserPasswordJSONRequestBody
+	if err := ctx.ShouldBindJSON(&body); err != nil {
+		ctx.Status(http.StatusBadRequest)
+		ctx.Error(err)
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx *gin.Context, request interface{}) (interface{}, error) {
+		return sh.ssi.ResetManagedUserPassword(ctx, request.(ResetManagedUserPasswordRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ResetManagedUserPassword")
+	}
+
+	response, err := handler(ctx, request)
+
+	if err != nil {
+		ctx.Error(err)
+		ctx.Status(http.StatusInternalServerError)
+	} else if validResponse, ok := response.(ResetManagedUserPasswordResponseObject); ok {
+		if err := validResponse.VisitResetManagedUserPasswordResponse(ctx.Writer); err != nil {
 			ctx.Error(err)
 		}
 	} else if response != nil {

@@ -8,6 +8,10 @@ const mockGetSyncMetadata = jest.fn();
 const mockApplyRemoteChanges = jest.fn();
 const mockMarkOutboxResult = jest.fn();
 const mockSetSyncError = jest.fn();
+const mockReadSession = jest.fn();
+const mockWriteSession = jest.fn();
+const mockCacheConfiguration = jest.fn();
+const mockNoticeAccess = jest.fn();
 
 jest.mock("@react-native-community/netinfo", () => ({
   __esModule: true,
@@ -38,6 +42,7 @@ jest.mock("@/api/client", () => {
   return {
     ApiError,
     apiRequest: (...args: unknown[]) => mockApiRequest(...args),
+    noticeAccessFailure: (...args: unknown[]) => mockNoticeAccess(...args),
   };
 });
 
@@ -52,7 +57,8 @@ jest.mock("@/db/repositories", () => ({
 
 jest.mock("@/security/secure-store", () => ({
   readTerminalIdentity: jest.fn(),
-  writeSession: jest.fn(),
+  readSession: () => mockReadSession(),
+  writeSession: (...args: unknown[]) => mockWriteSession(...args),
 }));
 
 jest.mock("@/security/terminal-identity", () => ({
@@ -127,6 +133,36 @@ describe("Sandbox sync pagination and retirement", () => {
       { token: sandboxSession.token },
     );
   });
+
+  it.each(["account", "tenant"])(
+    "blocks access immediately when %s revocation is discovered in an in-flight pull",
+    async (kind) => {
+      const session = { ...sandboxSession, tenantId: "tenant-a" };
+      const code =
+        kind === "account" ? "ACCOUNT_ACCESS_CHANGED" : "TENANT_SUSPENDED";
+      mockApiRequest.mockResolvedValueOnce({
+        changes: [
+          {
+            cursor: "1",
+            aggregate: kind === "account" ? "user" : "tenant_metadata",
+            aggregateId:
+              kind === "account" ? session.user.id : session.tenantId,
+            action: "upsert",
+            payload:
+              kind === "account"
+                ? { ...session.user, active: false }
+                : { id: session.tenantId, status: "suspended" },
+          },
+        ],
+        cursor: "1",
+        hasMore: false,
+      });
+      await expect(runSync(session)).rejects.toMatchObject({ code });
+      expect(mockNoticeAccess).toHaveBeenCalledWith(session.token, code);
+      expect(mockApplyRemoteChanges).not.toHaveBeenCalled();
+      expect(mockWriteSession).not.toHaveBeenCalled();
+    },
+  );
 
   it("stops safely when a paginated response does not advance its cursor", async () => {
     mockGetSyncMetadata.mockResolvedValue({ cursor: "sandbox:7:12" });
@@ -205,11 +241,67 @@ describe("Sandbox sync pagination and retirement", () => {
     expect(mockMarkOutboxResult).not.toHaveBeenCalled();
     expect(mockApplyRemoteChanges).not.toHaveBeenCalled();
   });
+
+  it.each([false, true])(
+    "caches the scoped tenant name and guards the durable session if context changed=%s",
+    async (changed) => {
+      const current = {
+        ...sandboxSession,
+        tenantId: "tenant-a",
+        protocolVersion: 3,
+        sandboxQrisPolicy: "transaction_total",
+      } as Session;
+      const metadata = {
+        id: "tenant-a",
+        name: "Nama pengelolaan baru",
+        slug: "stable-slug",
+        status: "active",
+        revision: 2,
+      };
+      mockReadSession.mockResolvedValue(
+        changed
+          ? {
+              ...current,
+              token: "replacement-token",
+              sessionId: "replacement-session",
+            }
+          : current,
+      );
+      mockApiRequest.mockResolvedValueOnce({
+        changes: [
+          {
+            cursor: "9",
+            aggregate: "tenant_metadata",
+            aggregateId: "tenant-a",
+            action: "upsert",
+            payload: metadata,
+            changedAt: "2026-09-12T00:00:00Z",
+          },
+        ],
+        cursor: "9",
+        hasMore: false,
+      });
+      await runSync(current);
+      expect(mockCacheConfiguration).toHaveBeenCalledWith(
+        "metadata",
+        metadata,
+        current,
+      );
+      expect(mockApplyRemoteChanges).toHaveBeenCalledWith([], "9", current);
+      if (changed) expect(mockWriteSession).not.toHaveBeenCalled();
+      else
+        expect(mockWriteSession).toHaveBeenCalledWith(
+          { ...current, tenant: metadata },
+          current.sessionId,
+        );
+    },
+  );
 });
 jest.mock("@/tenant/quarantine", () => ({
   blockedScopeReason: async () => null,
   quarantineScope: jest.fn(),
   SCOPE_ACCESS_CODES: new Set([
+    "ACCOUNT_ACCESS_CHANGED",
     "TENANT_SUSPENDED",
     "MEMBERSHIP_INACTIVE",
     "MEMBERSHIP_REVOKED",
@@ -218,4 +310,6 @@ jest.mock("@/tenant/quarantine", () => ({
 }));
 jest.mock("@/tenant/configuration", () => ({
   refreshTenantConfiguration: async () => undefined,
+  cacheTenantConfiguration: (...args: unknown[]) =>
+    mockCacheConfiguration(...args),
 }));

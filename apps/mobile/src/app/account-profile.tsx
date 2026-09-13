@@ -40,8 +40,8 @@ export default function AccountProfileScreen() {
           onChangeText={setFullName}
         />
         <Text style={styles.note}>
-          Peran dan status keanggotaan dikelola terpisah oleh masing-masing
-          bisnis.
+          Peran dan status akun berlaku untuk seluruh bisnis dan dikelola oleh
+          Superadmin Pengelola Wisata Telomoyo.
         </Text>
         {readOnly ? (
           <Text style={styles.note}>

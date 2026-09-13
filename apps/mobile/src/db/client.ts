@@ -39,7 +39,7 @@ export function databaseScope(
     scope.contextKind !== "tenant"
   )
     throw new Error(
-      "Konteks akun dan platform tidak dapat membuka database bisnis.",
+      "Pilih bisnis terlebih dahulu untuk membuka database operasional.",
     );
   if (
     typeof scope !== "string" &&

@@ -734,6 +734,10 @@ func TestUserSharedChangesFollowGenerationThatWinsLock(t *testing.T) {
 	}
 	updatedActor, _ := seedSandboxLifecyclePrincipalWithToken(t, ctx, store, integrationBytes(121))
 	deletedActor, _ := seedSandboxLifecyclePrincipalWithToken(t, ctx, store, integrationBytes(122))
+	manager, err := store.CreateAccountSession(ctx, actor.UserID, integrationBytes(123))
+	if err != nil {
+		t.Fatal(err)
+	}
 	updatedName := "Admin Updated After Reset"
 	cases := []struct {
 		name        string
@@ -749,10 +753,10 @@ func TestUserSharedChangesFollowGenerationThatWinsLock(t *testing.T) {
 			},
 		},
 		{
-			name: "deactivate membership", aggregateID: deletedActor.UserID.String(), action: "deleted",
+			name: "deactivate global account", aggregateID: deletedActor.UserID.String(), action: "deleted",
 			run: func() error {
 				active := false
-				_, updateErr := store.UpdateTenantMember(ctx, actor, deletedActor.UserID, domain.UpdateMembershipInput{Active: &active})
+				_, updateErr := store.UpdateManagedUser(ctx, manager, deletedActor.UserID, domain.UpdateManagedUserInput{Active: &active})
 				return updateErr
 			},
 		},

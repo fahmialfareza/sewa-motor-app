@@ -1,5 +1,5 @@
 import { useFocusEffect } from "expo-router";
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { StyleSheet, Text, View } from "react-native";
 
 import { apiRequest } from "@/api/client";
@@ -11,7 +11,6 @@ import { useAuth } from "@/auth/AuthProvider";
 import { useSyncRuntime } from "@/sync/SyncProvider";
 import { colors, radius, spacing, textStyles } from "@/theme/tokens";
 import { toUserFacingErrorMessage } from "@/utils/errors";
-import { formatRupiah } from "@/utils/format";
 
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
@@ -20,7 +19,7 @@ import { Field } from "../ui/Field";
 const RESET_CONFIRMATION = "RESET SANDBOX";
 
 export function ModeOperationCard() {
-  const { session, switchMode, switchingMode } = useAuth();
+  const { session, switchMode, upgradeSession, switchingMode } = useAuth();
   const sync = useSyncRuntime();
   const [status, setStatus] = useState<SandboxStatusResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -29,22 +28,26 @@ export function ModeOperationCard() {
   const [resetExpanded, setResetExpanded] = useState(false);
   const [confirmation, setConfirmation] = useState("");
   const [resetting, setResetting] = useState(false);
+  const requestSequence = useRef(0);
+  const token = session?.token;
 
   const loadStatus = useCallback(async () => {
-    if (!session || session.token.startsWith("dev-only-")) {
+    const request = ++requestSequence.current;
+    if (!token || token.startsWith("dev-only-")) {
       setStatus(null);
       setLoading(false);
       return;
     }
     setLoading(true);
     try {
-      setStatus(
-        await apiRequest<SandboxStatusResponse>("/sandbox/status", {
-          token: session.token,
-        }),
-      );
+      const next = await apiRequest<SandboxStatusResponse>("/sandbox/status", {
+        token,
+      });
+      if (request !== requestSequence.current) return;
+      setStatus(next);
       setError(null);
     } catch (reason) {
+      if (request !== requestSequence.current) return;
       setError(
         toUserFacingErrorMessage(
           reason,
@@ -52,19 +55,25 @@ export function ModeOperationCard() {
         ),
       );
     } finally {
-      setLoading(false);
+      if (request === requestSequence.current) setLoading(false);
     }
-  }, [session]);
+  }, [token]);
 
   useFocusEffect(
     useCallback(() => {
       void loadStatus();
+      return () => {
+        requestSequence.current += 1;
+      };
     }, [loadStatus]),
   );
 
   if (!session) return null;
 
   const sandbox = session.dataMode === "sandbox";
+  const needsUpgrade =
+    (session.protocolVersion ?? 2) < 3 ||
+    session.sandboxQrisPolicy !== "transaction_total";
   const targetMode = sandbox ? "production" : "sandbox";
   const canReset =
     session.user.role === "superadmin" &&
@@ -138,9 +147,35 @@ export function ModeOperationCard() {
 
       <Text style={styles.description}>
         {sandbox
-          ? `Data terisolasi dari laporan produksi. QRIS nyata selalu ${formatRupiah(status?.qrisAmount ?? 1_000)}.`
+          ? needsUpgrade
+            ? "Sesi lama perlu diperbarui sebelum membuat atau mengoreksi transaksi Mode Uji. Pembayaran lama tetap memakai nominal aslinya."
+            : "Data terisolasi dari laporan produksi. QRIS nyata memakai total transaksi dari harga paket Mode Uji dan mengirim uang sungguhan ke merchant."
           : "Transaksi, laporan, dan konfigurasi di mode ini adalah data operasional resmi."}
       </Text>
+      {needsUpgrade ? (
+        <Button
+          variant="secondary"
+          loading={switchingMode}
+          disabled={resetting}
+          onPress={() =>
+            void (async () => {
+              setError(null);
+              try {
+                await upgradeSession();
+              } catch (reason) {
+                setError(
+                  toUserFacingErrorMessage(
+                    reason,
+                    "Sesi belum dapat diperbarui. Coba lagi.",
+                  ),
+                );
+              }
+            })()
+          }
+        >
+          Perbarui sesi Mode Uji
+        </Button>
+      ) : null}
       {sandbox && session.sandboxGeneration ? (
         <Text style={styles.generation}>
           GENERASI UJI {session.sandboxGeneration}
@@ -174,7 +209,8 @@ export function ModeOperationCard() {
             <Text style={styles.resetTitle}>Reset seluruh data Mode Uji</Text>
             <Text style={styles.hint}>
               Perangkat offline akan kehilangan generasi lama. Pembayaran QRIS
-              Rp1.000 tetap perlu direkonsiliasi. Ketik {RESET_CONFIRMATION}
+              nyata dengan nominal transaksi masing-masing tetap perlu
+              direkonsiliasi. Ketik {RESET_CONFIRMATION}
               untuk melanjutkan.
             </Text>
             <Field

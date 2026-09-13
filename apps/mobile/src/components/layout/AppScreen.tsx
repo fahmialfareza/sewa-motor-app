@@ -1,3 +1,4 @@
+import { useRouter } from "expo-router";
 import {
   Pressable,
   StyleSheet,
@@ -41,6 +42,7 @@ export function AppScreen({
   contentStyle,
   scrollProps,
 }: AppScreenProps) {
+  const router = useRouter();
   const sandbox = useModeStore((state) => state.dataMode === "sandbox");
   const tenant = useAuthStore((state) => state.session?.tenant);
   const tenantContext = useAuthStore((state) =>
@@ -89,9 +91,14 @@ export function AppScreen({
     <SafeAreaView edges={["top"]} style={styles.safe}>
       {authenticated && tenantContext ? <SyncBar /> : null}
       {authenticated && tenantContext && tenant ? (
-        <View style={styles.tenantBanner}>
-          <Text style={styles.tenantName}>{tenant.name}</Text>
-        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Ganti bisnis. Bisnis aktif: ${tenant.name}`}
+          onPress={() => router.push("/contexts")}
+          style={styles.tenantBanner}
+        >
+          <Text style={styles.tenantName}>{tenant.name} · Ganti bisnis</Text>
+        </Pressable>
       ) : null}
       {authenticated && sandbox ? (
         <View accessibilityRole="alert" style={styles.sandboxBanner}>

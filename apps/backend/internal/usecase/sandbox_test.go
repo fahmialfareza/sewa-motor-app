@@ -82,7 +82,7 @@ func TestSandboxStatusAndResetEnforceLifecycleContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !status.Enabled || status.DataSpaceID == nil || *status.DataSpaceID != spaceID ||
-		status.Generation == nil || *status.Generation != 4 || status.QrisAmount != 1_000 ||
+		status.Generation == nil || *status.Generation != 4 || status.QrisAmount == nil || *status.QrisAmount != 1_000 ||
 		status.RetentionDays != 30 {
 		t.Fatalf("unexpected sandbox status: %+v", status)
 	}
@@ -117,6 +117,21 @@ func TestSandboxDisabledStatusDoesNotRequireAnActivatedGeneration(t *testing.T) 
 	}
 	if _, err = service.Initialize(context.Background()); err != nil || repository.ensureCalled {
 		t.Fatalf("disabled initialization called repository: err=%v called=%v", err, repository.ensureCalled)
+	}
+}
+
+func TestSandboxStatusFullValueHasNoFixedAmount(t *testing.T) {
+	t.Parallel()
+	principal := sandboxTestPrincipal(domain.RoleAdmin, domain.DataModeSandbox)
+	principal.ProtocolVersion = 3
+	principal.SandboxQRISPolicy = domain.SandboxQRISPolicyTransactionTotal
+	service := Sandbox{Repo: &sandboxRepository{}, Enabled: true, QRISAmount: 1_000}
+	status, err := service.Status(context.Background(), principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.QrisAmount != nil || status.SandboxQRISPolicy != domain.SandboxQRISPolicyTransactionTotal {
+		t.Fatalf("full-value status advertised legacy fixed amount: %+v", status)
 	}
 }
 

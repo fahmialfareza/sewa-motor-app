@@ -19,14 +19,21 @@ import {
   setSyncError,
   type RemoteChange,
 } from "@/db/repositories";
-import type { Session } from "@/domain/types";
-import { readTerminalIdentity, writeSession } from "@/security/secure-store";
+import type { Session, TenantSummary } from "@/domain/types";
+import {
+  readSession,
+  readTerminalIdentity,
+  writeSession,
+} from "@/security/secure-store";
 import {
   markTerminalEnrolled,
   markTerminalRevoked,
 } from "@/security/terminal-identity";
 import { toUserFacingErrorMessage } from "@/utils/errors";
-import { refreshTenantConfiguration } from "@/tenant/configuration";
+import {
+  cacheTenantConfiguration,
+  refreshTenantConfiguration,
+} from "@/tenant/configuration";
 import {
   blockedScopeReason,
   quarantineScope,
@@ -296,6 +303,8 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
         });
       }
       const localChanges: RemoteChange[] = [];
+      let refreshedUser: Session["user"] | undefined;
+      let refreshedTenant: TenantSummary | undefined;
       for (const change of response.changes) {
         if (change.aggregate === "package") {
           localChanges.push({
@@ -323,7 +332,8 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
           });
         } else if (
           change.aggregate !== "tenant_profile" &&
-          change.aggregate !== "tenant_qris"
+          change.aggregate !== "tenant_qris" &&
+          change.aggregate !== "tenant_metadata"
         ) {
           localChanges.push({
             cursor: change.cursor,
@@ -339,17 +349,40 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
           change.aggregate === "user" &&
           change.aggregateId === session.user.id
         ) {
-          if (change.action === "delete" || !change.payload) {
-            throw new Error("Akun perangkat ini dinonaktifkan di server.");
+          const currentUser = change.payload as Session["user"] | null;
+          if (change.action === "delete" || !currentUser?.active) {
+            await noticeAccessFailure(session.token, "ACCOUNT_ACCESS_CHANGED");
+            throw new ApiError({
+              status: 401,
+              code: "ACCOUNT_ACCESS_CHANGED",
+              message:
+                "Akun dinonaktifkan. Data belum tersinkron tetap diamankan; masuk kembali atau hubungi Superadmin.",
+            });
           }
-          const currentUser = change.payload as Session["user"];
-          if (!currentUser.active) {
-            throw new Error("Akun perangkat ini dinonaktifkan di server.");
+          refreshedUser = currentUser;
+        }
+        if (
+          change.aggregate === "tenant_metadata" &&
+          change.aggregateId === session.tenantId &&
+          change.action === "upsert" &&
+          change.payload
+        ) {
+          const metadata = change.payload as TenantSummary;
+          if (metadata.id !== session.tenantId)
+            throw new Error(
+              "Identitas bisnis pada data sinkron tidak sesuai dengan sesi.",
+            );
+          if (metadata.status !== "active") {
+            await noticeAccessFailure(session.token, "TENANT_SUSPENDED");
+            throw new ApiError({
+              status: 403,
+              code: "TENANT_SUSPENDED",
+              message:
+                "Bisnis sedang dinonaktifkan. Data belum tersinkron tetap diamankan; pilih bisnis lain.",
+            });
           }
-          await writeSession({
-            ...session,
-            user: currentUser,
-          });
+          await cacheTenantConfiguration("metadata", metadata, session);
+          refreshedTenant = metadata;
         }
         if (change.aggregate === "terminal") {
           const identity = await readTerminalIdentity(
@@ -381,6 +414,26 @@ async function runSyncInternal(session: Session): Promise<SyncSummary> {
         }
       }
       await applyRemoteChanges(localChanges, response.cursor, session);
+      if (refreshedUser || refreshedTenant) {
+        const stored = await readSession();
+        // Background callbacks may finish after a context exchange. Preserve the
+        // current session and its immutable payment policy, never restore old auth.
+        if (
+          stored?.sessionId === session.sessionId &&
+          stored.token === session.token &&
+          stored.tenantId === session.tenantId &&
+          stored.dataSpaceId === session.dataSpaceId
+        ) {
+          await writeSession(
+            {
+              ...stored,
+              ...(refreshedUser ? { user: refreshedUser } : {}),
+              ...(refreshedTenant ? { tenant: refreshedTenant } : {}),
+            },
+            session.sessionId,
+          );
+        }
+      }
       pulled += response.changes.length;
       cursor = response.cursor;
       if (!response.hasMore) break;

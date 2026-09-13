@@ -1,5 +1,6 @@
 import type { LoginResponse } from "@/api/contracts";
 import { useAuthStore } from "@/auth/auth-store";
+import { registerAccessFailureHandler } from "@/api/client";
 import {
   INITIAL_TENANT_ID,
   PRODUCTION_DATA_SPACE_ID,
@@ -21,6 +22,7 @@ const mockMarkScopeRevalidated = jest.fn();
 const mockMarkEnrolled = jest.fn();
 const mockClearSession = jest.fn();
 const mockGetIdentity = jest.fn();
+const mockQuarantine = jest.fn();
 jest.mock("@react-native-community/netinfo", () => ({
   __esModule: true,
   default: { fetch: () => mockNetwork() },
@@ -57,12 +59,14 @@ jest.mock("@/sync/state-handoff", () => ({
   resetSyncStateForSession: jest.fn(),
 }));
 jest.mock("@/tenant/quarantine", () => ({
-  SCOPE_ACCESS_CODES: new Set(),
+  SCOPE_ACCESS_CODES: new Set(["ACCOUNT_ACCESS_CHANGED"]),
   markScopeRevalidated: (...args: unknown[]) =>
     mockMarkScopeRevalidated(...args),
   blockedScopeReason: async () => null,
-  quarantineScope: jest.fn(),
+  quarantineScope: (...args: unknown[]) => mockQuarantine(...args),
 }));
+const handleAccessFailure = jest.mocked(registerAccessFailureHandler).mock
+  .calls[0]![0];
 
 const original: Session = {
   token: "old-token",
@@ -335,5 +339,99 @@ describe("authenticated tenant context handoff", () => {
       tenantId: null,
       dataMode: "production",
     });
+  });
+
+  it("upgrades only after printing completes and drains the unchanged legacy queue before issuing protocol3", async () => {
+    const upgraded = {
+      ...tenantResponse,
+      tenantId: original.tenantId,
+      dataMode: "sandbox",
+      dataSpaceId: original.dataSpaceId,
+      sandboxGeneration: 9,
+      protocolVersion: 3,
+      sandboxQrisPolicy: "transaction_total",
+    } as LoginResponse;
+    mockApiRequest.mockResolvedValue(upgraded);
+    const finishPrint = beginLocalMutation(original);
+    const promise = useAuthStore.getState().upgradeSession();
+    await Promise.resolve();
+    expect(mockRunSync).not.toHaveBeenCalled();
+    finishPrint();
+    await promise;
+    expect(mockRunSync).toHaveBeenNthCalledWith(1, original);
+    expect(mockPending).toHaveBeenCalledWith(original);
+    expect(mockApiRequest).toHaveBeenCalledWith("/auth/upgrade-session", {
+      method: "POST",
+      token: original.token,
+      body: { protocolVersion: 3 },
+    });
+    expect(useAuthStore.getState().session).toMatchObject({
+      dataMode: "sandbox",
+      dataSpaceId: original.dataSpaceId,
+      sandboxGeneration: 9,
+      protocolVersion: 3,
+      sandboxQrisPolicy: "transaction_total",
+    });
+    expect(mockRunSync.mock.invocationCallOrder[0]).toBeLessThan(
+      mockApiRequest.mock.invocationCallOrder[0]!,
+    );
+    expect(original.sandboxQrisPolicy).toBeUndefined();
+  });
+
+  it.each(["offline", "pending", "failed-sync", "failed-exchange"])(
+    "keeps legacy auth and queue evidence after %s during upgrade",
+    async (failure) => {
+      if (failure === "offline")
+        mockNetwork.mockResolvedValue({ isConnected: false });
+      if (failure === "pending") mockPending.mockResolvedValue(1);
+      if (failure === "failed-sync")
+        mockRunSync.mockRejectedValue(new Error("sync unavailable"));
+      if (failure === "failed-exchange")
+        mockApiRequest.mockRejectedValue(new Error("upgrade unavailable"));
+      await expect(useAuthStore.getState().upgradeSession()).rejects.toThrow();
+      expect(useAuthStore.getState().session).toBe(original);
+      expect(useAuthStore.getState().switchingMode).toBe(false);
+      expect(mockWriteSession).not.toHaveBeenCalled();
+      expect(mockClearSession).not.toHaveBeenCalled();
+    },
+  );
+
+  it("quarantines account-revoked work and requires fresh login without deleting databases or signing keys", async () => {
+    await handleAccessFailure(original.token, "ACCOUNT_ACCESS_CHANGED");
+    expect(mockQuarantine).toHaveBeenCalledWith(
+      original,
+      "ACCOUNT_ACCESS_CHANGED",
+    );
+    expect(mockClearSession).toHaveBeenCalledTimes(1);
+    expect(useAuthStore.getState().session).toBeNull();
+    expect(useAuthStore.getState().notice).toContain("Masuk kembali");
+    expect(mockRunSync).not.toHaveBeenCalled();
+    expect(mockPrepare).not.toHaveBeenCalled();
+    expect(mockMarkScopeRevalidated).not.toHaveBeenCalled();
+  });
+
+  it("does not clear a newer login after a delayed account quarantine", async () => {
+    let complete!: () => void;
+    mockQuarantine.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          complete = resolve;
+        }),
+    );
+    const failure = handleAccessFailure(
+      original.token,
+      "ACCOUNT_ACCESS_CHANGED",
+    );
+    const next = {
+      ...original,
+      token: "fresh-token",
+      sessionId: "fresh-session",
+    };
+    useAuthStore.setState({ session: next, scopeLocked: false });
+    setModeFromSession(next);
+    complete();
+    await failure;
+    expect(mockClearSession).not.toHaveBeenCalled();
+    expect(useAuthStore.getState().session).toBe(next);
   });
 });

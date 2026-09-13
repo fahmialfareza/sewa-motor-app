@@ -8,6 +8,7 @@ import (
 const (
 	CodeValidation               = "VALIDATION_ERROR"
 	CodeUnauthorized             = "UNAUTHORIZED"
+	CodeAccountAccessChanged     = "ACCOUNT_ACCESS_CHANGED"
 	CodeInvalidCredentials       = "INVALID_CREDENTIALS"
 	CodeForbidden                = "FORBIDDEN"
 	CodePasswordChange           = "PASSWORD_CHANGE_REQUIRED"

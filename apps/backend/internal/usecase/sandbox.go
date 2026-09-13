@@ -29,10 +29,14 @@ func (s Sandbox) Status(ctx context.Context, principal domain.Principal) (domain
 		return domain.SandboxStatus{}, err
 	}
 	status := domain.SandboxStatus{
-		Enabled:       s.Enabled,
-		DataMode:      domain.DataModeSandbox,
-		RetentionDays: s.retentionDays(),
-		QrisAmount:    s.qrisAmount(),
+		Enabled:           s.Enabled,
+		DataMode:          domain.DataModeSandbox,
+		RetentionDays:     s.retentionDays(),
+		SandboxQRISPolicy: principal.EffectiveSandboxQRISPolicy(),
+	}
+	if status.SandboxQRISPolicy == domain.SandboxQRISPolicyFixed1000 {
+		amount := domain.SandboxQRISPaymentAmount
+		status.QrisAmount = &amount
 	}
 	space, err := s.Repo.ActiveDataSpace(ctx, principal.TenantID, domain.DataModeSandbox)
 	if s.Enabled && domain.IsCode(err, domain.CodeNotFound) {
@@ -115,14 +119,4 @@ func (s Sandbox) retentionDays() int {
 		return 30
 	}
 	return s.RetentionDays
-}
-
-func (s Sandbox) qrisAmount() int64 {
-	// The amount is a deliberate safety invariant, not a freely configurable
-	// price. Config validation rejects every other value; this fallback keeps
-	// directly constructed services safe as well.
-	if s.QRISAmount != domain.SandboxQRISPaymentAmount {
-		return domain.SandboxQRISPaymentAmount
-	}
-	return s.QRISAmount
 }

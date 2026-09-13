@@ -133,13 +133,6 @@ export default function LoginScreen() {
         </Button>
       </Card>
 
-      <Button
-        variant="secondary"
-        onPress={() => router.push("/register-invitation")}
-      >
-        Daftar dengan kode undangan
-      </Button>
-
       {demoEnabled ? (
         <Card style={styles.demo}>
           <Text style={styles.demoLabel}>KHUSUS DEVELOPMENT BUILD</Text>

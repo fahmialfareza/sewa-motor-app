@@ -3,7 +3,7 @@ jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
 info:
   title: Telomoyo POS API
   version: 1.0.0
-  summary: Local-first point-of-sale API for isolated business tenants.
+  summary: Local-first point-of-sale API for Telomoyo's isolated business units.
   description: |
     The contract used by the Android terminal and the Go backend. Money is integer
     Indonesian rupiah, timestamps are RFC 3339, reporting uses Asia/Jakarta, and
@@ -29,9 +29,11 @@ tags:
   - name: Users
     description: Legacy tenant-scoped member projections; obsolete mutations require an app upgrade.
   - name: Tenants
-    description: Active tenant membership, invitations, business identity, and merchant QRIS.
+    description: Selected business-unit identity and merchant QRIS. Every active account can select every active tenant.
   - name: Platform
-    description: Explicit platform-admin provisioning and tenant lifecycle; no business-data access.
+    description: Retired platform administration interfaces retained for upgrade responses.
+  - name: Management
+    description: Organization-wide tenant and staff administration by a global Superadmin in account context.
   - name: Packages
     description: Package catalog and revision management.
   - name: Transactions
@@ -50,10 +52,10 @@ paths:
     get:
       operationId: getAuthContexts
       tags: [Authentication]
-      summary: List the account's available tenant and platform contexts
+      summary: List active business units and organization-management capabilities
       responses:
         "200":
-          description: List the account's available tenant and platform contexts.
+          description: All active tenants are available to every active account; roles are organization-wide.
           content:
             application/json:
               schema:
@@ -75,7 +77,7 @@ paths:
     post:
       operationId: switchAuthContext
       tags: [Authentication]
-      summary: Exchange the session into an authorized account, tenant, or platform context
+      summary: Exchange the session into account or selected tenant context
       description: Tenant context always starts in Production. Requires online outbox drainage or explicit quarantine after revoked access. The previous session is revoked and retained as immutable origin evidence.
       requestBody:
         required: true
@@ -85,7 +87,7 @@ paths:
               $ref: "#/components/schemas/SwitchContextRequest"
       responses:
         "200":
-          description: Exchange the session into an authorized account, tenant, or platform context.
+          description: The previous session remains immutable origin evidence. No new platform contexts are issued.
           content:
             application/json:
               schema:
@@ -103,98 +105,63 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
 
-  /auth/register-invitation:
+  /auth/upgrade-session:
     post:
-      operationId: registerInvitation
+      operationId: upgradeAuthSession
       tags: [Authentication]
-      summary: Register an account and atomically accept a valid invitation
-      security: []
+      summary: Upgrade the session protocol while preserving its selected context
+      description: |
+        Exchange the session for protocol 3 after the client drains its current
+        outbox and finishes printing. Preserve account, tenant, enrollment, mode,
+        and active generation; issue transaction_total Sandbox QRIS policy.
+        Retain the revoked previous session as immutable signed origin evidence.
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/RegisterInvitationRequest"
-      responses:
-        "201":
-          description: Register an account and atomically accept a valid invitation.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/LoginEnvelope"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "422":
-          $ref: "#/components/responses/UnprocessableEntity"
-
-  /auth/invitations/accept:
-    post:
-      operationId: acceptInvitation
-      tags: [Authentication]
-      summary: Accept an invitation using the authenticated account
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/AcceptInvitationRequest"
+              $ref: "#/components/schemas/UpgradeSessionRequest"
       responses:
         "200":
-          description: Accept an invitation using the authenticated account.
+          description: Upgraded session with the original context and negotiated payment policy.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/TenantContextEnvelope"
+                $ref: "#/components/schemas/LoginEnvelope"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
-        "422":
-          $ref: "#/components/responses/UnprocessableEntity"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
 
-  /platform/tenants:
+  /management/tenants:
     get:
-      operationId: listPlatformTenants
-      tags: [Platform]
-      summary: List tenants in platform context
+      operationId: listManagedTenants
+      tags: [Management]
+      summary: List all business units including suspended and pending tenants
+      x-required-role: superadmin
       responses:
         "200":
-          description: List tenants in platform context.
+          description: Organization-wide tenant list; account context is required.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/TenantListEnvelope"
-        "400":
-          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "422":
-          $ref: "#/components/responses/UnprocessableEntity"
     post:
-      operationId: createTenant
-      tags: [Platform]
-      summary: Create a pending tenant and a seven-day initial-owner invitation
-      description: Requires platform context and TENANT_PROVISIONING_ENABLED. Does not grant tenant membership to the platform administrator.
+      operationId: createManagedTenant
+      tags: [Management]
+      summary: Create an active business unit with an empty catalog
+      description: Requires Superadmin account context and enabled provisioning. Initializes the receipt identity with the management name. No invitation or membership approval is created.
+      x-required-role: superadmin
       requestBody:
         required: true
         content:
@@ -203,29 +170,29 @@ paths:
               $ref: "#/components/schemas/CreateTenantRequest"
       responses:
         "201":
-          description: Create a pending tenant and a seven-day initial-owner invitation.
+          description: Active tenant accessible to all active staff.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CreateTenantEnvelope"
+                $ref: "#/components/schemas/TenantEnvelope"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
 
-  /platform/tenants/{tenantId}/status:
-    post:
-      operationId: setTenantStatus
-      tags: [Platform]
-      summary: Suspend or reactivate a tenant without reviving revoked sessions
+  /management/tenants/{tenantId}:
+    patch:
+      operationId: updateManagedTenant
+      tags: [Management]
+      summary: Change a tenant's management name without changing receipt identity
+      description: Superadmin account context only. Requires the current management revision. Tenant ID and slug are immutable; tenant deletion is not supported.
+      x-required-role: superadmin
       parameters:
         - $ref: "#/components/parameters/TenantId"
       requestBody:
@@ -233,10 +200,10 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/SetTenantStatusRequest"
+              $ref: "#/components/schemas/UpdateManagedTenantRequest"
       responses:
         "200":
-          description: Suspend or reactivate a tenant without reviving revoked sessions.
+          description: Tenant with incremented management revision.
           content:
             application/json:
               schema:
@@ -254,21 +221,28 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
 
-  /platform/tenants/{tenantId}/invitation:
+  /management/tenants/{tenantId}/status:
     post:
-      operationId: reissueOwnerInvitation
-      tags: [Platform]
-      summary: Reissue the initial-owner invitation for a pending tenant
-      description: Invalidates the previous initial-owner code. Active tenant membership is managed only by that tenant's superadmins.
+      operationId: setManagedTenantStatus
+      tags: [Management]
+      summary: Activate, suspend, or reactivate a business unit
+      description: Superadmin account context only. Activation accepts an existing pending_setup tenant without an invitation. Suspension preserves data and queued evidence; reactivation never revives revoked sessions.
+      x-required-role: superadmin
       parameters:
         - $ref: "#/components/parameters/TenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetTenantStatusRequest"
       responses:
         "200":
-          description: Reissue the initial-owner invitation for a pending tenant.
+          description: Updated tenant status.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/InvitationEnvelope"
+                $ref: "#/components/schemas/TenantEnvelope"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -282,64 +256,260 @@ paths:
         "422":
           $ref: "#/components/responses/UnprocessableEntity"
 
-  /platform/audit:
+  /management/users:
     get:
-      operationId: listPlatformAudit
-      tags: [Platform]
-      summary: List recent durable control-plane audit events
+      operationId: listManagedUsers
+      tags: [Management]
+      summary: List organization-wide staff accounts
+      x-required-role: superadmin
+      responses:
+        "200":
+          description: Global accounts and roles; account context is required.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ManagedUserListEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      operationId: createManagedUser
+      tags: [Management]
+      summary: Create a staff account using a temporary password
+      description: Superadmin account context only. The staff account must change its temporary password before operating and can subsequently select every active tenant.
+      x-required-role: superadmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateUserRequest"
+      responses:
+        "201":
+          $ref: "#/components/responses/UserResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /management/users/{userId}:
+    parameters:
+      - $ref: "#/components/parameters/UserId"
+    get:
+      operationId: getManagedUser
+      tags: [Management]
+      summary: Get a global staff account
+      x-required-role: superadmin
+      responses:
+        "200":
+          $ref: "#/components/responses/UserResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    patch:
+      operationId: updateManagedUser
+      tags: [Management]
+      summary: Change an account's global role or active status
+      description: Superadmin account context only. Role changes and deactivation revoke all account sessions. Self-demotion, self-deactivation, and removing the last active Superadmin are prohibited. Account deletion is not supported.
+      x-required-role: superadmin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateManagedUserRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/UserResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /management/users/{userId}/reset-password:
+    post:
+      operationId: resetManagedUserPassword
+      tags: [Management]
+      summary: Set a temporary password and revoke all of the account's sessions
+      description: Superadmin account context only. The account must change this password before operating again. Credentials are never included in audit records.
+      x-required-role: superadmin
+      parameters:
+        - $ref: "#/components/parameters/UserId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetPasswordRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/UserResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+
+  /management/audit:
+    get:
+      operationId: listManagementAudit
+      tags: [Management]
+      summary: List durable organization-wide administrative audit history
+      description: Superadmin account context only. Does not expose passwords, invitation codes, or raw QRIS payloads.
+      x-required-role: superadmin
       parameters:
         - $ref: "#/components/parameters/AuditLimit"
       responses:
         "200":
-          description: List recent durable control-plane audit events.
+          description: Recent account and tenant lifecycle events.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/PlatformAuditListEnvelope"
-        "400":
-          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "422":
-          $ref: "#/components/responses/UnprocessableEntity"
+
+  /auth/register-invitation:
+    post:
+      operationId: registerInvitation
+      deprecated: true
+      tags: [Authentication]
+      summary: Retired invitation endpoint; all active accounts can enter every active tenant
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterInvitationRequest"
+      responses:
+        "410":
+          $ref: "#/components/responses/Gone"
+
+  /auth/invitations/accept:
+    post:
+      operationId: acceptInvitation
+      deprecated: true
+      tags: [Authentication]
+      summary: Retired invitation endpoint; all active accounts can enter every active tenant
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AcceptInvitationRequest"
+      responses:
+        "410":
+          $ref: "#/components/responses/Gone"
+
+  /platform/tenants:
+    get:
+      operationId: listPlatformTenants
+      deprecated: true
+      tags: [Platform]
+      summary: Retired administration endpoint; upgrade to organization management
+      responses:
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+
+    post:
+      operationId: createTenant
+      deprecated: true
+      tags: [Platform]
+      summary: Retired administration endpoint; upgrade to organization management
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTenantRequest"
+      responses:
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+
+  /platform/tenants/{tenantId}/status:
+    post:
+      operationId: setTenantStatus
+      deprecated: true
+      tags: [Platform]
+      summary: Retired administration endpoint; upgrade to organization management
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SetTenantStatusRequest"
+      responses:
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+
+  /platform/tenants/{tenantId}/invitation:
+    post:
+      operationId: reissueOwnerInvitation
+      deprecated: true
+      tags: [Platform]
+      summary: Retired invitation endpoint; all active accounts can enter every active tenant
+      parameters:
+        - $ref: "#/components/parameters/TenantId"
+      responses:
+        "410":
+          $ref: "#/components/responses/Gone"
+
+  /platform/audit:
+    get:
+      operationId: listPlatformAudit
+      deprecated: true
+      tags: [Platform]
+      summary: Retired administration endpoint; upgrade to organization management
+      parameters:
+        - $ref: "#/components/parameters/AuditLimit"
+      responses:
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
 
   /tenant/members:
     get:
       operationId: listTenantMembers
+      deprecated: true
       tags: [Tenants]
-      summary: List memberships in the active tenant
+      summary: Retired administration endpoint; upgrade to organization management
       responses:
-        "200":
-          description: List memberships in the active tenant.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TenantMemberListEnvelope"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "422":
-          $ref: "#/components/responses/UnprocessableEntity"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
 
   /tenant/members/{userId}:
     patch:
       operationId: updateTenantMember
+      deprecated: true
       tags: [Tenants]
-      summary: Update the role or active status of one tenant membership
-      description: Production-mode tenant superadmin only. Does not change global credentials or other tenant memberships; last-active-superadmin and self-demotion protections apply.
+      summary: Retired administration endpoint; upgrade to organization management
       parameters:
         - $ref: "#/components/parameters/UserId"
       requestBody:
@@ -349,53 +519,24 @@ paths:
             schema:
               $ref: "#/components/schemas/UpdateTenantMemberRequest"
       responses:
-        "200":
-          description: Update the role or active status of one tenant membership.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/TenantMemberEnvelope"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "422":
-          $ref: "#/components/responses/UnprocessableEntity"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
 
   /tenant/invitations:
     get:
       operationId: listTenantInvitations
+      deprecated: true
       tags: [Tenants]
-      summary: List tenant invitations without exposing their codes
+      summary: Retired invitation endpoint; all active accounts can enter every active tenant
       responses:
-        "200":
-          description: List tenant invitations without exposing their codes.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/InvitationListEnvelope"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "422":
-          $ref: "#/components/responses/UnprocessableEntity"
+        "410":
+          $ref: "#/components/responses/Gone"
+
     post:
       operationId: createTenantInvitation
+      deprecated: true
       tags: [Tenants]
-      summary: Create a single-use seven-day membership invitation
+      summary: Retired invitation endpoint; all active accounts can enter every active tenant
       requestBody:
         required: true
         content:
@@ -403,51 +544,20 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateInvitationRequest"
       responses:
-        "201":
-          description: Create a single-use seven-day membership invitation.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/InvitationEnvelope"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "422":
-          $ref: "#/components/responses/UnprocessableEntity"
+        "410":
+          $ref: "#/components/responses/Gone"
 
   /tenant/invitations/{invitationId}:
     delete:
       operationId: revokeTenantInvitation
+      deprecated: true
       tags: [Tenants]
-      summary: Revoke an unused tenant invitation
+      summary: Retired invitation endpoint; all active accounts can enter every active tenant
       parameters:
         - $ref: "#/components/parameters/InvitationId"
       responses:
-        "200":
-          description: Revoke an unused tenant invitation.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ActionEnvelope"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "422":
-          $ref: "#/components/responses/UnprocessableEntity"
+        "410":
+          $ref: "#/components/responses/Gone"
 
   /tenant/profile:
     get:
@@ -564,7 +674,7 @@ paths:
       operationId: revalidateSyncOrigins
       tags: [Synchronization]
       summary: Revalidate quarantined signed origins in the current tenant context
-      description: Only matching active origin accounts, memberships and terminal enrollments are allowed. This does not rewrite or submit signed entries.
+      description: Only matching active origin accounts, tenants, data spaces, and terminal enrollments are allowed. Membership IDs remain historical attribution links, not access approvals. This does not rewrite or submit signed entries.
       requestBody:
         required: true
         content:
@@ -819,8 +929,9 @@ paths:
           $ref: "#/components/responses/Forbidden"
     post:
       operationId: createUser
+      deprecated: true
       tags: [Users]
-      summary: Create a user with a temporary password
+      summary: Retired administration endpoint; upgrade to organization management
       x-required-role: superadmin
       requestBody:
         required: true
@@ -829,18 +940,8 @@ paths:
             schema:
               $ref: "#/components/schemas/CreateUserRequest"
       responses:
-        "201":
-          $ref: "#/components/responses/UserResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "422":
-          $ref: "#/components/responses/UnprocessableEntity"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
 
   /users/{userId}:
     parameters:
@@ -861,9 +962,9 @@ paths:
           $ref: "#/components/responses/NotFound"
     patch:
       operationId: updateUser
+      deprecated: true
       tags: [Users]
-      summary: Update role, name, username, or active state
-      description: Self-demotion/deactivation and removal of the final active superadmin are rejected.
+      summary: Retired administration endpoint; upgrade to organization management
       x-required-role: superadmin
       requestBody:
         required: true
@@ -872,44 +973,27 @@ paths:
             schema:
               $ref: "#/components/schemas/UpdateUserRequest"
       responses:
-        "200":
-          $ref: "#/components/responses/UserResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "422":
-          $ref: "#/components/responses/UnprocessableEntity"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
+
     delete:
       operationId: deleteUser
+      deprecated: true
       tags: [Users]
-      summary: Soft-delete a user
+      summary: Retired administration endpoint; upgrade to organization management
       x-required-role: superadmin
       responses:
-        "200":
-          $ref: "#/components/responses/UserResponse"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
 
   /users/{userId}/reset-password:
     parameters:
       - $ref: "#/components/parameters/UserId"
     post:
       operationId: resetUserPassword
+      deprecated: true
       tags: [Users]
-      summary: Set a temporary password and revoke existing sessions
+      summary: Retired administration endpoint; upgrade to organization management
       x-required-role: superadmin
       requestBody:
         required: true
@@ -918,18 +1002,8 @@ paths:
             schema:
               $ref: "#/components/schemas/ResetPasswordRequest"
       responses:
-        "200":
-          $ref: "#/components/responses/UserResponse"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "422":
-          $ref: "#/components/responses/UnprocessableEntity"
+        "426":
+          $ref: "#/components/responses/UpgradeRequired"
 
   /packages:
     get:
@@ -1346,7 +1420,8 @@ paths:
       operationId: enrollTerminal
       tags: [Terminals]
       summary: Register a physical installation and Ed25519 public key
-      description: Production-mode only because terminal identities are shared.
+      description: Global Superadmin in a selected tenant's Production context only. Enrollments and signing keys are independent per tenant; this does not enroll the installation into other businesses. Admin accounts can use an existing active enrollment but cannot create or replace one.
+      x-required-role: superadmin
       requestBody:
         required: true
         content:
@@ -1360,6 +1435,8 @@ paths:
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "409":
           $ref: "#/components/responses/Conflict"
         "422":
@@ -1738,6 +1815,18 @@ components:
             $ref: "#/components/schemas/PaymentStateConflictEnvelope"
     UnprocessableEntity:
       $ref: "#/components/responses/ErrorResponse"
+    Gone:
+      description: Fitur undangan telah dihapus. Semua akun aktif dapat mengakses setiap bisnis aktif.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    UpgradeRequired:
+      description: Perbarui aplikasi untuk menggunakan pengelolaan organisasi dan kebijakan pembayaran yang didukung.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
     TooManyRequests:
       description: Login rate limit exceeded.
       headers:
@@ -1769,11 +1858,18 @@ components:
     ContextKind:
       type: string
       enum: [account, tenant, platform]
+      description: New sessions use account or tenant. The retired platform value is retained solely for historical session decoding.
+
+    SandboxQrisPolicy:
+      type: string
+      enum: [fixed_1000, transaction_total]
+      description: Immutable origin-session rule. Legacy Sandbox QRIS charges Rp1.000; protocol 3 uses the Sandbox transaction total. Historical stored payment amounts are never recalculated.
 
     Tenant:
       type: object
       additionalProperties: false
-      required: [id, name, slug, status, profileRevision, qrisRevision]
+      required:
+        [id, name, slug, status, revision, profileRevision, qrisRevision]
       properties:
         id:
           $ref: "#/components/schemas/UUID"
@@ -1787,6 +1883,10 @@ components:
         status:
           type: string
           enum: [pending_setup, active, suspended]
+        revision:
+          type: integer
+          minimum: 1
+          description: Management metadata revision, independent of receipt profile and QRIS revisions.
         profileRevision:
           type: integer
           minimum: 1
@@ -1803,13 +1903,21 @@ components:
           $ref: "#/components/schemas/Tenant"
         membershipId:
           $ref: "#/components/schemas/UUID"
+          description: Historical attribution link; neither role authority nor tenant access approval.
         role:
           $ref: "#/components/schemas/UserRole"
+          description: The account's organization-wide role.
 
     AvailableContexts:
       type: object
       additionalProperties: false
-      required: [tenants, platformAdmin]
+      required:
+        [
+          tenants,
+          platformAdmin,
+          canManageOrganization,
+          tenantProvisioningEnabled,
+        ]
       properties:
         tenants:
           type: array
@@ -1817,6 +1925,15 @@ components:
             $ref: "#/components/schemas/TenantContext"
         platformAdmin:
           type: boolean
+          const: false
+          deprecated: true
+          description: Retained for legacy response compatibility. Use canManageOrganization instead.
+        canManageOrganization:
+          type: boolean
+          description: True only for an active global Superadmin; management requires account context.
+        tenantProvisioningEnabled:
+          type: boolean
+          description: Whether new business-unit creation is enabled. Existing tenant management remains available independently.
 
     SwitchContextRequest:
       type: object
@@ -1824,7 +1941,8 @@ components:
       required: [kind]
       properties:
         kind:
-          $ref: "#/components/schemas/ContextKind"
+          type: string
+          enum: [account, tenant]
         tenantId:
           $ref: "#/components/schemas/UUID"
           description: Required only when selecting tenant context.
@@ -1880,6 +1998,19 @@ components:
         slug:
           type: string
           pattern: "^[a-z0-9][a-z0-9-]{1,62}$"
+
+    UpdateManagedTenantRequest:
+      type: object
+      additionalProperties: false
+      required: [name, expectedRevision]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 160
+        expectedRevision:
+          type: integer
+          minimum: 1
 
     CreateTenantResult:
       type: object
@@ -2328,6 +2459,7 @@ components:
     UserRole:
       type: string
       enum: [admin, superadmin]
+      description: Organization-wide account role, identical across all tenants. Admin operates and corrects/confirms their own transactions; Superadmin additionally administers staff, tenants, and all selected-tenant operations.
 
     DataMode:
       type: string
@@ -2424,6 +2556,7 @@ components:
         code:
           type: string
           pattern: "^[A-Z][A-Z0-9_]*$"
+          description: ACCOUNT_ACCESS_CHANGED signals account deactivation, role change, or password recovery. Preserve and quarantine this scope's pending entries, then require fresh authentication; never replay another account's entries.
         message:
           type: string
         details:
@@ -2579,8 +2712,17 @@ components:
           description: Client installation UUID used to look up an existing terminal binding.
         protocolVersion:
           type: integer
-          const: 2
-          description: New clients send 2 to enter account context and select an authorized tenant. Omission supports only the migrated Telomoyo tenant.
+          enum: [2, 3]
+          description: Compatible clients send 3 for organization-wide roles and transaction-total Sandbox QRIS. Version 2 retains fixed_1000 origin semantics. Omission supports only the migrated Telomoyo tenant.
+
+    UpgradeSessionRequest:
+      type: object
+      additionalProperties: false
+      required: [protocolVersion]
+      properties:
+        protocolVersion:
+          type: integer
+          const: 3
 
     SwitchModeRequest:
       type: object
@@ -2607,6 +2749,8 @@ components:
           membershipId,
           tenant,
           isPlatformAdmin,
+          protocolVersion,
+          sandboxQrisPolicy,
         ]
       properties:
         contextKind:
@@ -2623,6 +2767,15 @@ components:
             - type: "null"
         isPlatformAdmin:
           type: boolean
+          const: false
+          deprecated: true
+          description: Retained for legacy compatibility; Superadmin is the only organization-management role.
+        protocolVersion:
+          type: integer
+          minimum: 0
+          maximum: 3
+        sandboxQrisPolicy:
+          $ref: "#/components/schemas/SandboxQrisPolicy"
         sessionToken:
           type: string
           minLength: 43
@@ -2646,7 +2799,7 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Zero outside Sandbox; account and platform contexts have null tenant, membership, mode, and data-space fields.
+          description: Zero outside Sandbox; account context has null tenant, membership, mode, and data-space fields.
 
     LoginEnvelope:
       type: object
@@ -2743,6 +2896,8 @@ components:
           membershipId,
           tenant,
           isPlatformAdmin,
+          protocolVersion,
+          sandboxQrisPolicy,
         ]
       properties:
         contextKind:
@@ -2759,6 +2914,15 @@ components:
             - type: "null"
         isPlatformAdmin:
           type: boolean
+          const: false
+          deprecated: true
+          description: Retained for legacy compatibility; Superadmin is the only organization-management role.
+        protocolVersion:
+          type: integer
+          minimum: 0
+          maximum: 3
+        sandboxQrisPolicy:
+          $ref: "#/components/schemas/SandboxQrisPolicy"
         user:
           $ref: "#/components/schemas/User"
         sessionId:
@@ -2778,7 +2942,7 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Zero outside Sandbox; account and platform contexts have null tenant, membership, mode, and data-space fields.
+          description: Zero outside Sandbox; account context has null tenant, membership, mode, and data-space fields.
 
     DataSpace:
       type: object
@@ -2825,7 +2989,15 @@ components:
       type: object
       additionalProperties: false
       required:
-        [enabled, dataMode, dataSpaceId, generation, retentionDays, qrisAmount]
+        [
+          enabled,
+          dataMode,
+          dataSpaceId,
+          generation,
+          retentionDays,
+          qrisAmount,
+          sandboxQrisPolicy,
+        ]
       properties:
         enabled:
           type: boolean
@@ -2846,10 +3018,13 @@ components:
           minimum: 1
           maximum: 365
         qrisAmount:
-          type: integer
+          type: [integer, "null"]
           format: int64
-          const: 1000
-          description: Real merchant QRIS charge used by every Sandbox QRIS transaction.
+          minimum: 1000
+          maximum: 1000
+          description: Legacy fixed_1000 sessions return 1000. Full-value transaction_total sessions return null; read the transaction's stored paymentAmount instead.
+        sandboxQrisPolicy:
+          $ref: "#/components/schemas/SandboxQrisPolicy"
 
     SandboxStatusEnvelope:
       type: object
@@ -2957,6 +3132,16 @@ components:
           minLength: 12
           maxLength: 256
 
+    UpdateManagedUserRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        role:
+          $ref: "#/components/schemas/UserRole"
+        active:
+          type: boolean
+
     UserEnvelope:
       type: object
       additionalProperties: false
@@ -2978,6 +3163,18 @@ components:
             $ref: "#/components/schemas/User"
         meta:
           $ref: "#/components/schemas/PageMeta"
+
+    ManagedUserListEnvelope:
+      type: object
+      additionalProperties: false
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/User"
+        meta:
+          $ref: "#/components/schemas/Meta"
 
     PackageRevision:
       type: object
@@ -3225,8 +3422,9 @@ components:
         paymentAmount:
           $ref: "#/components/schemas/Rupiah"
           description: |
-            Amount presented for payment. It equals `total` except Sandbox QRIS,
-            where the server enforces Rp1.000.
+            Immutable amount presented for this revision. It equals `total`
+            except legacy fixed_1000 Sandbox QRIS revisions, which retain Rp1.000.
+            The signed origin session determines the policy for new revisions.
 
     TransactionRevision:
       type: object
@@ -3360,8 +3558,9 @@ components:
         paymentAmount:
           $ref: "#/components/schemas/Rupiah"
           description: |
-            Amount actually presented to the payer. Sandbox QRIS is always Rp1.000;
-            cash and production payments equal the transaction total.
+            Amount actually presented to the payer. Cash, Production QRIS, and
+            transaction_total Sandbox QRIS equal the revision total. Legacy
+            fixed_1000 Sandbox QRIS retains its stored Rp1.000 amount.
         paymentMethod:
           $ref: "#/components/schemas/PaymentMethod"
         qrisPayloadHash:
@@ -4124,6 +4323,7 @@ components:
               terminal,
               tenant_profile,
               tenant_qris,
+              tenant_metadata,
             ]
         action:
           type: string
@@ -4147,6 +4347,7 @@ components:
             - $ref: "#/components/schemas/Terminal"
             - $ref: "#/components/schemas/TenantProfile"
             - $ref: "#/components/schemas/TenantQRISConfig"
+            - $ref: "#/components/schemas/Tenant"
             - type: "null"
 
     SyncPullResult:

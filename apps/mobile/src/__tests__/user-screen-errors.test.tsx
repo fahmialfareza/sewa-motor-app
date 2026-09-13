@@ -1,8 +1,10 @@
 import { fireEvent, render, waitFor } from "@testing-library/react-native";
 import type { ReactNode } from "react";
 
-import UsersScreen from "@/app/(app)/(tabs)/users";
-import EditUserScreen from "@/app/(app)/users/[id]/edit";
+import {
+  ManagedUsersScreen as UsersScreen,
+  ManagedUserEditor,
+} from "@/tenant/screens";
 import type { UserSummary } from "@/domain/types";
 import { SERVER_UNREACHABLE_MESSAGE } from "@/utils/errors";
 
@@ -37,6 +39,7 @@ jest.mock("@/auth/AuthProvider", () => ({
     session: {
       token: "session-token",
       dataMode: "production",
+      contextKind: "account",
       user: sessionUser,
     },
   }),
@@ -160,36 +163,36 @@ describe("user screen connection errors", () => {
     const screen = render(<UsersScreen />);
 
     await waitFor(() => {
-      expect(screen.getByText("Pengguna belum dapat dimuat")).toBeTruthy();
       expect(screen.getByText(SERVER_UNREACHABLE_MESSAGE)).toBeTruthy();
     });
     expect(screen.queryByText(nativeConnectionError.message)).toBeNull();
 
-    fireEvent.press(screen.getByRole("button", { name: "Coba lagi" }));
+    fireEvent.press(
+      screen.getByRole("button", { name: "Muat ulang pengguna" }),
+    );
 
     await waitFor(() => {
       expect(screen.getByText(loadedUser.fullName)).toBeTruthy();
-      expect(screen.queryByText("Pengguna belum dapat dimuat")).toBeNull();
+      expect(screen.queryByText(SERVER_UNREACHABLE_MESSAGE)).toBeNull();
     });
   });
 
   it("shows an understandable edit error and retries", async () => {
     mockApiRequest
       .mockRejectedValueOnce(nativeConnectionError)
-      .mockResolvedValueOnce([loadedUser]);
-    const screen = render(<EditUserScreen />);
+      .mockResolvedValueOnce(loadedUser);
+    const screen = render(<ManagedUserEditor id={loadedUser.id} />);
 
     await waitFor(() => {
-      expect(screen.getByText("Pengguna belum dapat dimuat")).toBeTruthy();
       expect(screen.getByText(SERVER_UNREACHABLE_MESSAGE)).toBeTruthy();
     });
     expect(screen.queryByText(nativeConnectionError.message)).toBeNull();
 
-    fireEvent.press(screen.getByRole("button", { name: "Coba lagi" }));
+    fireEvent.press(screen.getByRole("button", { name: "Muat ulang akun" }));
 
     await waitFor(() => {
       expect(screen.getByText(loadedUser.fullName)).toBeTruthy();
-      expect(screen.queryByText("Pengguna belum dapat dimuat")).toBeNull();
+      expect(screen.queryByText(SERVER_UNREACHABLE_MESSAGE)).toBeNull();
     });
   });
 });
